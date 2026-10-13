@@ -13,12 +13,12 @@ import {
 } from '../../src/lib/protocol/cache-ttl.mjs'
 import { calculateCost } from '../../src/lib/admin/pricing.mjs'
 
-test('cache ttl accepts only 1h or 5m output values', () => {
+test('cache ttl defaults to 5m while accepting explicit 1h', () => {
   assert.equal(normalizeCacheTtl(undefined), DEFAULT_CACHE_TTL)
-  assert.equal(DEFAULT_CACHE_TTL, '1h')
+  assert.equal(DEFAULT_CACHE_TTL, '5m')
   assert.equal(normalizeCacheTtl('5m'), '5m')
   assert.equal(normalizeCacheTtl('1h'), '1h')
-  assert.equal(normalizeCacheTtl('bogus'), '1h')
+  assert.equal(normalizeCacheTtl('bogus'), '5m')
 })
 
 test('header overrides routing default', () => {
@@ -27,7 +27,8 @@ test('header overrides routing default', () => {
     '1h',
   )
   assert.equal(resolveCacheTtl({ headers: {}, routing: { compatibility: { cache_ttl: '1h' } } }), '1h')
-  assert.equal(resolveCacheTtl({ headers: {}, routing: { compatibility: {} } }), '1h')
+  assert.equal(resolveCacheTtl({ headers: {}, routing: { compatibility: {} } }), '5m')
+  assert.equal(resolveCacheTtl({ headers: {}, routing: { compatibility: { cache_ttl: 'auto' } } }), '5m')
   assert.equal(resolveCacheTtl({ headers: {}, routing: { compatibility: { cache_ttl: '5m' } } }), '5m')
 })
 
@@ -38,6 +39,7 @@ test('ttl-less markers (official Claude Code) take the settings menu value', () 
   }
   assert.equal(resolveCacheTtl({ headers: {}, body, routing: { compatibility: { cache_ttl: '1h' } } }), '1h')
   assert.equal(resolveCacheTtl({ headers: {}, body, routing: { compatibility: { cache_ttl: '5m' } } }), '5m')
+  assert.equal(resolveCacheTtl({ headers: {}, body, routing: { compatibility: { cache_ttl: 'auto' } } }), '5m')
   const out = applyCacheTtlToBody(body, '1h')
   assert.deepEqual(out.system[0].cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.deepEqual(out.messages[0].content[0].cache_control, { type: 'ephemeral', ttl: '1h' })
@@ -60,6 +62,13 @@ test('a conversation keeps its first TTL until that cache would have expired', (
 })
 
 test('explicit inbound 5m or 1h overrides the console default', () => {
+  assert.equal(
+    resolveCacheTtl({
+      body: { tools: [{ cache_control: { type: 'ephemeral', ttl: '1h' } }] },
+      routing: { compatibility: { cache_ttl: 'auto' } },
+    }),
+    '1h',
+  )
   assert.equal(
     resolveCacheTtl({
       headers: {},
@@ -201,11 +210,11 @@ test('stripIllegalCacheControlFields drops ephemeral.scope', () => {
   assert.deepEqual(out.messages[0].content[0].cache_control, { type: 'ephemeral', ttl: '5m' })
 })
 
-test('unclassified cache_creation without ttl bills the default 1h rate', () => {
+test('unclassified cache_creation without ttl bills the default 5m rate', () => {
   const asDefault = calculateCost({ cache_creation_tokens: 1_000_000 }, 'claude-sonnet-5')
   const as5m = calculateCost({ cache_creation_tokens: 1_000_000, cache_ttl: '5m' }, 'claude-sonnet-5')
   const as1h = calculateCost({ cache_creation_tokens: 1_000_000, cache_ttl: '1h' }, 'claude-sonnet-5')
-  assert.equal(asDefault.cache_creation_cost, 4)
+  assert.equal(asDefault.cache_creation_cost, 2.5)
   assert.equal(as5m.cache_creation_cost, 2.5)
   assert.equal(as1h.cache_creation_cost, 4)
   assert.equal(as1h.total_cost - as5m.total_cost, 1.5)

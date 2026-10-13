@@ -1,12 +1,12 @@
 /**
  * Anthropic cache_control ttl for unofficial OAuth.
- * Default 1h (2× input). Customers may request 5m (1.25× input);
+ * Default 5m (1.25× input). Customers may request 1h (2× input);
  * billing must use the TTL we actually sent.
  */
 import fs from 'node:fs'
 import { isAnthropicServerTool } from './web-search.mjs'
 
-export const DEFAULT_CACHE_TTL = '1h'
+export const DEFAULT_CACHE_TTL = '5m'
 export const CACHE_TTL_HEADER = 'x-kin-cache-ttl'
 
 export function normalizeCacheTtl(value) {
@@ -20,8 +20,7 @@ export function normalizeCacheTtl(value) {
     raw === '60m' ||
     raw === '3600' ||
     raw === 'hour' ||
-    raw === '1hour' ||
-    raw === 'default'
+    raw === '1hour'
   )
     return '1h'
   if (raw === '5m' || raw === '5min' || raw === '300') return '5m'
@@ -69,8 +68,7 @@ export function bodyRequestsHourCache(body) {
 
 /**
  * Header, then an explicit 5m/1h on any inbound marker, then the settings menu.
- * Official Claude Code is included: its ttl-less markers mean "not chosen", so
- * they take the menu value instead of Anthropic's implicit 5m.
+ * Auto and ttl-less markers use Anthropic's implicit 5m default.
  */
 export function resolveCacheTtl({ headers = {}, body, routing, routingFile } = {}) {
   const hdr = headers[CACHE_TTL_HEADER] || headers['X-Kin-Cache-Ttl']

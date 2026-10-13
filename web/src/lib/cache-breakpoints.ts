@@ -10,7 +10,7 @@
  * conversation。`cache_ttl` 给出站断点定时。`enabled=false` 时只剥 last user。
  */
 
-export type CacheTtl = '1h' | '5m'
+export type CacheTtl = 'auto' | '1h' | '5m'
 
 export type MessagesBreakpointMode = 'off' | 'fill' | 'rewrite' | 'cli-hop'
 
@@ -22,7 +22,7 @@ export type CacheBreakpoints = {
   messages: MessagesBreakpointMode
 }
 
-export const DEFAULT_CACHE_TTL: CacheTtl = '1h'
+export const DEFAULT_CACHE_TTL: CacheTtl = 'auto'
 
 export const DEFAULT_CACHE_BREAKPOINTS: CacheBreakpoints = {
   enabled: true,
@@ -54,14 +54,14 @@ export function normalizeCacheTtl(value: unknown): CacheTtl {
     .trim()
     .toLowerCase()
   if (raw === '5m' || raw === '5min' || raw === '300') return '5m'
+  if (raw === 'auto' || raw === 'default') return 'auto'
   if (
     raw === '1h' ||
     raw === '1hr' ||
     raw === '60m' ||
     raw === '3600' ||
     raw === 'hour' ||
-    raw === '1hour' ||
-    raw === 'default'
+    raw === '1hour'
   )
     return '1h'
   return DEFAULT_CACHE_TTL

@@ -123,7 +123,7 @@
     "persona_preset": "official_full",
     "overlay_preset": "off",
     "persona_park": false,
-    "cache_ttl": "1h",
+    "cache_ttl": "auto",
     "min_max_tokens": { "enabled": true, "value": 128 }
   },
   "official_cc": {

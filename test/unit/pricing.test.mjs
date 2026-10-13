@@ -129,7 +129,7 @@ test('cache creation marked cache_ttl=1h bills the 1h list price', () => {
   assert.equal(c.cache_creation_cost, 4)
 })
 
-test('cache creation without TTL breakdown bills as default 1h', () => {
+test('cache creation without TTL breakdown bills as default 5m', () => {
   const c = calculateCost(
     {
       input_tokens: 0,
@@ -138,9 +138,10 @@ test('cache creation without TTL breakdown bills as default 1h', () => {
     },
     'claude-sonnet-5',
   )
-  assert.equal(c.cache_creation_1h_tokens, 1_000_000)
-  assert.equal(c.cache_creation_cost, 4)
-  assert.equal(c.total_cost, 4)
+  assert.equal(c.cache_creation_5m_tokens, 1_000_000)
+  assert.equal(c.cache_creation_1h_tokens, 0)
+  assert.equal(c.cache_creation_cost, 2.5)
+  assert.equal(c.total_cost, 2.5)
 })
 
 test('OpenAI-shaped usage (prompt_tokens + details) bills like Anthropic', () => {

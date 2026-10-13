@@ -385,7 +385,8 @@ test('PUT routing accepts official_full and empty follow-preset templates', () =
 test('PUT routing accepts only 5m and 1h cache TTL values', () => {
   assert.deepEqual(validatePersonaRoutingPatch({ compatibility: { cache_ttl: '5m' } }), [])
   assert.deepEqual(validatePersonaRoutingPatch({ compatibility: { cache_ttl: '1h' } }), [])
-  assert.match(validatePersonaRoutingPatch({ compatibility: { cache_ttl: '60m' } })[0], /5m \/ 1h/)
+  assert.deepEqual(validatePersonaRoutingPatch({ compatibility: { cache_ttl: 'auto' } }), [])
+  assert.match(validatePersonaRoutingPatch({ compatibility: { cache_ttl: '60m' } })[0], /auto \/ 5m \/ 1h/)
 })
 
 test('legacy routing without persona_preset keeps the old rewrite path', () => {

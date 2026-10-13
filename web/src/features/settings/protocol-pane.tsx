@@ -1,8 +1,18 @@
 import { Boxes, Check, ShieldCheck } from 'lucide-react'
-import { detectProxiedOfficialCcFromCompat } from '@/lib/cache-breakpoints'
+import {
+  cacheTtlFromCompat,
+  detectProxiedOfficialCcFromCompat,
+} from '@/lib/cache-breakpoints'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
 import { PaneSection } from './scheduler-controls'
@@ -174,6 +184,28 @@ function AdmissionSection({
           </SettingRow>
         </RowGroup>
       </div>
+      <RowGroup title='缓存'>
+        <SettingRow
+          label='TTL'
+          desc='未指定时按 5 分钟；1 小时缓存写入按 2× 计费。'
+        >
+          <Select
+            value={cacheTtlFromCompat(compat)}
+            onValueChange={(cache_ttl) =>
+              onCompatChange({ ...compat, cache_ttl })
+            }
+          >
+            <SelectTrigger className='w-44' aria-label='缓存 TTL'>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='auto'>按请求（默认 5 分钟）</SelectItem>
+              <SelectItem value='5m'>5 分钟</SelectItem>
+              <SelectItem value='1h'>1 小时</SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingRow>
+      </RowGroup>
     </PaneSection>
   )
 }
