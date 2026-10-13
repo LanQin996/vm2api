@@ -14,19 +14,77 @@ permissions:
   packages: write
 
 jobs:
-  amd64:
-    runs-on: ubuntu-latest
+  image:
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+            dockerfile: Dockerfile
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            dockerfile: deploy/Dockerfile.arm64-control
     steps:
       - uses: actions/checkout@v7
+      - name: prepare x86 QEMU for ARM64 smoke test
+        if: matrix.arch == 'arm64'
+        run: |
+          python3 deploy/prepare-arm64.py
+          python3 deploy/prepare-arm64.py --check
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: resolve image tags
+      - name: resolve architecture image tag
         id: image
+        shell: bash
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          owner=$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/${owner}/vm2api"
+          echo "tag=${image}:sha-${GITHUB_SHA::12}-${ARCH}" >> "$GITHUB_OUTPUT"
+      - name: build control-plane image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ steps.image.outputs.tag }}
+          cache-from: type=gha,scope=vm2api-main-${{ matrix.arch }}
+          cache-to: type=gha,scope=vm2api-main-${{ matrix.arch }},mode=max
+      - name: verify ARM64 runtime and emulated payloads
+        if: matrix.arch == 'arm64'
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: python3 test/deploy/smoke_arm64_image.py "$IMAGE_TAG"
+      - name: push architecture image
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: docker push "$IMAGE_TAG"
+
+  manifest:
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: publish multi-architecture tags
         shell: bash
         env:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
@@ -34,22 +92,15 @@ jobs:
           set -euo pipefail
           owner=$(printf '%s' "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
           image="ghcr.io/${owner}/vm2api"
-          {
-            echo 'tags<<EOF'
-            echo "${image}:sha-${GITHUB_SHA::12}"
-            if [[ "$GITHUB_REF" == 'refs/heads/main' ]]; then
-              echo "${image}:main"
-            fi
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
-      - name: build and push control-plane image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          tags: ${{ steps.image.outputs.tags }}
-          cache-from: type=gha,scope=vm2api-main
-          cache-to: type=gha,scope=vm2api-main,mode=max
+          ref="sha-${GITHUB_SHA::12}"
+          targets=(-t "${image}:${ref}")
+          if [[ "$GITHUB_REF" == 'refs/heads/main' ]]; then
+            targets+=(-t "${image}:main" -t "${image}:latest")
+          fi
+          docker buildx imagetools create "${targets[@]}" "${image}:${ref}-amd64" "${image}:${ref}-arm64"
+          docker buildx imagetools inspect --raw "${image}:${ref}" | python3 -c '
+          import json, sys
+          found = {(m.get("platform") or {}).get("architecture") for m in json.load(sys.stdin).get("manifests", [])}
+          assert {"amd64", "arm64"} <= found, f"missing platforms: {found}"
+          print("manifest platforms:", sorted(p for p in found if p))
+          '
