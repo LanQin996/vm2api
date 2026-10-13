@@ -17,6 +17,9 @@ const HARD_UNAVAILABLE = new Set(['dead', 'error', 'disabled'])
 
 export function isCodexSlotReady(vm) {
   if (!vm || !isCodexVm(vm)) return false
+  if ((vm.credential_state || vm.codex?.credential_state) === 'invalid') return false
+  const retryAt = Date.parse(vm.credential_retry_at || vm.codex?.credential_retry_at || '')
+  if (Number.isFinite(retryAt) && retryAt > Date.now()) return false
   if (proxyBlockedReason(vm.proxy)) return false
   if (vm.schedulable === false && !isLeftoverQuotaScheduleOff(vm)) return false
   if (!vm.has_token) return false

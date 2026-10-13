@@ -15,6 +15,8 @@ import {
   CHATGPT_RESET_CONSUME_URL,
 } from '../../src/lib/oauth/openai-quota.mjs'
 import { persistCodexQuotaSnapshot } from '../../src/lib/vm/codex-slot.mjs'
+import { getVm, listVms } from '../../src/lib/vm/vm-registry.mjs'
+import { CODEX_OAUTH_TOKEN_URL } from '../../src/lib/protocol/codex-models.mjs'
 import {
   evaluateOpenAIQuotaGate,
   effectiveOpenAIPolicy,
@@ -159,6 +161,103 @@ function writeGptSlot(root, id = 'vm-codex-01') {
     }),
   )
 }
+
+test('revoked access plus invalid_grant disables the slot and exposes its credential error', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-revoked-'))
+  try {
+    writeGptSlot(root)
+    const result = await queryOpenaiQuota({
+      projectRoot: root,
+      vmId: 'vm-codex-01',
+      fetchImpl: async (url) => ({
+        status: url === CODEX_OAUTH_TOKEN_URL ? 400 : 401,
+        json: async () =>
+          url === CODEX_OAUTH_TOKEN_URL ? { error: 'invalid_grant' } : { error: { code: 'token_revoked' } },
+      }),
+    })
+    assert.equal(result.ok, false)
+    assert.equal(getVm(root, 'vm-codex-01').codex.credential_state, 'invalid')
+    assert.equal(listVms(root)[0].schedulable, false)
+    assert.equal(listVms(root)[0].refresh_error, 'oauth_invalid_grant')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('expired access is refreshed once across concurrent checks without disabling a valid grant', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-refresh-once-'))
+  try {
+    writeGptSlot(root)
+    let refreshes = 0
+    const opts = {
+      projectRoot: root,
+      vmId: 'vm-codex-01',
+      fetchImpl: async (url, init) => {
+        if (url === CODEX_OAUTH_TOKEN_URL) {
+          refreshes += 1
+          return {
+            status: 200,
+            json: async () => ({ access_token: 'fresh-at', refresh_token: 'fresh-rt', expires_in: 3600 }),
+          }
+        }
+        if (init.headers.authorization === 'Bearer at')
+          return { status: 401, json: async () => ({ error: { code: 'token_expired' } }) }
+        return { status: 200, json: async () => ({ rate_limit: {}, credits: [] }) }
+      },
+    }
+    const results = await Promise.all([queryOpenaiQuota(opts), queryOpenaiQuota(opts), queryOpenaiQuota(opts)])
+    assert.ok(results.every((r) => r.ok))
+    assert.equal(refreshes, 1)
+    assert.equal(getVm(root, 'vm-codex-01').codex.credential_state, 'ready')
+    assert.equal(listVms(root)[0].schedulable, true)
+    assert.equal(listVms(root)[0].refresh_error, null)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('temporary refresh failures and non-rotating probes do not invalidate a refreshable grant', async () => {
+  for (const rotate of [true, false]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-refresh-temporary-'))
+    try {
+      writeGptSlot(root)
+      await queryOpenaiQuota({
+        projectRoot: root,
+        vmId: 'vm-codex-01',
+        rotate,
+        fetchImpl: async (url) => ({ status: url === CODEX_OAUTH_TOKEN_URL ? 503 : 401, json: async () => ({}) }),
+      })
+      assert.equal(getVm(root, 'vm-codex-01').codex.credential_state, 'needs_refresh')
+      assert.equal(listVms(root)[0].schedulable, true)
+      assert.equal(listVms(root)[0].refresh_error, null)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('an old rejected probe cannot invalidate credentials imported while the probe is running', async () => {
+  const { upsertCodexAccount } = await import('../../src/lib/vm/codex-slot.mjs')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-stale-probe-'))
+  try {
+    writeGptSlot(root)
+    await queryOpenaiQuota({
+      projectRoot: root,
+      vmId: 'vm-codex-01',
+      fetchImpl: async (url) => {
+        if (url === CODEX_OAUTH_TOKEN_URL) {
+          upsertCodexAccount(root, 'vm-codex-01', { access_token: 'new-at', refresh_token: 'new-rt' })
+          return { status: 400, json: async () => ({ error: 'invalid_grant' }) }
+        }
+        return { status: 401, json: async () => ({ error: { code: 'token_revoked' } }) }
+      },
+    })
+    assert.equal(getVm(root, 'vm-codex-01').codex.credential_state, 'unverified')
+    assert.equal(listVms(root)[0].schedulable, true)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('queryOpenaiQuota persists 5h/7d extra and reset credits', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-quota-'))

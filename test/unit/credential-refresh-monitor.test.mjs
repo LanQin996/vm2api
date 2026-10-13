@@ -57,6 +57,24 @@ test('due when expired, not due after a recorded refresh_error', () => {
   )
 })
 
+test('Codex periodically validates unexpired and AT-only credentials, but skips known invalid grants', () => {
+  const now = Date.now()
+  const vm = {
+    ...offSlot,
+    platform: 'openai',
+    family: 'codex',
+    status: 'running',
+    has_refresh: false,
+    has_token: true,
+    expires_at: now + 86400000,
+  }
+  assert.equal(isCredentialRefreshTarget(vm), true)
+  assert.equal(needsScheduledRefresh(vm, now), true)
+  assert.equal(needsScheduledRefresh({ ...vm, credential_checked_at: new Date(now - 10000).toISOString() }, now), false)
+  assert.equal(needsScheduledRefresh({ ...vm, credential_checked_at: new Date(now - 300001).toISOString() }, now), true)
+  assert.equal(needsScheduledRefresh({ ...vm, refresh_error: 'oauth_invalid_grant' }, now), false)
+})
+
 test('revoked access with remaining TTL is an operator hint, not a scheduled force', () => {
   const now = Date.now()
   const revoked = {

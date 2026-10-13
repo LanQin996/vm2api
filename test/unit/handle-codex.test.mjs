@@ -854,6 +854,7 @@ test('401 moves to another account without retrying the expired token', async ()
         {
           ensureCodexKernel: async () => ({ ok: true }),
           waitCodexRetry: async () => assert.fail('401 must not back off'),
+          checkCodexCredential: async () => ({ ok: false }),
           streamCodexKernel: async ({ exec }) => {
             seen.push(exec.vm.id)
             if (exec.vm.id === 'vm-gpt-a')
@@ -866,6 +867,48 @@ test('401 moves to another account without retrying the expired token', async ()
     )
     assert.equal(out.status, 200)
     assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+    assert.equal(logBag.attempt_count, 2)
+  } finally {
+    rt.resetOpenAIAccountRuntime()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('credential busy immediately fails over and checks login without replaying the busy slot', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-credential-busy-'))
+  try {
+    writeGptVm(root, 'vm-gpt-a')
+    writeGptVm(root, 'vm-gpt-b')
+    const seen = []
+    const checked = []
+    const logBag = {}
+    const out = await handleCodexProtocol(
+      codexArgs(
+        root,
+        {
+          ensureCodexKernel: async () => ({ ok: true }),
+          waitCodexRetry: async () => assert.fail('credential busy must not back off'),
+          checkCodexCredential: async ({ vmId }) => checked.push(vmId),
+          streamCodexKernel: async ({ exec }) => {
+            seen.push(exec.vm.id)
+            if (exec.vm.id === 'vm-gpt-a')
+              return {
+                ok: false,
+                status: 503,
+                committed: false,
+                body: { error: { type: 'api_error', code: 'no_capacity', message: 'credential busy' } },
+              }
+            return { ok: true, status: 200, terminalState: 'verified', body: { id: 'resp_ok' } }
+          },
+        },
+        { logBag },
+      ),
+    )
+    assert.equal(out.status, 200)
+    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+    assert.deepEqual(checked, ['vm-gpt-a'])
     assert.equal(logBag.attempt_count, 2)
   } finally {
     rt.resetOpenAIAccountRuntime()

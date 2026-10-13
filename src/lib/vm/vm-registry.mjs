@@ -95,7 +95,10 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     }),
     auth_scheme: kind.kind === 'codex' ? null : vm.claude?.auth_scheme || null,
     has_refresh: kind.kind === 'codex' ? !!codex?.has_refresh : hasRefreshPresence(vm.claude),
-    refresh_error: kind.kind === 'codex' ? null : vm.claude?.refresh_error || null,
+    refresh_error: kind.kind === 'codex' ? codex?.refresh_error || null : vm.claude?.refresh_error || null,
+    credential_state: codex?.credential_state || null,
+    credential_checked_at: codex?.credential_checked_at || null,
+    credential_retry_at: codex?.credential_retry_at || null,
     account_tier:
       kind.kind === 'codex' ? 'codex' : vm.claude?.account_tier || (hasAccessPresence(vm.claude) ? 'pro' : null),
     has_session_key: false,
@@ -131,9 +134,15 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
     claude_code_version: vm.claude_code_version || null,
     stats: vm.stats || {},
     fingerprint: vm.fingerprint || null,
-    schedulable: vm.schedulable !== false,
+    schedulable:
+      codex?.credential_replaced && vm.codex?.auth_disabled_schedule && !isManualScheduleLocked(vm)
+        ? true
+        : vm.schedulable !== false,
     schedule_manual: vm.schedule_manual === true,
-    schedule_disabled_reason: vm.schedule_disabled_reason || null,
+    schedule_disabled_reason:
+      codex?.credential_replaced && vm.codex?.auth_disabled_schedule && !isManualScheduleLocked(vm)
+        ? null
+        : vm.schedule_disabled_reason || null,
     temp_unschedulable_until: vm.claude?.temp_unschedulable_until || vm.temp_unschedulable_until || null,
     temp_unschedulable_reason: vm.claude?.temp_unschedulable_reason || vm.temp_unschedulable_reason || null,
     owner_user_id: normalizeOwnerId(vm.owner_user_id),

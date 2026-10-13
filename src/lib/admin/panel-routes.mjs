@@ -375,7 +375,7 @@ async function commitImportedCodexVm({
   existing.family = 'codex'
   existing.codex_kernel = true
   existing.codex = {
-    ...(existing.codex && typeof existing.codex === 'object' ? existing.codex : {}),
+    ...(getVm(cfg.paths.project, existing.id)?.codex || existing.codex || {}),
     has_access: !!saved.access_token,
     has_refresh: !!saved.refresh_token,
     chatgpt_account_id: saved.chatgpt_account_id || null,

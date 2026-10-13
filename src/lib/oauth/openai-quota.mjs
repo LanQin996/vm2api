@@ -8,7 +8,13 @@ import { getVm, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
-import { readCodexAccounts, upsertCodexAccount, persistCodexQuotaSnapshot } from '../vm/codex-slot.mjs'
+import {
+  readCodexAccounts,
+  upsertCodexAccount,
+  persistCodexQuotaSnapshot,
+  codexCredentialVersion,
+  persistCodexCredentialState,
+} from '../vm/codex-slot.mjs'
 import { buildCodexUsageView, extraToCodexSnapshot, normalizeCodexLimits } from '../protocol/codex-usage.mjs'
 import { CODEX_OAUTH_ORIGINATOR, makeProxyFetch, refreshCodexAccessToken } from '../protocol/codex-models.mjs'
 
@@ -17,6 +23,7 @@ export const CHATGPT_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/r
 export const CHATGPT_RESET_CONSUME_URL = `${CHATGPT_RESET_CREDITS_URL}/consume`
 export const OPENAI_QUOTA_TIMEOUT_MS = 20_000
 const CODEX_BETA = 'codex-1'
+const quotaChecks = new Map()
 
 function num(value) {
   if (value == null || value === '') return null
@@ -255,6 +262,7 @@ async function loadSlot(projectRoot, vmId) {
     ok: true,
     vm,
     first,
+    credentialVersion: codexCredentialVersion(readCodexAccounts(projectRoot, vmId)),
     access,
     refresh,
     accountId: firstString(first.chatgpt_account_id, vm.codex?.chatgpt_account_id),
@@ -289,20 +297,37 @@ async function quotaFetch(url, { method = 'GET', headers, body, proxyUrl, fetchI
 
 async function rotateIfNeeded(slot, projectRoot, vmId, fetchImpl) {
   if (!slot.refresh) return slot
+  const accounts = readCodexAccounts(projectRoot, vmId)
+  const latest = accounts[0] || {}
+  if (latest.access_token && latest.access_token !== slot.access) {
+    return {
+      ...slot,
+      access: latest.access_token,
+      refresh: latest.refresh_token || slot.refresh,
+      credentialVersion: codexCredentialVersion(accounts),
+    }
+  }
   const tok = await refreshCodexAccessToken({
     refreshToken: slot.refresh,
     proxyUrl: slot.proxyUrl,
     fetchImpl,
     timeoutMs: OPENAI_QUOTA_TIMEOUT_MS,
   })
-  if (!tok.ok) return { ...slot, rotateError: tok.error || 'refresh_failed' }
+  if (!tok.ok) return { ...slot, rotateError: tok.error || 'refresh_failed', rotateFatal: tok.fatal === true }
+  if (codexCredentialVersion(readCodexAccounts(projectRoot, vmId)) !== slot.credentialVersion)
+    return loadSlot(projectRoot, vmId)
   upsertCodexAccount(projectRoot, vmId, {
     access_token: tok.access_token,
     refresh_token: tok.refresh_token,
     id_token: tok.id_token || slot.first.id_token,
     expires_at: tok.expires_at || slot.first.expires_at,
   })
-  return { ...slot, access: tok.access_token, refresh: tok.refresh_token || slot.refresh }
+  return {
+    ...slot,
+    access: tok.access_token,
+    refresh: tok.refresh_token || slot.refresh,
+    credentialVersion: codexCredentialVersion(readCodexAccounts(projectRoot, vmId)),
+  }
 }
 
 function publicUsage(extra, resetCredits, usagePayload = {}) {
@@ -322,6 +347,12 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
     return fail('proxy_required', 'GPT 槽未绑定 SOCKS5', 400)
   }
   let current = slot
+  const recordCredential = (state, error = null) =>
+    persistCodexCredentialState(projectRoot, vmId, {
+      state,
+      error,
+      expectedVersion: current.credentialVersion,
+    })
   const headersOf = (access) => buildOpenaiQuotaHeaders({ accessToken: access, accountId: current.accountId })
 
   const run = async (access) => {
@@ -340,6 +371,7 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
         upstream_status: usage.status,
       })
     }
+    recordCredential('ready')
     const details = await quotaFetch(CHATGPT_RESET_CREDITS_URL, {
       headers: headersOf(access),
       proxyUrl: current.proxyUrl,
@@ -353,11 +385,24 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
   if (pack.error === 'upstream_auth' && rotate && current.refresh) {
     current = await rotateIfNeeded(current, projectRoot, vmId, fetchImpl)
     if (!current.access || current.rotateError) {
-      return fail(current.rotateError || 'refresh_failed', 'GPT OAuth 刷新失败，请重新导入', 502)
+      recordCredential(
+        current.rotateFatal ? 'invalid' : 'needs_refresh',
+        current.rotateFatal ? 'oauth_invalid_grant' : current.rotateError || 'refresh_failed',
+      )
+      return fail(
+        current.rotateError || 'refresh_failed',
+        current.rotateFatal ? 'GPT OAuth 已失效，请重新登录' : 'GPT OAuth 暂时无法刷新，稍后再试',
+        502,
+      )
     }
     pack = await run(current.access)
   }
   if (pack.error === 'upstream_auth') {
+    const rejectedAccess =
+      pack.status === 401 ||
+      /^(token_revoked|account_deactivated|account_suspended)$/.test(pack.payload?.error?.code || '')
+    const invalid = rejectedAccess && (!current.refresh || (rotate && current.access !== slot.access))
+    recordCredential(invalid ? 'invalid' : 'needs_refresh', invalid ? 'oauth_invalid_grant' : 'upstream_auth')
     return fail('upstream_auth', 'GPT 凭证已失效，请重新导入', mapUpstreamStatus(pack.status || 401), {
       upstream_status: pack.status,
     })
@@ -396,9 +441,24 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
 }
 
 export async function queryOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true, policy = null } = {}) {
-  const slot = await loadSlot(projectRoot, vmId)
-  if (!slot.ok) return slot
-  return queryUpstream(slot, { fetchImpl, rotate, projectRoot, vmId, policy })
+  const key = `${projectRoot}:${vmId}:${rotate}`
+  const pending = quotaChecks.get(key)
+  if (pending) return pending
+  const task = (async () => {
+    const slot = await loadSlot(projectRoot, vmId)
+    if (!slot.ok) {
+      if (slot.error === 'no_oauth_token')
+        persistCodexCredentialState(projectRoot, vmId, { state: 'invalid', error: 'no_credential' })
+      return slot
+    }
+    return queryUpstream(slot, { fetchImpl, rotate, projectRoot, vmId, policy })
+  })()
+  quotaChecks.set(key, task)
+  try {
+    return await task
+  } finally {
+    if (quotaChecks.get(key) === task) quotaChecks.delete(key)
+  }
 }
 
 export async function resetOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true, policy = null } = {}) {

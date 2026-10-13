@@ -28,6 +28,7 @@ import {
 } from './lib/oauth/credential-refresh-monitor.mjs'
 import { createKernelWatchdog, normalizeKernelWatchdogConfig } from './lib/transport/kernel-watchdog.mjs'
 import { ensureSlotSubscriptionType } from './lib/oauth/oauth-credentials.mjs'
+import { queryOpenaiQuota } from './lib/oauth/openai-quota.mjs'
 import { createCliNodeGuard } from './lib/vm/cli-node-guard.mjs'
 import { ensureTelemetrySidecar } from './lib/vm/slot-process-status.mjs'
 
@@ -603,6 +604,19 @@ function publicCredentialRefreshResult(vmId, result, { force = false } = {}) {
 }
 
 async function refreshWorkerCredentialForVm({ vmId, vmPath, homeDir, vm, force = false }) {
+  if (isCodexVm(vm)) {
+    const result = await queryOpenaiQuota({ projectRoot: cfg.paths.project, vmId, rotate: true })
+    return {
+      ok: result.ok,
+      vm_id: vmId,
+      refresh_owner: 'codex-oauth',
+      refresh_class: result.ok
+        ? 'already_fresh'
+        : getVm(cfg.paths.project, vmId)?.codex?.credential_state === 'invalid'
+          ? 'fatal'
+          : 'retryable',
+    }
+  }
   // Host RefreshIfNeeded is the credential writer. Slot workers only read AT.
   const result = await ensureWorkerCredential({ vmId, vm, homeDir }, { force: !!force })
 

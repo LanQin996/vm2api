@@ -26,6 +26,7 @@ import { ensureCodexKernel, writeCodexKernelConfig } from '../transport/codex-ke
 import { boundProxyUrl, isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
+import { queryOpenaiQuota } from '../oauth/openai-quota.mjs'
 import {
   CODEX_APP_VERSION,
   CODEX_CATALOG_ORIGINATOR,
@@ -225,6 +226,21 @@ function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = nu
   }
   if (!extra && !limitedUntil) return null
   return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })
+}
+
+function checkCodexHopCredential(projectRoot, vmId, result, ops = {}) {
+  if (result?.ok) return
+  const code = String(result?.body?.error?.code || '')
+  const unauthorized = Number(result?.status) === 401 || /upstream_auth|no_credential/.test(code)
+  if (!unauthorized && code !== 'no_capacity') return
+  const vm = getVm(projectRoot, vmId)
+  const checked = Date.parse(vm?.codex?.credential_checked_at || '')
+  if (!unauthorized && Number.isFinite(checked) && Date.now() - checked < 30000) return
+  const check = ops.checkCodexCredential || queryOpenaiQuota
+  // Recovery is shared with panel/periodic probes and must not delay account failover.
+  Promise.resolve()
+    .then(() => check({ projectRoot, vmId, rotate: true }))
+    .catch((error) => console.warn('[codex-credential] check failed', vmId, error?.name || 'Error'))
 }
 
 function execFor(projectRoot, vm) {
@@ -452,6 +468,7 @@ export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFa
     !emitted &&
     !args.signal?.aborted &&
     attempts < CODEX_MAX_HOP_ATTEMPTS &&
+    !/^(no_capacity|no_credential|upstream_auth|sticky_unavailable)$/.test(result?.body?.error?.code || '') &&
     [502, 503].includes(Number(result?.status))
   ) {
     const delay = codexRetryDelay(result, retries)
@@ -744,6 +761,7 @@ export async function handleCodexProtocol({
           result.body = { error: conversionError }
         }
         ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
+        if (!gone.signal.aborted) checkCodexHopCredential(projectRoot, vm.id, result, ops)
         logBag.attempt_count += Math.max(0, (result?.kernel_attempt_count || 1) - 1)
         if (result?.transport_retried) logBag.transport_retried = true
         if (result?.server_retry_count)
@@ -806,6 +824,8 @@ export async function handleCodexProtocol({
         if (res.headersSent) {
           stats.errors++
           logBag.error_code = result?.body?.error?.code || 'codex_upstream'
+          logBag.error_message = result?.body?.error?.message || null
+          logBag.final_state = result?.terminalState || 'upstream_error'
           logBag.upstream_status = result?.status || 0
           return res.end()
         }
@@ -829,6 +849,8 @@ export async function handleCodexProtocol({
   }
   stats.errors++
   logBag.error_code = last?.body?.error?.code || 'codex_upstream'
+  logBag.error_message = last?.body?.error?.message || null
+  logBag.final_state = last?.terminalState || 'upstream_error'
   logBag.upstream_status = last?.status || 0
   return json(res, last?.status || 502, last?.body || { error: { type: 'api_error', code: 'codex_upstream' } })
 }

@@ -7,6 +7,7 @@
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { hasRefreshPresence, needsRefresh } from './oauth-credentials.mjs'
+import { isCodexVm } from '../vm/vm-kind.mjs'
 
 export const DEFAULT_CREDENTIAL_REFRESH = Object.freeze({
   enabled: true,
@@ -54,7 +55,7 @@ export function vmHasProxyPath(vm) {
 
 export function isCredentialRefreshTarget(vm) {
   if (!vm?.id) return false
-  if (!hasRefreshPresence(vm.claude) && !vm.has_refresh) return false
+  if (!hasRefreshPresence(vm.claude) && !vm.has_refresh && !(isCodexVm(vm) && vm.has_token)) return false
   const status = String(vm.status || '').toLowerCase()
   if (HARD_DOWN.has(status)) return false
   if (!vmHasProxyPath(vm)) return false
@@ -75,8 +76,12 @@ export function shouldForceRefresh(vm) {
   return true
 }
 
-export function needsScheduledRefresh(vm, now = Date.now()) {
+export function needsScheduledRefresh(vm, now = Date.now(), intervalMs = 300000) {
   if (vm?.refresh_error || vm?.claude?.refresh_error) return false
+  if (isCodexVm(vm)) {
+    const checked = Date.parse(vm.credential_checked_at || vm.codex?.credential_checked_at || '')
+    return !Number.isFinite(checked) || now - checked >= intervalMs
+  }
   return needsRefresh(vm?.expires_at || vm?.claude?.expires_at, now)
 }
 
@@ -102,7 +107,9 @@ export function createCredentialRefreshMonitor(opts = {}) {
 
   const listDue = () => {
     const vms = typeof opts.listTargets === 'function' ? opts.listTargets() || [] : []
-    return vms.filter((vm) => isCredentialRefreshTarget(vm) && needsScheduledRefresh(vm, nowFn()))
+    return vms.filter(
+      (vm) => isCredentialRefreshTarget(vm) && needsScheduledRefresh(vm, nowFn(), config.interval_sec * 1000),
+    )
   }
 
   const runOnce = async () => {

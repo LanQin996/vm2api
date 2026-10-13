@@ -3,9 +3,11 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import crypto from 'node:crypto'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
 import { buildCodexUsageView, extraToCodexSnapshot } from '../protocol/codex-usage.mjs'
+import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
 
 export { isCodexVm }
 
@@ -25,17 +27,86 @@ export function readCodexAccounts(projectRoot, vmId) {
 
 export function writeCodexAccounts(projectRoot, vmId, accounts) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
-  atomicWriteJson(
-    codexCredentialPath(projectRoot, vmId),
-    { accounts: Array.isArray(accounts) ? accounts : [] },
-    { mode: 0o600 },
-  )
+  const next = Array.isArray(accounts) ? accounts : []
+  const previous = codexCredentialVersion(readCodexAccounts(projectRoot, vmId))
+  atomicWriteJson(codexCredentialPath(projectRoot, vmId), { accounts: next }, { mode: 0o600 })
+  if (previous !== codexCredentialVersion(next)) persistCodexCredentialState(projectRoot, vmId, { state: 'unverified' })
+}
+
+export function codexCredentialVersion(accounts = []) {
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(accounts.map((account) => [account?.access_token || '', account?.refresh_token || ''])))
+    .digest('hex')
+}
+
+/** A stale probe must never disable a newly imported or rotated credential. */
+export function persistCodexCredentialState(
+  projectRoot,
+  vmId,
+  { state, error = null, expectedVersion = null, now = Date.now() } = {},
+) {
+  const version = codexCredentialVersion(readCodexAccounts(projectRoot, vmId))
+  if (expectedVersion && expectedVersion !== version) return null
+  const file = path.join(projectRoot, 'vms', `${vmId}.json`)
+  let vm
+  try {
+    vm = structuredClone(readJsonCached(file))
+  } catch {
+    return null
+  }
+  if (!vm?.id) return null
+  const codex = { ...(vm.codex || {}) }
+  codex.credential_state = state
+  codex.credential_version = version
+  codex.credential_checked_at = state === 'unverified' ? null : new Date(now).toISOString()
+  codex.refresh_error = state === 'invalid' ? error || 'oauth_invalid_grant' : null
+  codex.credential_error = error
+  codex.credential_retry_at = state === 'needs_refresh' ? new Date(now + 30000).toISOString() : null
+  if (state === 'invalid' && !isManualScheduleLocked(vm) && vm.schedulable !== false) {
+    vm.schedulable = false
+    vm.schedule_disabled_reason = 'oauth_invalid_grant'
+    codex.auth_disabled_schedule = true
+  } else if (
+    (state === 'ready' || state === 'unverified') &&
+    codex.auth_disabled_schedule &&
+    vm.schedule_disabled_reason === 'oauth_invalid_grant' &&
+    !isManualScheduleLocked(vm)
+  ) {
+    vm.schedulable = true
+    vm.schedule_disabled_reason = null
+    codex.auth_disabled_schedule = false
+  }
+  vm.codex = codex
+  vm.updated_at = new Date(now).toISOString()
+  atomicWriteJson(file, vm, { mode: 0o600 })
+  return vm
 }
 
 function firstString(...values) {
   for (const value of values) {
     const text = String(value || '').trim()
     if (text) return text
+  }
+  return ''
+}
+
+function tokenPayload(token) {
+  try {
+    const parts = String(token || '').split('.')
+    if (parts.length !== 3) return null
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'))
+    return payload && typeof payload === 'object' ? payload : null
+  } catch {
+    return null
+  }
+}
+
+function emailFromTokens(idToken, accessToken) {
+  for (const token of [idToken, accessToken]) {
+    const payload = tokenPayload(token)
+    const email = firstString(payload?.email, payload?.['https://api.openai.com/profile']?.email)
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return email
   }
   return ''
 }
@@ -120,7 +191,7 @@ function accountFromTokens(source, access, refresh, idToken) {
     source?.accountId,
     nested.accountId,
   )
-  const email = firstString(source?.email, nested.email, nested.id)
+  const email = firstString(source?.email, nested.email, emailFromTokens(idToken, access), nested.id)
   const expiresAt = Number(source?.expires_at || nested.expires_at || 0)
   const rpm = Number(source?.rpm ?? nested.rpm)
   const conc = Number(source?.max_concurrency ?? nested.max_concurrency)
@@ -248,6 +319,7 @@ export function upsertCodexAccount(projectRoot, vmId, patch = {}) {
   const accounts = readCodexAccounts(projectRoot, vmId)
   const cur = { ...(accounts[0] || {}) }
   Object.assign(cur, patch)
+  cur.email = emailFromTokens(cur.id_token, cur.access_token) || cur.email || null
   if (!cur.id) cur.id = cur.email || cur.chatgpt_account_id || 'codex'
   if (!accounts.length) accounts.push(cur)
   else accounts[0] = cur
@@ -296,12 +368,20 @@ export function summarizeCodexSlot(projectRoot, vm = {}) {
   const usage = buildCodexUsageView(Object.keys(extra).length ? extraToCodexSnapshot(extra) : vm.codex?.usage || {})
   const hasAccess = !!(first.access_token || vm.codex?.has_access)
   const hasRefresh = !!(first.refresh_token || vm.codex?.has_refresh)
+  const replaced =
+    projectRoot && vm.codex?.credential_version && vm.codex.credential_version !== codexCredentialVersion(accounts)
+  const state = replaced ? 'unverified' : vm.codex?.credential_state || 'unverified'
   return {
     platform: 'openai',
     family: 'codex',
     has_token: hasAccess || hasRefresh,
     has_refresh: hasRefresh,
-    email: first.email || vm.codex?.email || vm.email || null,
+    credential_state: state,
+    credential_checked_at: replaced ? null : vm.codex?.credential_checked_at || null,
+    credential_retry_at: replaced ? null : vm.codex?.credential_retry_at || null,
+    refresh_error: state === 'invalid' ? vm.codex?.refresh_error || 'oauth_invalid_grant' : null,
+    credential_replaced: !!replaced,
+    email: emailFromTokens(first.id_token, first.access_token) || first.email || vm.codex?.email || vm.email || null,
     expires_at: first.expires_at || vm.codex?.expires_at || null,
     chatgpt_account_id: first.chatgpt_account_id || vm.codex?.chatgpt_account_id || null,
     account_count: accounts.length,

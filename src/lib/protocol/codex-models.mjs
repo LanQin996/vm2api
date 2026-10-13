@@ -213,10 +213,17 @@ export async function refreshCodexAccessToken(opts = {}) {
     })
     const status = Number(res?.status) || 0
     const payload = await readFetchBody(res)
+    const oauthError = typeof payload?.error === 'string' ? payload.error : payload?.error?.code || ''
+    const fatal =
+      [400, 401, 403].includes(status) &&
+      /^(invalid_grant|invalid_refresh_token|refresh_token_reused|refresh_token_expired|token_revoked)$/.test(
+        oauthError,
+      )
     if (status === 401 || status === 403) {
-      return { ok: false, error: 'refresh_rejected', status }
+      return { ok: false, error: 'refresh_rejected', status, fatal, oauth_error: fatal ? oauthError : null }
     }
-    if (status >= 400) return { ok: false, error: 'refresh_failed', status }
+    if (status >= 400)
+      return { ok: false, error: 'refresh_failed', status, fatal, oauth_error: fatal ? oauthError : null }
     const access = String(payload?.access_token || '').trim()
     if (!access) return { ok: false, error: 'refresh_empty', status }
     const expiresIn = Number(payload?.expires_in)
