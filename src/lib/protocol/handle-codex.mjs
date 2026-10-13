@@ -2,6 +2,7 @@
  * Codex hop from handle-protocol. Claude convert/pool/CRS never runs here.
  */
 import path from 'node:path'
+import { setTimeout as sleep } from 'node:timers/promises'
 import { getVm, listVms, persistCodexUsage, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
 import { isCodexProtocolAllowed, isCodexVm, normalizeCodexRouting } from './codex-route.mjs'
@@ -240,6 +241,7 @@ export function isRetryableCodexTransport(result) {
   const code = String(result.body?.error?.code || result.error_code || '')
   const msg = String(result.body?.error?.message || result.error || '')
   const status = Number(result.status) || 0
+  if ([400, 401, 403, 429].includes(status)) return false
   if (result.transportError === true) return true
   if (status === 0) return true
   if (status === 502 && /upstream_transport|worker_transport|transport/i.test(`${code} ${msg}`)) return true
@@ -392,28 +394,81 @@ export function reasoningHistoryFallback(args, result) {
   }
 }
 
-export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFallback } = {}) {
+const CODEX_MAX_HOP_ATTEMPTS = 3
+const CODEX_RETRY_DELAYS_MS = [500, 1000]
+const CODEX_MAX_RETRY_WAIT_MS = 30000
+
+function codexRetryDelay(result, retry) {
+  const headers = result?.headers || {}
+  const value = headers['retry-after'] ?? headers['Retry-After'] ?? result?.body?.error?.headers?.['retry-after']
+  const seconds = Number(value)
+  const retryAfter = value == null ? 0 : Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now()
+  return Math.max(CODEX_RETRY_DELAYS_MS[retry], Number.isFinite(retryAfter) ? retryAfter : 0)
+}
+
+export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFallback, wait = sleep } = {}) {
   let emitted = false
+  let attempts = 0
+  let activeArgs = args
+  const retryMeta = {}
   const wrapped = async (line) => {
     emitted = true
     if (onEvent) await onEvent(line)
   }
-  let result = await hop({ ...args, onEvent: wrapped })
-  if (!result?.ok && !emitted && isRetryableCodexTransport(result)) {
-    result = { ...(await hop({ ...args, onEvent: wrapped })), transport_retried: true }
+  const invoke = () => {
+    attempts += 1
+    return hop({ ...activeArgs, onEvent: wrapped })
   }
-  const fallback = !emitted && !result?.transport_retried ? reasoningHistoryFallback(args, result) : null
+  const cancelled = () => ({
+    ok: false,
+    status: 499,
+    committed: false,
+    terminalState: 'cancelled',
+    body: { error: { type: 'timeout_error', code: 'client_cancelled', message: 'Client closed the connection' } },
+    ...retryMeta,
+    kernel_attempt_count: attempts,
+  })
+  if (args.signal?.aborted) return cancelled()
+  let result = await invoke()
+  if (!result?.ok && !emitted && !args.signal?.aborted && isRetryableCodexTransport(result)) {
+    result = await invoke()
+    retryMeta.transport_retried = true
+  }
+  const fallback = !emitted && !retryMeta.transport_retried ? reasoningHistoryFallback(args, result) : null
   if (fallback) {
     if (onReasoningFallback)
       await onReasoningFallback({ originalResult: result, body: fallback.args.body, ...fallback.info })
-    if (args.signal?.aborted) return result
-    result = {
-      ...(await hop({ ...fallback.args, onEvent: wrapped })),
-      reasoning_history_retried: true,
-      reasoning_history_fallback: fallback.info,
-    }
+    if (args.signal?.aborted) return cancelled()
+    activeArgs = fallback.args
+    result = await invoke()
+    retryMeta.reasoning_history_retried = true
+    retryMeta.reasoning_history_fallback = fallback.info
   }
-  return result
+  // Never replay a hop after any SSE byte has reached the caller, even for buffered JSON requests.
+  let retries = 0
+  while (
+    !result?.ok &&
+    !result?.committed &&
+    !emitted &&
+    !args.signal?.aborted &&
+    attempts < CODEX_MAX_HOP_ATTEMPTS &&
+    [502, 503].includes(Number(result?.status))
+  ) {
+    const delay = codexRetryDelay(result, retries)
+    if (delay > CODEX_MAX_RETRY_WAIT_MS) break
+    try {
+      await wait(delay, undefined, { signal: args.signal })
+    } catch (error) {
+      if (args.signal?.aborted) return cancelled()
+      throw error
+    }
+    if (args.signal?.aborted) return cancelled()
+    result = await invoke()
+    retries += 1
+    retryMeta.server_retry_count = retries
+  }
+  if (args.signal?.aborted && !emitted && !result?.committed) return cancelled()
+  return { ...result, ...retryMeta, kernel_attempt_count: attempts }
 }
 
 export async function handleCodexProtocol({
@@ -594,7 +649,7 @@ export async function handleCodexProtocol({
         }
         hops += 1
         logBag.vm_id = vm.id
-        logBag.attempt_count = hops
+        logBag.attempt_count += 1
         const chunks = []
         const nameSseEvent = createResponsesSseEventNamer()
         let responseServiceTier = null
@@ -629,6 +684,7 @@ export async function handleCodexProtocol({
         logBag.outbound_headers = redactHeaders(outboundHeaders)
         const result = await runCodexKernelHop({
           hop,
+          wait: ops.waitCodexRetry,
           args: {
             exec: execFor(projectRoot, vm),
             signal: gone.signal,
@@ -688,9 +744,11 @@ export async function handleCodexProtocol({
           result.body = { error: conversionError }
         }
         ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
+        logBag.attempt_count += Math.max(0, (result?.kernel_attempt_count || 1) - 1)
         if (result?.transport_retried) logBag.transport_retried = true
+        if (result?.server_retry_count)
+          logBag.codex_server_retries = (logBag.codex_server_retries || 0) + result.server_retry_count
         if (result?.reasoning_history_retried) {
-          logBag.attempt_count += 1
           logBag.reasoning_history_retried = true
         }
         last = result
@@ -741,13 +799,17 @@ export async function handleCodexProtocol({
           return res.end()
         }
         reportOpenAIAttempt(vm.id, attemptKind, result?.ttftMs ?? null)
+        if (gone.signal.aborted) {
+          logBag.final_state = 'cancelled'
+          return
+        }
         if (res.headersSent) {
           stats.errors++
           logBag.error_code = result?.body?.error?.code || 'codex_upstream'
           logBag.upstream_status = result?.status || 0
           return res.end()
         }
-        if (isCodexFailoverError(result)) {
+        if (isCodexFailoverError(result) && !inboundSession.previous_response_id) {
           pickOpts.excluded.add(vm.id)
           leaveSticky()
           continue

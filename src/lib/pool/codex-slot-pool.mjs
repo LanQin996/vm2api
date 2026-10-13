@@ -313,7 +313,7 @@ export function isCodexFailoverError(result) {
   if (!result || result.ok === true || result.committed === true) return false
   const status = Number(result.status) || 0
   const code = String(result.body?.error?.code || result.error_code || '')
-  if (status === 429 || status === 401 || status === 403) return true
+  if ([401, 403, 429, 502, 503].includes(status)) return true
   return /usage_limit_reached|upstream_auth|no_credential|sticky_unavailable/.test(code)
 }
 
