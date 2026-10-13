@@ -21,6 +21,7 @@ export function VmChip({
   vmId,
   tone,
   disabled,
+  compact = false,
   onUnbind,
   onDragChange,
 }: {
@@ -29,6 +30,8 @@ export function VmChip({
   vmId?: string
   tone: 'ok' | 'bad' | 'none'
   disabled?: boolean
+  /** 表格行内用：去掉拖拽把手，整片仍可拖。 */
+  compact?: boolean
   onUnbind?: () => void
   onDragChange: (vmId: string) => void
 }) {
@@ -45,15 +48,18 @@ export function VmChip({
       }}
       onDragEnd={() => onDragChange('')}
       className={cn(
-        'group/chip inline-flex h-6 max-w-full items-center gap-1 rounded-md border bg-background ps-1 pe-1.5 text-xs transition-colors',
+        'group/chip inline-flex h-6 max-w-full items-center gap-1 rounded-md border bg-background pe-1.5 text-xs transition-colors',
+        compact ? 'ps-1.5' : 'ps-1',
         !disabled &&
           'cursor-grab hover:border-foreground/25 active:cursor-grabbing'
       )}
     >
-      <GripVertical
-        aria-hidden='true'
-        className='size-3 shrink-0 text-muted-foreground/50 group-hover/chip:text-muted-foreground'
-      />
+      {compact ? null : (
+        <GripVertical
+          aria-hidden='true'
+          className='size-3 shrink-0 text-muted-foreground/50 group-hover/chip:text-muted-foreground'
+        />
+      )}
       <span
         aria-hidden='true'
         className='size-1.5 shrink-0 rounded-full'

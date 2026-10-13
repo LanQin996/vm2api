@@ -1,10 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import type { VmProxySnap } from '@/types/panel-vm'
-import { Activity, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
-import { fmtAgo } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -58,14 +56,6 @@ export function ProxyManagePanel({
 }) {
   const refresh = useRefreshProxies()
   const [customDnsDraft, setCustomDnsDraft] = useState<string | null>(null)
-  const lastProbe = useMemo(() => {
-    let max = 0
-    for (const p of proxies) {
-      const t = Date.parse(p.last_probe_at || '')
-      if (Number.isFinite(t) && t > max) max = t
-    }
-    return max ? new Date(max).toISOString() : ''
-  }, [proxies])
   const maxUsed = proxies.reduce(
     (n, p) => Math.max(n, proxyBoundIds(p).length),
     0
@@ -100,28 +90,6 @@ export function ProxyManagePanel({
     },
     onError: (error: Error) => toast.error(error.message),
   })
-  const probeAll = useMutation({
-    mutationFn: () => api('/api/panel/proxies/probe', { method: 'POST' }),
-    onSuccess: async () => {
-      toast.success('代理探测完成')
-      await refresh()
-    },
-    onError: (error: Error) => toast.error(error.message),
-  })
-  const geoAll = useMutation({
-    mutationFn: () =>
-      api<{ results?: { ok?: boolean }[] }>('/api/panel/proxies/geo', {
-        method: 'POST',
-        body: JSON.stringify({ force: true }),
-      }),
-    onSuccess: async (data) => {
-      const rows = data.results || []
-      const ok = rows.filter((r) => r.ok).length
-      toast.success(`地理检测完成 ${ok}/${rows.length}`)
-      await refresh()
-    },
-    onError: (error: Error) => toast.error(error.message),
-  })
 
   // 保存中的值先行显示，避免选中后按钮跳回旧值再跳到新值。
   const pending = saveConfig.isPending ? saveConfig.variables : undefined
@@ -137,37 +105,8 @@ export function ProxyManagePanel({
   const over = proxies.filter((p) => proxyBoundIds(p).length > limitShown)
 
   return (
-    <ProxyPanel title='管理'>
-      <div className='grid grid-cols-2 gap-2'>
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => probeAll.mutate()}
-          disabled={probeAll.isPending || !proxies.length}
-          loading={probeAll.isPending}
-          title='只测 SOCKS TCP，不打 Anthropic'
-        >
-          <Activity aria-hidden='true' />
-          全部测通
-        </Button>
-        <Button
-          variant='outline'
-          size='sm'
-          onClick={() => geoAll.mutate()}
-          disabled={geoAll.isPending || !proxies.length}
-          loading={geoAll.isPending}
-          title='经每条代理查出口 IP 的国家 / 城市 / 时区'
-        >
-          <Globe aria-hidden='true' />
-          全部测地理
-        </Button>
-      </div>
-      <p className='mt-1.5 text-[11px] text-muted-foreground'>
-        {lastProbe ? `最近探测 ${fmtAgo(lastProbe)}` : '还没有探测记录'} · 每{' '}
-        {probeShown} 分钟自动探测
-      </p>
-
-      <div className='mt-4 space-y-4 border-t pt-4'>
+    <ProxyPanel title='池设置' plain>
+      <div className='space-y-5'>
         <fieldset>
           <legend className='flex w-full items-baseline justify-between text-xs font-medium'>
             每条代理最多绑

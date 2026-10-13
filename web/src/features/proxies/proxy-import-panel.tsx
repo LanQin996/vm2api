@@ -87,6 +87,7 @@ export function ProxyImportPanel({ hasLocal }: { hasLocal: boolean }) {
   return (
     <ProxyPanel
       title='添加代理'
+      plain
       meta={
         <span className='text-xs text-muted-foreground tabular-nums'>
           {lines ? `${lines} 行待导入` : '每行一条'}
@@ -109,13 +110,13 @@ export function ProxyImportPanel({ hasLocal }: { hasLocal: boolean }) {
             submit()
           }
         }}
-        rows={4}
+        rows={8}
         spellCheck={false}
         autoComplete='off'
         placeholder={
           'host:port\nuser:pass@host:port\nsocks5://user:pass@host:port'
         }
-        className='field-host min-h-24 resize-y text-xs leading-relaxed'
+        className='field-host min-h-40 resize-y text-xs leading-relaxed'
       />
       <p className='mt-1.5 text-[11px] text-muted-foreground'>
         也支持 host:port:user:pass。账密入库后不再回显，重复的自动跳过。

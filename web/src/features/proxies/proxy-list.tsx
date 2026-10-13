@@ -1,6 +1,13 @@
 import { useEffect, useRef } from 'react'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
-import { ArrowDownWideNarrow, ArrowUpNarrowWide, Search, X } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowDownWideNarrow,
+  ArrowUp,
+  ArrowUpNarrowWide,
+  Search,
+  X,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -13,6 +20,7 @@ import {
 } from '@/components/ui/select'
 import type { ProxyHover } from './proxy-hover'
 import {
+  PROXY_ROW_GRID,
   ProxyRow,
   type ProxyRowActions,
   type ProxyRowPending,
@@ -38,6 +46,17 @@ const SEAT_FILTERS: { key: ProxyFilter; label: string }[] = [
   { key: 'full', label: '已满' },
 ]
 
+/** 表头：可排序的列给按钮，其余只是标签。顺序与 `PROXY_ROW_GRID` 一一对应。 */
+const COLUMNS: { label: string; sort?: ProxySortKey }[] = [
+  { label: '节点', sort: 'host' },
+  { label: '地区', sort: 'geo' },
+  { label: '状态', sort: 'status' },
+  { label: '延迟', sort: 'latency' },
+  { label: '席位', sort: 'seats' },
+  { label: '已绑槽位' },
+  { label: '操作' },
+]
+
 export function ProxyList({
   all,
   rows,
@@ -49,8 +68,11 @@ export function ProxyList({
   onQuery,
   filter,
   onFilter,
+  regionText,
+  onClearRegion,
   sortKey,
   sortDir,
+  onSort,
   onSortKey,
   onSortDir,
   hover,
@@ -70,8 +92,13 @@ export function ProxyList({
   onQuery: (next: string) => void
   filter: ProxyFilter
   onFilter: (next: ProxyFilter) => void
+  /** 当前地区筛选的显示名；空串表示不限地区。 */
+  regionText: string
+  onClearRegion: () => void
   sortKey: ProxySortKey
   sortDir: 'asc' | 'desc'
+  /** 点表头：同一列翻转方向，换列落到该列的自然方向。 */
+  onSort: (key: ProxySortKey) => void
   onSortKey: (next: ProxySortKey) => void
   onSortDir: () => void
   hover: ProxyHover
@@ -81,6 +108,7 @@ export function ProxyList({
 }) {
   const searchRef = useRef<HTMLInputElement>(null)
   const healthFilter = !SEAT_FILTERS.some((f) => f.key === filter)
+  const narrowed = !!query || filter !== 'all' || !!regionText
 
   // `/` 聚焦搜索，和日志页、命令面板的习惯一致；输入框里按 `/` 不拦截。
   useEffect(() => {
@@ -100,10 +128,10 @@ export function ProxyList({
   return (
     <section
       aria-label='代理列表'
-      className='min-w-0 overflow-hidden rounded-xl border bg-card'
+      className='@container/plist min-w-0 rounded-xl border bg-card'
     >
       <div className='flex flex-wrap items-center gap-2 border-b px-4 py-3'>
-        <div className='relative min-w-[180px] flex-1'>
+        <div className='relative min-w-[200px] flex-1'>
           <Search
             aria-hidden='true'
             className='pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground'
@@ -119,8 +147,8 @@ export function ProxyList({
                 onQuery('')
               }
             }}
-            placeholder='搜地址、名称、槽位、国家或时区'
-            aria-label='搜索代理'
+            placeholder='筛选可用节点：地址、名称、槽位、国家或时区'
+            aria-label='筛选可用节点'
             className='h-8 ps-8 pe-8 text-sm'
           />
           <kbd className='pointer-events-none absolute top-1/2 right-2 hidden -translate-y-1/2 rounded border bg-muted px-1 font-mono text-[10px] text-muted-foreground sm:block'>
@@ -160,18 +188,19 @@ export function ProxyList({
         </div>
 
         {healthFilter ? (
-          <button
-            type='button'
-            onClick={() => onFilter('all')}
-            className='inline-flex h-7 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15'
-            aria-label={`清除筛选：${PROXY_HEALTH_LABEL[filter as keyof typeof PROXY_HEALTH_LABEL]}`}
-          >
-            {PROXY_HEALTH_LABEL[filter as keyof typeof PROXY_HEALTH_LABEL]}
-            <X className='size-3' aria-hidden='true' />
-          </button>
+          <ClearChip
+            label={
+              PROXY_HEALTH_LABEL[filter as keyof typeof PROXY_HEALTH_LABEL]
+            }
+            onClear={() => onFilter('all')}
+          />
+        ) : null}
+        {regionText ? (
+          <ClearChip label={regionText} onClear={onClearRegion} />
         ) : null}
 
-        <div className='ms-auto flex items-center gap-1'>
+        {/* 宽屏用表头排序；表头隐藏时才需要这组下拉。 */}
+        <div className='ms-auto flex items-center gap-1 @3xl/plist:hidden'>
           <Select
             value={sortKey}
             onValueChange={(v) => onSortKey(v as ProxySortKey)}
@@ -212,36 +241,68 @@ export function ProxyList({
       </div>
 
       {rows.length ? (
-        <ul className='divide-y divide-border/60'>
-          {rows.map((p) => (
-            <ProxyRow
-              key={p.id}
-              proxy={p}
-              vms={vms}
-              vmById={vmById}
-              ownerOf={ownerOf}
-              poolLimit={poolLimit}
-              hover={hover}
-              dragVm={dragVm}
-              pending={pending}
-              actions={actions}
-            />
-          ))}
-        </ul>
+        <>
+          <div
+            className={cn(
+              'hidden border-b bg-muted/30 px-4 py-1 text-[11px] font-medium text-muted-foreground',
+              PROXY_ROW_GRID
+            )}
+          >
+            {COLUMNS.map((c) =>
+              c.sort ? (
+                <SortHeader
+                  key={c.label}
+                  label={c.label}
+                  active={sortKey === c.sort}
+                  dir={sortDir}
+                  // 行首有展开箭头，表头文字对齐到名称上。
+                  className={c.sort === 'host' ? 'ms-[18px]' : undefined}
+                  onClick={() => onSort(c.sort as ProxySortKey)}
+                />
+              ) : (
+                <span
+                  key={c.label}
+                  className={cn(c.label === '操作' && 'sr-only')}
+                >
+                  {c.label}
+                </span>
+              )
+            )}
+          </div>
+          <ul className='divide-y divide-border/60'>
+            {rows.map((p) => (
+              <ProxyRow
+                key={p.id}
+                proxy={p}
+                vms={vms}
+                vmById={vmById}
+                ownerOf={ownerOf}
+                poolLimit={poolLimit}
+                hover={hover}
+                dragVm={dragVm}
+                pending={pending}
+                actions={actions}
+              />
+            ))}
+          </ul>
+        </>
       ) : (
         <div className='flex flex-col items-center gap-3 px-6 py-16 text-center'>
           <p className='text-sm text-muted-foreground'>
             {all.length
-              ? '没有符合条件的代理。'
-              : '还没有代理。在左侧粘贴 SOCKS5 行导入，或添加本地代理。'}
+              ? query
+                ? '没有匹配的可用节点（已满、禁用或失效的不参与筛选）。'
+                : '没有符合条件的代理。'
+              : '还没有代理。点右上角「添加代理」粘贴 SOCKS5 行导入，或添加本地代理。'}
           </p>
-          {all.length && (query || filter !== 'all') ? (
+          {all.length && narrowed ? (
             <Button
               size='sm'
               variant='outline'
               onClick={() => {
                 onQuery('')
                 onFilter('all')
+                onClearRegion()
               }}
             >
               清除筛选
@@ -257,5 +318,60 @@ export function ProxyList({
         。账密不在列表里回显，「复制」按需取回并直接写入剪贴板。
       </p>
     </section>
+  )
+}
+
+function ClearChip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <button
+      type='button'
+      onClick={onClear}
+      className='inline-flex h-7 items-center gap-1 rounded-md bg-primary/10 px-2 text-xs font-medium text-primary transition-colors hover:bg-primary/15'
+      aria-label={`清除筛选：${label}`}
+    >
+      {label}
+      <X className='size-3' aria-hidden='true' />
+    </button>
+  )
+}
+
+function SortHeader({
+  label,
+  active,
+  dir,
+  className,
+  onClick,
+}: {
+  label: string
+  active: boolean
+  dir: 'asc' | 'desc'
+  className?: string
+  onClick: () => void
+}) {
+  const Arrow = dir === 'asc' ? ArrowUp : ArrowDown
+  return (
+    <button
+      type='button'
+      onClick={onClick}
+      aria-label={
+        active
+          ? `按${label}排序，当前${dir === 'asc' ? '升序' : '降序'}，点击翻转`
+          : `按${label}排序`
+      }
+      className={cn(
+        'group -mx-1 inline-flex h-6 w-fit items-center gap-1 rounded px-1 text-start transition-colors hover:text-foreground',
+        active && 'text-foreground',
+        className
+      )}
+    >
+      {label}
+      <Arrow
+        aria-hidden='true'
+        className={cn(
+          'size-3 transition-opacity',
+          active ? 'opacity-100' : 'opacity-0 group-hover:opacity-50'
+        )}
+      />
+    </button>
   )
 }

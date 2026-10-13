@@ -29,6 +29,7 @@ export function ProxyBindPicker({
   ownerOf,
   free,
   disabled,
+  compact = false,
   onBind,
 }: {
   vms: Vm[]
@@ -39,6 +40,8 @@ export function ProxyBindPicker({
   /** 剩余席位数。 */
   free: number
   disabled: boolean
+  /** 表格行内用：只留「+ 空 n」。 */
+  compact?: boolean
   onBind: (vmId: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -47,7 +50,9 @@ export function ProxyBindPicker({
   const moving = candidates.filter((v) => ownerOf.has(v.id))
 
   if (!candidates.length) {
-    return <span className='text-xs text-muted-foreground'>无可绑槽位</span>
+    return compact ? null : (
+      <span className='text-xs text-muted-foreground'>无可绑槽位</span>
+    )
   }
 
   const pick = (vmId: string) => {
@@ -61,16 +66,19 @@ export function ProxyBindPicker({
         <button
           type='button'
           disabled={disabled}
+          aria-label={`绑定槽位，空 ${free}`}
+          title='绑定槽位'
           className={cn(
-            'inline-flex h-7 items-center gap-1 rounded-md border border-dashed border-foreground/25 px-2 text-xs text-muted-foreground transition-colors',
+            'inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-dashed border-foreground/25 text-xs text-muted-foreground transition-colors',
+            compact ? 'px-1.5' : 'px-2',
             'hover:border-primary/60 hover:bg-primary/5 hover:text-foreground disabled:pointer-events-none disabled:opacity-50',
             'data-[state=open]:border-primary/60 data-[state=open]:text-foreground'
           )}
         >
           <Plus className='size-3.5' aria-hidden='true' />
-          绑定槽位
+          {compact ? null : '绑定槽位'}
           <span className='text-muted-foreground/80 tabular-nums'>
-            · 空 {free}
+            {compact ? `空 ${free}` : `· 空 ${free}`}
           </span>
         </button>
       </PopoverTrigger>
