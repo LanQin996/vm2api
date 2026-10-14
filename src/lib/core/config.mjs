@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { hashKey } from './security.mjs'
 import { atomicWriteJson } from '../vm/vm-file.mjs'
 import { loadDistillRules } from './distill-detect.mjs'
+import { loginGuardOptionsFromEnv } from '../admin/login-guard.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 // this file lives at src/lib/core/ — the gateway root is src/
@@ -144,6 +145,8 @@ export function loadConfig() {
       stream_keepalive_ms: Number(process.env.KIN_STREAM_KEEPALIVE || 10000),
       rate_capacity: Number(process.env.KIN_RATE_CAP || 60),
       rate_refill: Number(process.env.KIN_RATE_REFILL || 1),
+      // POST /api/panel/login: KIN_TRUST_PROXY, KIN_LOGIN_MAX_INFLIGHT, KIN_LOGIN_IP_BURST / _PER_MIN, KIN_LOGIN_USER_BURST / _PER_MIN
+      login: loginGuardOptionsFromEnv(),
     },
     // Admin/status snapshot of the *active* VM only.
     // Inference must use buildExecutionContext() — never this object.

@@ -179,6 +179,8 @@ location / {
 
 `Connection ""` 会剥掉 Upgrade，终端握手拿不到 101，面板里一直连不上；所以 shell 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788`，这条 location 必须 `proxy_pass` 到 Node。症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
 
+登录限流：`POST /api/panel/login` 同时最多 2 个密码校验（`KIN_LOGIN_MAX_INFLIGHT`），超出直接 429 + `Retry-After`；按来源 IP 每分钟 10 次、突发 20（`KIN_LOGIN_IP_PER_MIN` / `KIN_LOGIN_IP_BURST`，登录成功退回额度）；同一用户名失败 5 次后每分钟只放 1 次（`KIN_LOGIN_USER_BURST` / `KIN_LOGIN_USER_PER_MIN`，成功即清零）。来源 IP 默认取 TCP 对端；走反代时所有请求都来自 `127.0.0.1`，按 IP 限流会变成全局共享。此时在 nginx 加 `proxy_set_header X-Forwarded-For $remote_addr;`（覆盖，不用 `$proxy_add_x_forwarded_for`，否则客户端可伪造首跳），并设 `KIN_TRUST_PROXY=1`。Node 直接暴露公网时不要开。
+
 ## 本机 Node（备选）
 
 `npm run fetch:payload` 拉 `bin/kin-{kernel,codex-kernel,oauth-auth}` 与 `share/`；`npm run build:egress && npm run build:worker`；`npm ci`、`pnpm -C web install --frozen-lockfile && npm run build:web`；以及占位 `vms/active.json`。单元：[deploy/vm2api.service](deploy/vm2api.service)。细节见 [BUILD.md](BUILD.md)。

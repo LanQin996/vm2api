@@ -49,7 +49,26 @@ export function hashPassword(password) {
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`
 }
 
-export function verifyPassword(password, stored) {
+function scryptAsync(password, salt, keylen, options) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(password, salt, keylen, options, (err, key) => (err ? reject(err) : resolve(key)))
+  })
+}
+
+/** scrypt needs ~128*N*r bytes; leave headroom so stored params never trip Node's 32MB default. */
+function scryptOptions(N, r, p) {
+  return { N, r, p, maxmem: Math.max(64 * 1024 * 1024, 256 * N * r) }
+}
+
+/** Async twin of hashPassword (same format), off the main thread. */
+export async function hashPasswordAsync(password) {
+  const salt = crypto.randomBytes(16)
+  const hash = await scryptAsync(String(password), salt, KEYLEN, scryptOptions(SCRYPT_N, SCRYPT_R, SCRYPT_P))
+  return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`
+}
+
+/** Runs scrypt on the libuv pool so a login flood cannot stall the event loop. */
+export async function verifyPassword(password, stored) {
   const parts = String(stored || '').split('$')
   if (parts[0] !== 'scrypt' || parts.length !== 6) return false
   const N = Number(parts[1])
@@ -60,11 +79,21 @@ export function verifyPassword(password, stored) {
     const salt = Buffer.from(parts[4], 'hex')
     const expected = Buffer.from(parts[5], 'hex')
     if (!salt.length || !expected.length) return false
-    const actual = crypto.scryptSync(String(password), salt, expected.length, { N, r, p })
+    const actual = await scryptAsync(String(password), salt, expected.length, scryptOptions(N, r, p))
     return actual.length === expected.length && crypto.timingSafeEqual(actual, expected)
   } catch {
     return false
   }
+}
+
+// Unknown / disabled users still pay one scrypt, so latency does not reveal which names exist.
+let dummyHashPromise = null
+function dummyPasswordHash() {
+  dummyHashPromise ??= hashPasswordAsync(crypto.randomBytes(16).toString('hex')).catch((err) => {
+    dummyHashPromise = null
+    throw err
+  })
+  return dummyHashPromise
 }
 
 function assertUsername(username) {
@@ -151,11 +180,15 @@ export class PanelUserStore {
     return publicUserView(this.create({ username: name, password, role: 'admin' }))
   }
 
-  authenticate(username, password) {
+  async authenticate(username, password) {
     const rec = this.repo.getByUsername(username)
-    if (!rec || rec.enabled === false) return null
-    if (!verifyPassword(password, rec.password_hash)) return null
-    const next = { ...rec, last_login_at: nowIso(), updated_at: rec.updated_at }
+    const usable = !!rec && rec.enabled !== false
+    const ok = await verifyPassword(password, usable ? rec.password_hash : await dummyPasswordHash())
+    if (!usable || !ok) return null
+    // The record may have changed while scrypt ran (password reset, disable, delete).
+    const fresh = this.repo.getById(rec.id)
+    if (!fresh || fresh.enabled === false || fresh.password_hash !== rec.password_hash) return null
+    const next = { ...fresh, last_login_at: nowIso(), updated_at: fresh.updated_at }
     this.repo.update(next)
     return publicUserView(next)
   }

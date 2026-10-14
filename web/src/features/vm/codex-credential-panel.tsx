@@ -12,12 +12,26 @@ import { dashboardQueryOptions } from '@/features/overview/queries'
 import type { CommitResult } from '@/features/vm/credential-panel'
 import { vmQueryOptions } from '@/features/vm/queries'
 
-type CodexImportMode = 'oauth' | 'access_token' | 'refresh_token' | 'json'
+type CodexImportMode =
+  'oauth' | 'access_token' | 'refresh_token' | 'json' | 'password'
 
-const MODES: { id: CodexImportMode; label: string }[] = [
+const MODES: { id: CodexImportMode; label: string; pending?: boolean }[] = [
   { id: 'oauth', label: 'OAuth' },
   { id: 'json', label: '账号文件' },
+  { id: 'password', label: '账号密码', pending: true },
 ]
+
+/** Account-password + 2FA login is only an entry point for now. */
+const PASSWORD_LOGIN_READY = false
+
+type CodexImportResult = CommitResult & {
+  import_stats?: {
+    total_count?: number
+    extra_count?: number
+    skipped_count?: number
+    imported_email?: string | null
+  }
+}
 
 type Link = {
   sessionId: string
@@ -60,6 +74,9 @@ function Seg({
           onClick={() => onChange(option.id)}
         >
           {option.label}
+          {option.pending ? (
+            <span className='text-[10px] font-normal opacity-70'>待实现</span>
+          ) : null}
         </Button>
       ))}
     </div>
@@ -128,7 +145,7 @@ export function CodexCredentialPanel({
 
   const importCred = useMutation({
     mutationFn: () =>
-      api<CommitResult>('/api/panel/vms/import', {
+      api<CodexImportResult>('/api/panel/vms/import', {
         method: 'POST',
         body: JSON.stringify({
           vm_id: vm.id,
@@ -143,6 +160,13 @@ export function CodexCredentialPanel({
       setPickedFile(null)
       await invalidate()
       toast.success('已导入 GPT OAuth')
+      const stats = data?.import_stats
+      const extra = Number(stats?.extra_count) || 0
+      if (extra > 0) {
+        const total = Number(stats?.total_count) || extra + 1
+        const who = stats?.imported_email ? `（${stats.imported_email}）` : ''
+        toast.warning(`文件含 ${total} 个 GPT 账号，本槽只导入第一个${who}`)
+      }
       onCommitted?.(data, vm.id, '已导入 GPT OAuth')
     },
     onError: (error: Error) => toast.error(error.message),
@@ -199,8 +223,10 @@ export function CodexCredentialPanel({
   })
 
   const busy = importCred.isPending || gen.isPending || exchange.isPending
-  const placeholder =
-    '粘贴或上传 Codex CLI ~/.codex/auth.json、CPR 账号文件，或含 accessToken/refreshToken 的 JSON'
+  const isPassword = mode === 'password'
+  const placeholder = isPassword
+    ? '邮箱----密码----2FA密钥（每行一个，2FA 可选）'
+    : '粘贴或上传 Codex CLI ~/.codex/auth.json、sub2api 导出、CLIProxyAPI (CPA) codex 认证文件，或含 accessToken/refreshToken 的 JSON'
 
   async function onPickFile(file: File | undefined) {
     setFileError('')
@@ -315,7 +341,9 @@ export function CodexCredentialPanel({
                 ? 'Access Token'
                 : mode === 'refresh_token'
                   ? 'Refresh Token'
-                  : '账号文件'}
+                  : isPassword
+                    ? '账号密码'
+                    : '账号文件'}
             </Label>
             {mode === 'json' ? (
               <>
@@ -381,13 +409,21 @@ export function CodexCredentialPanel({
           {fileError ? (
             <p className='text-xs text-destructive'>{fileError}</p>
           ) : null}
-          <Hint>
-            支持 Codex CLI ~/.codex/auth.json、kernel accounts、CPR openai
-            文档。仅 OPENAI_API_KEY 的客户端配置不能当 OAuth 导入。
-          </Hint>
+          {isPassword ? (
+            <Hint>暂未开放，后续支持自动登录。</Hint>
+          ) : (
+            <Hint>
+              支持 Codex CLI ~/.codex/auth.json、sub2api 导出（platform=openai
+              账号）、CLIProxyAPI (CPA) codex 认证文件、kernel accounts、CPR
+              openai 文档。多账号文件只导入第一个 GPT 账号；仅 OPENAI_API_KEY
+              的客户端配置不能当 OAuth 导入。
+            </Hint>
+          )}
           <Button
             size='sm'
-            disabled={!text.trim() || busy}
+            disabled={
+              !text.trim() || busy || (isPassword && !PASSWORD_LOGIN_READY)
+            }
             loading={importCred.isPending}
             onClick={() => importCred.mutate()}
           >

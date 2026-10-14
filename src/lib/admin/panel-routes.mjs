@@ -57,6 +57,7 @@ import {
 } from '../oauth/sub2api-account.mjs'
 import { officialCcHome, readOfficialCcStatus, scheduleOfficialCcBootstrap } from '../oauth/official-cc-bootstrap.mjs'
 import { invalidateLiveCredentialCache } from './panel-live-credentials.mjs'
+import { LOGIN_RATE_LIMITED_MESSAGE, createLoginGuard, loginGuardOptionsFromEnv } from './login-guard.mjs'
 import { listOfficialModels, seedModelCatalog, getCatalogIds } from '../protocol/models.mjs'
 import {
   getModelPolicy,
@@ -385,6 +386,7 @@ async function commitImportedCodexVm({
     email: saved.email || null,
     expires_at: saved.expires_at || null,
   }
+  if (account?.plan_type) existing.codex.plan_type = account.plan_type
   const global = normalizeOpenAIQuotaPolicy(routingConfig.codex?.quota || {})
   const preservePin = (value, override) =>
     previousPolicy[override] === true &&
@@ -498,6 +500,7 @@ export function createPanelHandler(ctx) {
   const apiEndpointStore = ctx.apiEndpointStore
   const apiScheduler = ctx.apiScheduler
   const panelUsers = ctx.panelUsers
+  const loginGuard = ctx.loginGuard || createLoginGuard(cfg?.limits?.login || loginGuardOptionsFromEnv())
   const requestLog = ctx.requestLog
   const backupService = ctx.backupService
   const stats = ctx.stats
@@ -1002,13 +1005,35 @@ export function createPanelHandler(ctx) {
 
     // ========== Panel login (public) ==========
     if (req.method === 'POST' && p === '/api/panel/login') {
+      const loginLimited = (retryAfter) => {
+        res.setHeader('Retry-After', String(retryAfter || 1))
+        return json(res, 429, { ok: false, error: { message: LOGIN_RATE_LIMITED_MESSAGE, type: 'rate_limit' } })
+      }
+      const clientIp = loginGuard.clientIp(req)
+      const ipGate = loginGuard.takeIp(clientIp)
+      if (!ipGate.ok) return loginLimited(ipGate.retryAfter)
       const body = await readBody(req, 4096)
       const username = body.username || body.user || body.u || ''
       const password = body.password || body.pass || body.p || ''
-      const authed = verifyPanelLogin(username, password)
+      const userGate = loginGuard.checkUser(username)
+      if (!userGate.ok) return loginLimited(userGate.retryAfter)
+      // Slot is taken only around the scrypt check, so a slow body upload cannot pin it.
+      const release = loginGuard.acquire()
+      if (!release) {
+        loginGuard.refundIp(clientIp)
+        return loginLimited(1)
+      }
+      let authed
+      try {
+        authed = await verifyPanelLogin(username, password)
+      } finally {
+        release()
+      }
       if (!authed) {
+        loginGuard.recordFailure(clientIp, username)
         return json(res, 401, { ok: false, error: { message: '用户名或密码错误', type: 'auth' } })
       }
+      loginGuard.recordSuccess(clientIp, username)
       if (authed.source === 'env') {
         try {
           panelUsers.bootstrapFromEnv({ username: authed.username, password })
@@ -3506,7 +3531,7 @@ export function createPanelHandler(ctx) {
           if (isCodexVm(existing)) {
             const parsed = parseCodexImportPayload(body)
             if (!parsed.ok) {
-              return json(res, 400, {
+              return json(res, parsed.error === 'not_implemented' ? 501 : 400, {
                 ok: false,
                 error: { code: parsed.error || 'invalid_codex_credential', message: parsed.message },
               })
@@ -3546,7 +3571,14 @@ export function createPanelHandler(ctx) {
               catalogClientVersion: ctx.routingConfig.codex?.catalog_client_version,
               routingConfig: ctx.routingConfig,
             })
-            return json(res, 200, panel.ok(committed))
+            // One account per slot: tell the panel how many OpenAI accounts the file held but were not imported.
+            const importStats = {
+              total_count: Number(parsed.total_count) || 1,
+              extra_count: Number(parsed.extra_count) || 0,
+              skipped_count: Number(parsed.skipped_count) || 0,
+              imported_email: account.email || null,
+            }
+            return json(res, 200, panel.ok({ ...committed, import_stats: importStats }))
           }
 
           const slotProxy = requireSlotProxy(existing, body)

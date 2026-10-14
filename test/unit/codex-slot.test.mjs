@@ -5,6 +5,9 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   parseCodexCredentialInput,
+  parseCodexImportPayload,
+  parseCodexPasswordLine,
+  parseCodexExpiry,
   upsertCodexAccount,
   readCodexAccounts,
   writeCodexAccounts,
@@ -199,4 +202,212 @@ test('invalid credentials leave the pool and new credentials restore only automa
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
+})
+
+function sub2apiAccount(overrides = {}, credentials = {}) {
+  return {
+    name: 'user@example.com',
+    platform: 'openai',
+    type: 'oauth',
+    credentials: {
+      access_token: 'sub2api-at',
+      refresh_token: 'rt_sub2api',
+      id_token: 'sub2api-id',
+      expires_at: '2026-10-24T03:00:00+08:00',
+      email: 'user@example.com',
+      chatgpt_account_id: '3f1c-uuid',
+      plan_type: 'plus',
+      client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+      ...credentials,
+    },
+    extra: {},
+    proxy_key: 'socks5|1.2.3.4|1080|u|p',
+    concurrency: 3,
+    priority: 50,
+    expires_at: 1790000000,
+    auto_pause_on_expired: true,
+    ...overrides,
+  }
+}
+
+function sub2apiExport(accounts) {
+  return { exported_at: '2026-10-14T03:00:00Z', proxies: [], accounts }
+}
+
+test('parseCodexExpiry handles seconds, ms, numeric strings, RFC3339 and garbage', () => {
+  assert.equal(parseCodexExpiry(1790000000), 1790000000000)
+  assert.equal(parseCodexExpiry(1790000000123), 1790000000123)
+  assert.equal(parseCodexExpiry('1790000000'), 1790000000000)
+  assert.equal(parseCodexExpiry('2026-10-24T03:00:00+08:00'), Date.UTC(2026, 9, 23, 19, 0, 0))
+  assert.equal(parseCodexExpiry('not a date'), 0)
+  assert.equal(parseCodexExpiry(''), 0)
+  assert.equal(parseCodexExpiry(null), 0)
+  assert.equal(parseCodexExpiry(-5), 0)
+})
+
+test('sub2api export: RFC3339 credentials expiry, ids, plan and concurrency', () => {
+  const parsed = parseCodexCredentialInput(JSON.stringify(sub2apiExport([sub2apiAccount()])))
+  assert.equal(parsed.ok, true)
+  const account = parsed.account
+  assert.equal(account.access_token, 'sub2api-at')
+  assert.equal(account.refresh_token, 'rt_sub2api')
+  assert.equal(account.id_token, 'sub2api-id')
+  // credentials.expires_at, not the account-level subscription expiry (1790000000).
+  assert.equal(account.expires_at, Date.UTC(2026, 9, 23, 19, 0, 0))
+  assert.equal(account.chatgpt_account_id, '3f1c-uuid')
+  assert.equal(account.email, 'user@example.com')
+  assert.equal(account.plan_type, 'plus')
+  assert.equal(account.max_concurrency, 3)
+  assert.equal(parsed.total_count, 1)
+  assert.equal(parsed.extra_count, 0)
+  assert.equal(parsed.skipped_count, 0)
+})
+
+test('sub2api export: numeric seconds and numeric-string expiry', () => {
+  const numeric = parseCodexCredentialInput(sub2apiExport([sub2apiAccount({}, { expires_at: 1761246000 })]))
+  assert.equal(numeric.account.expires_at, 1761246000000)
+  const text = parseCodexCredentialInput(sub2apiExport([sub2apiAccount({}, { expires_at: '1761246000' })]))
+  assert.equal(text.account.expires_at, 1761246000000)
+  const missing = parseCodexCredentialInput(sub2apiExport([sub2apiAccount({}, { expires_at: undefined })]))
+  assert.equal(missing.account.expires_at, 0)
+})
+
+test('sub2api export: mixed platforms pick the first OpenAI account and count the rest', () => {
+  const parsed = parseCodexCredentialInput(
+    sub2apiExport([
+      { name: 'claude', platform: 'anthropic', type: 'oauth', credentials: { access_token: 'sk-ant-oat01-x' } },
+      { name: 'gem', platform: 'gemini', type: 'oauth', credentials: { access_token: 'ya29.x', refresh_token: 'g' } },
+      sub2apiAccount(),
+      sub2apiAccount({ name: 'second@example.com' }, { access_token: 'at-2', email: 'second@example.com' }),
+    ]),
+  )
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.account.access_token, 'sub2api-at')
+  assert.equal(parsed.account.email, 'user@example.com')
+  assert.equal(parsed.total_count, 2)
+  assert.equal(parsed.extra_count, 1)
+  assert.equal(parsed.skipped_count, 2)
+})
+
+test('sub2api export without OpenAI accounts is a kind mismatch', () => {
+  const parsed = parseCodexCredentialInput(
+    sub2apiExport([
+      {
+        name: 'claude',
+        platform: 'anthropic',
+        type: 'oauth',
+        credentials: { access_token: 'oat', refresh_token: 'rt' },
+      },
+    ]),
+  )
+  assert.equal(parsed.ok, false)
+  assert.equal(parsed.error, 'credential_kind_mismatch')
+  assert.match(parsed.message, /OpenAI/)
+})
+
+test('sub2api API response and import body wrappers are unwrapped', () => {
+  const payload = sub2apiExport([sub2apiAccount()])
+  const api = parseCodexCredentialInput(JSON.stringify({ code: 0, message: 'success', data: payload }))
+  assert.equal(api.ok, true)
+  assert.equal(api.account.access_token, 'sub2api-at')
+  const body = parseCodexCredentialInput({ data: payload, skip_default_group_bind: true })
+  assert.equal(body.ok, true)
+  assert.equal(body.account.chatgpt_account_id, '3f1c-uuid')
+  const viaRoute = parseCodexImportPayload({
+    vm_id: 'vm-1',
+    type: 'codex',
+    mode: 'json',
+    auth_json: JSON.stringify({ code: 0, data: payload }),
+  })
+  assert.equal(viaRoute.ok, true)
+  assert.equal(viaRoute.account.max_concurrency, 3)
+})
+
+test('CLIProxyAPI codex auth file maps expired, account_id, email and plan_type', () => {
+  const parsed = parseCodexCredentialInput(
+    JSON.stringify({
+      id_token: 'cpa-id',
+      access_token: 'cpa-at',
+      refresh_token: 'rt_cpa',
+      account_id: '3f1c-uuid',
+      last_refresh: '2026-10-14T11:00:00+08:00',
+      email: 'cpa@example.com',
+      type: 'codex',
+      expired: '2026-10-24T11:00:00+08:00',
+      plan_type: 'plus',
+    }),
+  )
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.account.access_token, 'cpa-at')
+  assert.equal(parsed.account.refresh_token, 'rt_cpa')
+  assert.equal(parsed.account.expires_at, Date.UTC(2026, 9, 24, 3, 0, 0))
+  assert.equal(parsed.account.chatgpt_account_id, '3f1c-uuid')
+  assert.equal(parsed.account.email, 'cpa@example.com')
+  assert.equal(parsed.account.plan_type, 'plus')
+  assert.equal(parsed.extra_count, 0)
+})
+
+test('CLIProxyAPI expires_in + timestamp computes expiry', () => {
+  const parsed = parseCodexCredentialInput({
+    type: 'codex',
+    access_token: 'at',
+    expires_in: 3600,
+    timestamp: 1760000000000,
+  })
+  assert.equal(parsed.account.expires_at, 1760000000000 + 3600 * 1000)
+})
+
+test('CLIProxyAPI claude and gemini auth files are rejected for a GPT slot', () => {
+  const claude = parseCodexCredentialInput({
+    type: 'claude',
+    access_token: 'oat-claude',
+    refresh_token: 'rt-claude',
+    email: 'c@example.com',
+    expired: '2026-10-24T11:00:00+08:00',
+  })
+  assert.equal(claude.ok, false)
+  assert.equal(claude.error, 'credential_kind_mismatch')
+  const gemini = parseCodexCredentialInput({
+    type: 'gemini',
+    email: 'g@example.com',
+    token: { access_token: 'ya29.x', refresh_token: '1//x', expiry: '2026-10-24T11:00:00Z' },
+  })
+  assert.equal(gemini.ok, false)
+  assert.equal(gemini.error, 'credential_kind_mismatch')
+})
+
+test('array of CPA files skips non-codex entries', () => {
+  const parsed = parseCodexCredentialInput([
+    { type: 'claude', access_token: 'c-at' },
+    { type: 'codex', access_token: 'x-at', email: 'x@example.com' },
+  ])
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.account.access_token, 'x-at')
+  assert.equal(parsed.skipped_count, 1)
+})
+
+test('parseCodexPasswordLine parses email----password----2FA lines', () => {
+  const parsed = parseCodexPasswordLine(' a@example.com----p@ss----jbsw y3dp \n\nb@example.com----pw2\r\n')
+  assert.equal(parsed.ok, true)
+  assert.deepEqual(parsed.accounts, [
+    { email: 'a@example.com', password: 'p@ss', totp_secret: 'JBSWY3DP' },
+    { email: 'b@example.com', password: 'pw2', totp_secret: '' },
+  ])
+  assert.equal(parseCodexPasswordLine('').error, 'empty')
+  const badEmail = parseCodexPasswordLine('not-an-email----secretpw')
+  assert.equal(badEmail.ok, false)
+  assert.equal(badEmail.error, 'invalid_password_line')
+  assert.doesNotMatch(badEmail.message, /secretpw/)
+  assert.equal(parseCodexPasswordLine('a@example.com').error, 'invalid_password_line')
+  assert.equal(parseCodexPasswordLine('a@example.com----').error, 'invalid_password_line')
+})
+
+test('password mode validates the format and reports not_implemented', () => {
+  const pending = parseCodexImportPayload({ mode: 'password', auth_json: 'a@example.com----pw----JBSWY3DP' })
+  assert.equal(pending.ok, false)
+  assert.equal(pending.error, 'not_implemented')
+  const alias = parseCodexCredentialInput('a@example.com----pw', { mode: 'account_password' })
+  assert.equal(alias.error, 'not_implemented')
+  const invalid = parseCodexCredentialInput('nope', { mode: 'password' })
+  assert.equal(invalid.error, 'invalid_password_line')
 })

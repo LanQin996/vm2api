@@ -205,11 +205,11 @@ export function revokePanelSessionsForUser(username, { exceptToken } = {}) {
 }
 
 /**
- * @returns {{ username: string, role: string, id?: string } | null}
+ * @returns {Promise<{ username: string, role: string, id?: string } | null>}
  */
-export function verifyPanelLogin(username, password) {
+export async function verifyPanelLogin(username, password) {
   if (_authenticateUser) {
-    const rec = _authenticateUser(username, password)
+    const rec = await _authenticateUser(username, password)
     if (rec) return { username: rec.username, role: rec.role || 'user', id: rec.id }
     // Existing DB user (including disabled) must not fall through to env password.
     if (_lookupRole && _lookupRole(username)) return null
