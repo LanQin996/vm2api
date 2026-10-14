@@ -230,7 +230,9 @@ export function useCreateVmDraft({
           platform,
           family: platform === 'openai' ? 'codex' : 'claude',
           ...(nodeId ? { node_id: nodeId } : {}),
-          ...(wantsExit && exit.proxyId ? { proxy_id: exit.proxyId } : {}),
+          ...(platform !== 'openai' && wantsExit && exit.proxyId
+            ? { proxy_id: exit.proxyId }
+            : {}),
           ...createMachinePayload({ runtimeType, memory, vcpus, diskGb }),
         }),
       })
@@ -713,13 +715,23 @@ export function CreateVmForm({
               <SelectContent>
                 {VM_CREATE_AFTER.map(([v, l]) => (
                   <SelectItem key={v} value={v}>
-                    {l}
+                    {d.platform === 'openai'
+                      ? l.replace('分配出口', '分配 IPv6 出口')
+                      : l}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </Field>
-          {d.wantsExit ? (
+          {d.wantsExit && d.platform === 'openai' ? (
+            <div className='space-y-1 rounded-md border px-3 py-2.5'>
+              <p className='text-sm font-medium'>自动分配 IPv6 出口</p>
+              <p className='text-xs leading-relaxed text-muted-foreground'>
+                开机时为 Codex kernel 分配专属 IPv6。GPT
+                容器本身保持网络隔离，不使用 IPv4 代理。
+              </p>
+            </div>
+          ) : d.wantsExit ? (
             <CreateExitField exit={d.exit} remote={remote} />
           ) : null}
         </Section>
