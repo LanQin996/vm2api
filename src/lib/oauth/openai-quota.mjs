@@ -8,7 +8,6 @@ import { getVm, syncCodexQuotaSchedule } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
-import { ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
 import {
   readCodexAccounts,
   upsertCodexAccount,
@@ -453,13 +452,6 @@ export async function queryOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = 
   const pending = quotaChecks.get(key)
   if (pending) return pending
   const task = (async () => {
-    if (!fetchImpl) {
-      try {
-        await ensureCodexIpv6Egress(getVm(projectRoot, vmId))
-      } catch (error) {
-        return fail('codex_ipv6_unavailable', String(error?.message || error), 502)
-      }
-    }
     const slot = await loadSlot(projectRoot, vmId)
     if (!slot.ok) {
       if (slot.error === 'no_oauth_token')
@@ -477,13 +469,6 @@ export async function queryOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = 
 }
 
 export async function resetOpenaiQuota({ projectRoot, vmId, fetchImpl, rotate = true, policy = null } = {}) {
-  if (!fetchImpl) {
-    try {
-      await ensureCodexIpv6Egress(getVm(projectRoot, vmId))
-    } catch (error) {
-      return fail('codex_ipv6_unavailable', String(error?.message || error), 502)
-    }
-  }
   const slot = await loadSlot(projectRoot, vmId)
   if (!slot.ok) return slot
   if (!slot.proxyUrl && !fetchImpl && !slot.direct) return fail('proxy_required', 'GPT 槽未绑定 SOCKS5', 400)

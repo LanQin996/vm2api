@@ -22,7 +22,7 @@ import {
   reloadSlotWorker,
 } from './vm-runtime.mjs'
 import { inspectWrapCliDir, materializeWrapCli, wrapCliHomeDir } from './wrap-cli-runtime.mjs'
-import { ensureCodexIpv6Egress, stopCodexIpv6Egress } from './codex-ipv6-egress.mjs'
+import { boundProxyUrl, isLocalEgressProxy } from './egress.mjs'
 import { slotHost } from './slot-host.mjs'
 
 export { runtimeKind }
@@ -49,19 +49,12 @@ export async function startSlotReady(vm, projectRoot, opts = {}) {
 }
 
 export async function stopSlot(vm) {
-  if (isCodexVm(vm)) {
-    stopCodexKernel(vm.id)
-    stopCodexIpv6Egress(vm.id)
-  }
+  if (isCodexVm(vm)) stopCodexKernel(vm.id)
   return slotHost(vm).stop(vm)
 }
 
 /** Destroy the slot container. Used only by explicit reset / delete. */
 export async function destroySlot(vm) {
-  if (isCodexVm(vm)) {
-    stopCodexKernel(vm.id)
-    stopCodexIpv6Egress(vm.id)
-  }
   return slotHost(vm).destroy(vm)
 }
 
@@ -103,17 +96,12 @@ export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
   const eager = routing?.inference?.eager_start !== false
   if (isCodexVm(vm)) {
     if (!eager) return { ok: true, skipped: true, reason: 'eager_start_off', engine: 'codex' }
-    let ipv6Exit
-    try {
-      ipv6Exit = await ensureCodexIpv6Egress(vm)
-    } catch (error) {
-      return { ok: false, code: 'codex_ipv6_unavailable', error: String(error?.message || error), engine: 'codex' }
-    }
     const write = opts.ops?.writeCodexKernelConfig || writeCodexKernelConfig
     const start = opts.ops?.ensureCodexKernel || ensureCodexKernel
+    const localExit = isLocalEgressProxy(vm?.proxy)
     write(projectRoot, vm, {
-      proxyUrl: ipv6Exit.proxyUrl,
-      proxyRequired: true,
+      proxyUrl: localExit ? '' : boundProxyUrl(vm?.proxy),
+      proxyRequired: !localExit,
     })
     const kernel = await start(slotExec(projectRoot, vm), { timeoutMs: opts.timeoutMs })
     if (!kernel?.ok) {

@@ -225,7 +225,7 @@ test('local egress imports as px-local and codex tokens stay out of vm.json', as
       timezone: 'America/Los_Angeles',
       timezone_source: 'manual',
     },
-    proxy: null,
+    proxy: { kind: 'local' },
     credential: {
       platform: 'openai',
       accounts: [{ access_token: 'oa-access', refresh_token: 'oa-refresh', email: 'gpt@example.com' }],
@@ -237,35 +237,12 @@ test('local egress imports as px-local and codex tokens stay out of vm.json', as
   const gptVm = JSON.parse(fs.readFileSync(path.join(root, 'vms', 'vm-gpt.json'), 'utf8'))
   assert.equal(gptVm.platform, 'openai')
   assert.equal(gptVm.codex.access_token, undefined)
-  assert.equal(gptVm.proxy, null)
-  assert.equal(gptVm.proxy_cli_enabled, false)
   assert.equal(readCodexAccounts(root, 'vm-gpt')[0].access_token, 'oa-access')
-
-  const gptWithProxy = { ...codex, vm: { ...codex.vm, id: 'vm-gpt-proxy' }, proxy: { kind: 'local' } }
-  const rejected = makeHandler(root, gptWithProxy, { pool })
-  await rejected.handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/package'))
-  assert.equal(rejected.response.status, 403)
-  assert.equal(rejected.response.body.error.code, 'proxy_forbidden')
-  assert.equal(fs.existsSync(path.join(root, 'vms', 'vm-gpt-proxy.json')), false)
 
   const mismatch = makeHandler(root, codex, { pool })
   await mismatch.handlePanel({ method: 'PUT' }, {}, new URL('http://localhost/api/panel/vms/vm-local/package'))
   assert.equal(mismatch.response.status, 409)
   assert.equal(mismatch.response.body.error.code, 'credential_kind_mismatch')
-})
-
-test('GPT package export omits legacy proxy bindings', () => {
-  const doc = buildVmPackage({
-    vm: {
-      id: 'vm-gpt-legacy',
-      platform: 'openai',
-      family: 'codex',
-      proxy: { host: '192.0.2.10', port: 1080, url: 'socks5://192.0.2.10:1080' },
-    },
-    proxy: { host: '192.0.2.10', port: 1080, url: 'socks5://192.0.2.10:1080' },
-  })
-  assert.equal(doc.proxy, null)
-  assert.equal(doc.vm.proxy_cli_enabled, false)
 })
 
 test('user cannot download a package and cannot import past the create quota', async (t) => {

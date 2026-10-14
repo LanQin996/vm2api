@@ -194,7 +194,6 @@ import { probeLocalKvm } from '../vm/kvm-host.mjs'
 import { normalizeVmConfig, resolveMachineSpec, validateVmConfigPatch } from '../vm/machine-spec.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
-import { ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
@@ -514,8 +513,7 @@ export function createPanelHandler(ctx) {
   const initPoolRuntime = (...args) => ctx.initPoolRuntime(...args)
   const poolSchedulerConfig = (...args) => ctx.poolSchedulerConfig(...args)
   const commitImportedOauth = (...args) => ctx.commitImportedOauth(...args)
-  const requireSlotProxy = (vm, ...args) =>
-    isCodexVm(vm) ? { ok: true, proxyUrl: hostProxyUrlForVm(vm), direct: false } : ctx.requireSlotProxy(vm, ...args)
+  const requireSlotProxy = (...args) => ctx.requireSlotProxy(...args)
   const officialCcStatsHandler = (...args) => ctx.officialCcStatsHandler(...args)
   const refreshWorkerCredentialForVm = (...args) => ctx.refreshWorkerCredentialForVm(...args)
   const fetchWorkerModels = (...args) => ctx.fetchWorkerModels(...args)
@@ -2779,13 +2777,7 @@ export function createPanelHandler(ctx) {
           try {
             invalidateLiveCredentialCache()
           } catch {}
-          if (isCodexVm(vm)) {
-            try {
-              proxyPool.unbindVm(id)
-            } catch {}
-            if (vm.proxy) vm = patchVmRecord(cfg.paths.project, id, { proxy: null }) || { ...vm, proxy: null }
-          }
-          if (!isCodexVm(vm) && !hasBoundExit(vm.proxy)) {
+          if (!hasBoundExit(vm.proxy)) {
             try {
               const allocated = proxyPool.allocateForVm(id)
               if (allocated) {
@@ -2794,7 +2786,7 @@ export function createPanelHandler(ctx) {
               }
             } catch {}
           }
-          if (!isCodexVm(vm) && !hasBoundExit(vm.proxy)) {
+          if (!hasBoundExit(vm.proxy)) {
             vm =
               patchVmRecord(cfg.paths.project, id, {
                 status: 'stopped',
@@ -3312,12 +3304,6 @@ export function createPanelHandler(ctx) {
         }
         if (nodeId) vm.node_id = nodeId
         stampVmKind(vm, body)
-        if (isCodexVm(vm) && pickedProxyId) {
-          return json(res, 409, {
-            ok: false,
-            error: { code: 'codex_ipv6_only', message: 'GPT 槽只使用专属 IPv6 出口，不能指定 SOCKS5 代理' },
-          })
-        }
         const openaiPolicy = normalizeOpenAIQuotaPolicy(ctx.routingConfig?.codex?.quota)
         const explicitConcurrency =
           Object.prototype.hasOwnProperty.call(body, 'max_concurrency') ||
@@ -3384,7 +3370,7 @@ export function createPanelHandler(ctx) {
         } catch (e) {}
         let allocated = null
         let proxyError = null
-        const wantProxy = !isCodexVm(vm) && (body.auto_allocate_proxy === true || startNow || !!pickedProxyId)
+        const wantProxy = body.auto_allocate_proxy === true || startNow || !!pickedProxyId
         // px-local 没有 SOCKS URL，但它是合法出口；不要把它当成"未绑定"。
         const hasExit = (v) => !!(v?.proxy?.url || isLocalEgressProxy(v?.proxy))
         if (wantProxy && !hasExit(vm)) {
@@ -3418,7 +3404,7 @@ export function createPanelHandler(ctx) {
           } catch (e) {}
         }
         let startError = null
-        if (startNow && (isCodexVm(vm) || hasExit(vm))) {
+        if (startNow && hasExit(vm)) {
           let boot
           try {
             boot = await startSlotReady(vm, cfg.paths.project, { routing: ctx.routingConfig })
@@ -3462,34 +3448,15 @@ export function createPanelHandler(ctx) {
         const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
         if (!fs.existsSync(vmPath)) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         let vm = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
-        const codex = isCodexVm(vm)
-        let bound = null
-        if (codex) {
-          try {
-            await ensureCodexIpv6Egress(vm)
-          } catch (error) {
-            return json(res, 409, {
-              ok: false,
-              error: { code: 'codex_ipv6_unavailable', message: String(error?.message || error) },
-            })
-          }
-          try {
-            proxyPool.unbindVm(id)
-          } catch {}
-          if (vm.proxy) {
-            vm = patchVmRecord(cfg.paths.project, id, { proxy: null }) || { ...vm, proxy: null }
-          }
-        } else {
-          bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null)
-          if (!bound) {
-            return json(res, 409, {
-              ok: false,
-              error: { code: 'proxy_required', message: 'No SOCKS5 is bound or free for this VM' },
-            })
-          }
-          bindVmProxy(cfg.paths.project, id, bound)
-          await fillTimezoneFromExit(id)
+        const bound = proxyPool.ensureBoundToVm(id, vm.proxy?.id || null)
+        if (!bound) {
+          return json(res, 409, {
+            ok: false,
+            error: { code: 'proxy_required', message: 'No SOCKS5 is bound or free for this VM' },
+          })
         }
+        bindVmProxy(cfg.paths.project, id, bound)
+        await fillTimezoneFromExit(id)
         vm = getVm(cfg.paths.project, id) || vm
         const boot = await startSlotReady(vm, cfg.paths.project, { routing: ctx.routingConfig })
         if (!boot.ok) return json(res, 500, { ok: false, error: { message: boot.error || 'runtime start failed' } })
@@ -3571,7 +3538,6 @@ export function createPanelHandler(ctx) {
             }
             const account = { ...parsed.account }
             if (!account.access_token && account.refresh_token) {
-              await ensureCodexIpv6Egress(existing)
               const slotProxy = requireSlotProxy(existing, body)
               if (!slotProxy.ok) {
                 return json(res, slotProxy.status, {
@@ -3815,7 +3781,6 @@ export function createPanelHandler(ctx) {
         }
         try {
           if (isCodexVm(existing)) {
-            await ensureCodexIpv6Egress(existing)
             const oauth = await exchangeCodexAuthCode({
               sessionId: body.session_id || body.sessionId,
               code: body.code || body.auth_code || body.callback || body.callback_url,
@@ -4063,14 +4028,6 @@ export function createPanelHandler(ctx) {
             return json(res, 400, {
               ok: false,
               error: { code: 'credential_mode_unsupported', message: 'GPT 槽没有 refresh_token，请重新导入 OAuth' },
-            })
-          }
-          try {
-            await ensureCodexIpv6Egress(vm)
-          } catch (error) {
-            return json(res, 409, {
-              ok: false,
-              error: { code: 'codex_ipv6_unavailable', message: String(error?.message || error) },
             })
           }
           const tok = await refreshCodexAccessToken({
@@ -4625,13 +4582,6 @@ export function createPanelHandler(ctx) {
         const body = await readBody(req, 2 * 1024 * 1024)
         const text = body.text || body.lines || (Array.isArray(body) ? body.join('\n') : '')
         const ident = panelIdentity(req)
-        const bindVmId = String(body.bind_vm_id || body.vm_id || '').trim()
-        if (bindVmId && isCodexVm(getVm(cfg.paths.project, bindVmId))) {
-          return json(res, 409, {
-            ok: false,
-            error: { code: 'codex_ipv6_only', message: 'GPT 槽只使用专属 IPv6 出口，不能绑定 SOCKS5' },
-          })
-        }
         const result = proxyPool.importLines(text, {
           fields: body.proxies || body.entries || null,
           host: body.host,
@@ -4640,6 +4590,7 @@ export function createPanelHandler(ctx) {
           password: body.password ?? body.pass,
           ownerUserId: ident.role === 'user' ? req.panelUserId : null,
         })
+        const bindVmId = String(body.bind_vm_id || body.vm_id || '').trim()
         let bound = null
         let worker = null
         let timezone = null
@@ -4750,27 +4701,14 @@ export function createPanelHandler(ctx) {
         }
         // A label is display-only; reloading every bound worker for it would
         // pull live slots out of scheduling for nothing.
-        if (!result.connection_changed) {
-          for (const vmId of result.proxy.bound_vm_ids || []) {
-            const vm = getVm(cfg.paths.project, vmId)
-            if (!isCodexVm(vm)) continue
-            proxyPool.unbind(id, vmId)
-            if (vm.proxy) patchVmRecord(cfg.paths.project, vmId, { proxy: null })
-          }
-          return json(res, 200, panel.ok({ proxy: result.proxy, workers: [], egress }))
-        }
+        if (!result.connection_changed) return json(res, 200, panel.ok({ proxy: result.proxy, workers: [], egress }))
         // The pool store is only one of three places the credentials live
         // (pool -> vms/<id>.json -> worker.json). Without this the edit looks
         // like it worked while every bound slot keeps dialing the old proxy.
         const workers = []
         for (const vmId of result.proxy.bound_vm_ids || []) {
-          const vm = getVm(cfg.paths.project, vmId)
-          if (isCodexVm(vm)) {
-            proxyPool.unbind(id, vmId)
-            if (vm.proxy) patchVmRecord(cfg.paths.project, vmId, { proxy: null })
-            continue
-          }
           bindVmProxy(cfg.paths.project, vmId, proxyPool.getProxyByIdWithAuth(id))
+          const vm = getVm(cfg.paths.project, vmId)
           if (vm?.status === 'running' && process.env.KIN_CRS_MOCK !== '1') {
             setVmSchedulable(cfg.paths.project, vmId, false, 'proxy_edit_worker_reload')
             const reloaded = await reloadSlotReady(getVm(cfg.paths.project, vmId), cfg.paths.project, {
@@ -4901,12 +4839,6 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: { type: 'invalid_request_error', code: 'missing_field', message: 'vm_id required', param: 'vm_id' },
           })
-        if (isCodexVm(getVm(cfg.paths.project, vmId))) {
-          return json(res, 409, {
-            ok: false,
-            error: { code: 'codex_ipv6_only', message: 'GPT 槽只使用专属 IPv6 出口，不能绑定 SOCKS5' },
-          })
-        }
         const result = proxyPool.bind(id, vmId)
         if (!result.ok) {
           const message =
@@ -4980,12 +4912,6 @@ export function createPanelHandler(ctx) {
       // Auto-allocate proxy for a VM
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/allocate-proxy$/.test(p)) {
         const vmId = p.split('/')[4]
-        if (isCodexVm(getVm(cfg.paths.project, vmId))) {
-          return json(res, 409, {
-            ok: false,
-            error: { code: 'codex_ipv6_only', message: 'GPT 槽只使用专属 IPv6 出口，不分配 IPv4 代理' },
-          })
-        }
         const allocated = proxyPool.allocateForVm(vmId)
         if (!allocated)
           return json(res, 409, {

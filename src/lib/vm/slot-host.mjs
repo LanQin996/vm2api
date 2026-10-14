@@ -64,7 +64,6 @@ import { isCodexVm } from './vm-kind.mjs'
 import { nodeEgressProxyUrl } from '../cluster/node-egress-socks.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { stopCodexKernel } from '../transport/codex-kernel-supervisor.mjs'
-import { codexIpv6ProxyUrl } from './codex-ipv6-egress.mjs'
 
 const noop = async () => ({ skipped: true })
 
@@ -161,7 +160,6 @@ export function slotHost(vm) {
  * has no proxy env, so its requests stay direct; a node slot's must not leave from here.
  */
 export function hostProxyUrlForVm(vm) {
-  if (isCodexVm(vm)) return codexIpv6ProxyUrl(vm.id)
   if (!isLocalEgressProxy(vm?.proxy)) return boundProxyUrl(vm?.proxy)
   return slotHost(vm).localExitProxyUrl(vm)
 }

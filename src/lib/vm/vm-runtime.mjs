@@ -207,7 +207,6 @@ export function socksUidFor(vm) {
 }
 
 export function ensureOuterSocks(vm) {
-  if (isCodexVm(vm)) return { ok: true, transport: 'codex-ipv6' }
   if (isLocalEgressProxy(vm?.proxy)) {
     return { ok: true, uid: socksUidFor(vm), transport: 'direct', direct: true }
   }
@@ -493,7 +492,7 @@ function resolveSlotRouting(projectRoot, routing) {
 }
 
 export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {}) {
-  if (!isCodexVm(vm)) assertProxyAllowed(vm.proxy)
+  assertProxyAllowed(vm.proxy)
   const paths = workerPaths(projectRoot, vm.id)
   const uid = runtimeUidNum(vm)
   const gid = Number(GID)
@@ -736,19 +735,13 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing, acc
 
   const proxy = ensureOuterSocks(vm)
   if (!proxy.ok) return proxy
-  if (!isCodexVm(vm)) {
-    const eg = ensureProxyEgress(projectRoot, vm.proxy)
-    if (!eg.ok) return eg
-    if (!eg.network && !eg.name) return { ok: false, error: 'egress network missing; refusing host fallback' }
-  }
+  const eg = ensureProxyEgress(projectRoot, vm.proxy)
+  if (!eg.ok) return eg
+  if (!eg.network && !eg.name) return { ok: false, error: 'egress network missing; refusing host fallback' }
 
   let existing = inspectContainer(name)
   const paths = workerPaths(projectRoot, vm.id)
-  const replace =
-    recreate ||
-    !slotKernelAlive(existing, paths, vm) ||
-    codexContainerStale(existing, vm) ||
-    (isCodexVm(vm) && existing?.networkMode !== 'none')
+  const replace = recreate || !slotKernelAlive(existing, paths, vm) || codexContainerStale(existing, vm)
   // Node restart / 开机 must not bounce a live slot with a healthy worker.
   if (existing?.running && !replace) {
     runtimePatch(vm, existing, {

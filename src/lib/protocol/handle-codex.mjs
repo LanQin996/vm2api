@@ -23,15 +23,9 @@ import { extraFromCodexHeaders, codexQuotaPark, CODEX_DEFAULT_PARK_MS } from './
 import { extractOpenaiUsage } from './openai-usage.mjs'
 import { streamCodexKernel } from '../transport/codex-kernel-client.mjs'
 import { ensureCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
-import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { boundProxyUrl, isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
-import { codexIpv6ProxyUrl, ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
-import {
-  codexCredentialVersion,
-  persistCodexCredentialState,
-  readCodexAccounts,
-  upsertCodexAccount,
-} from '../vm/codex-slot.mjs'
+import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
 import { queryOpenaiQuota } from '../oauth/openai-quota.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
@@ -237,25 +231,9 @@ function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = nu
   return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })
 }
 
-function checkCodexHopCredential(projectRoot, vmId, result, ops = {}, expectedVersion = null) {
+function checkCodexHopCredential(projectRoot, vmId, result, ops = {}) {
   if (result?.ok) return
-  const authError = result?.body?.error || {}
-  const code = String(authError.upstream_code || authError.code || '')
-  const message = String(authError.message || '')
-  const terminalRevocation =
-    /^(token_revoked|account_deactivated|account_suspended|oauth_revoked|oauth_invalid_grant|invalid_grant)$/.test(
-      code,
-    ) ||
-    (Number(result?.upstream_status || authError.upstream_status) === 401 &&
-      /invalidated oauth token|token has been revoked/i.test(message))
-  if (terminalRevocation) {
-    persistCodexCredentialState(projectRoot, vmId, {
-      state: 'invalid',
-      error: 'oauth_invalid_grant',
-      expectedVersion,
-    })
-    return
-  }
+  const code = String(result?.body?.error?.code || '')
   const unauthorized = Number(result?.status) === 401 || /upstream_auth|no_credential/.test(code)
   if (!unauthorized && code !== 'no_capacity') return
   const vm = getVm(projectRoot, vmId)
@@ -594,7 +572,6 @@ export async function handleCodexProtocol({
   const hop = ops.streamCodexKernel || streamCodexKernel
   const writeCfg = ops.writeCodexKernelConfig || writeCodexKernelConfig
   const ensure = ops.ensureCodexKernel || ensureCodexKernel
-  const ensureIpv6Exit = ops.ensureCodexIpv6Egress || ensureCodexIpv6Egress
   const anthropicSse = protocol === 'anthropic.messages' ? createAnthropicSseState() : null
   const chatSse =
     protocol === 'openai.chat' || protocol === 'openai.completions'
@@ -676,9 +653,8 @@ export async function handleCodexProtocol({
       }
       let attemptKind = 'failed'
       try {
-        const ipv6Exit = ops.writeCodexKernelConfig ? { proxyUrl: codexIpv6ProxyUrl(vm.id) } : await ensureIpv6Exit(vm)
         writeCfg(projectRoot, vm, {
-          proxyUrl: ipv6Exit.proxyUrl,
+          proxyUrl: boundProxyUrl(vm.proxy),
           proxyRequired: true,
         })
         const ready = await ensure(execFor(projectRoot, vm))
@@ -737,7 +713,6 @@ export async function handleCodexProtocol({
         const outboundHeaders = codexKernelHeaders(req.headers, outboundBody, session)
         if (captureOutbound) logBag.outbound_body = outboundBody
         logBag.outbound_headers = redactHeaders(outboundHeaders)
-        const credentialVersion = codexCredentialVersion(readCodexAccounts(projectRoot, vm.id))
         const result = await runCodexKernelHop({
           hop,
           wait: ops.waitCodexRetry,
@@ -800,7 +775,7 @@ export async function handleCodexProtocol({
           result.body = { error: conversionError }
         }
         ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
-        if (!gone.signal.aborted) checkCodexHopCredential(projectRoot, vm.id, result, ops, credentialVersion)
+        if (!gone.signal.aborted) checkCodexHopCredential(projectRoot, vm.id, result, ops)
         logBag.attempt_count += Math.max(0, (result?.kernel_attempt_count || 1) - 1)
         if (result?.transport_retried) logBag.transport_retried = true
         if (result?.server_retry_count)
@@ -1037,13 +1012,6 @@ function plainHeaders(headers) {
 
 /** One search call on one slot. Resolves `{ status, text, headers }`, or `{ status: 0, error }`. */
 async function postCodexSearch({ projectRoot, vm, body, turnMetadata, fetchImpl, refresh = refreshCodexAccessToken }) {
-  if (!fetchImpl) {
-    try {
-      await ensureCodexIpv6Egress(vm)
-    } catch (error) {
-      return { status: 0, error: `codex_ipv6_unavailable:${String(error?.message || error)}` }
-    }
-  }
   const proxyUrl = hostProxyUrlForVm(vm)
   if (!fetchImpl && !proxyUrl && !isLocalEgressProxy(vm.proxy)) return { status: 0, error: 'proxy_required' }
   const doFetch = fetchImpl || makeProxyFetch(proxyUrl, CODEX_SEARCH_TIMEOUT_MS, { maxMs: CODEX_SEARCH_TIMEOUT_MS })

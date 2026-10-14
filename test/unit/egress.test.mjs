@@ -279,7 +279,6 @@ test('slot network is bound proxy net and never host', () => {
   const vm = { proxy: { id: 'px-a1b2c3d4' } }
   assert.equal(slotNetworkForVm(vm, { KIN_VM_NETWORK: 'host' }), 'kin-eg-px-a1b2c3d4')
   assert.equal(slotNetworkForVm({}, { KIN_VM_NETWORK: 'host' }), '')
-  assert.equal(slotNetworkForVm({ id: 'vm-gpt', platform: 'openai' }), 'none')
   assert.equal(egressEnabled({}), true)
   assert.equal(egressEnabled({ KIN_EGRESS: '0' }), true)
 })
@@ -303,7 +302,7 @@ test('local egress proxy follows the Codex kernel env order for https', () => {
   )
 })
 
-test('host hops: Codex uses per-slot IPv6 egress and local Claude stays direct', (t) => {
+test('host hops: local Codex follows the deployment proxy, local Claude stays direct', (t) => {
   const saved = process.env.HTTPS_PROXY
   process.env.HTTPS_PROXY = 'http://proxy.test:8443'
   t.after(() => {
@@ -311,11 +310,11 @@ test('host hops: Codex uses per-slot IPv6 egress and local Claude stays direct',
     else process.env.HTTPS_PROXY = saved
   })
   const local = { id: LOCAL_EGRESS_ID, scheme: 'local', host: 'local', port: 0 }
-  assert.match(hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: local }), /^socks5h:\/\/127\.0\.0\.1:\d+$/)
+  assert.equal(hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: local }), 'http://proxy.test:8443')
   assert.equal(hostProxyUrlForVm({ id: 'vm-cc', platform: 'anthropic', proxy: local }), '')
-  assert.match(
+  assert.equal(
     hostProxyUrlForVm({ id: 'vm-gpt', platform: 'openai', proxy: { host: '10.0.0.5', port: 1080 } }),
-    /^socks5h:\/\/127\.0\.0\.1:\d+$/,
+    'socks5h://10.0.0.5:1080',
   )
 })
 

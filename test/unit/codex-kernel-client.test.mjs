@@ -79,7 +79,7 @@ test('writeCodexKernelConfig fail-closes proxy_required without a URL', () => {
   fs.rmSync(root, { recursive: true, force: true })
 })
 
-test('Codex kernel config always uses its per-slot IPv6 proxy', (t) => {
+test('local egress without a deployment proxy is a direct exit', (t) => {
   setEnv(t, {})
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -89,17 +89,17 @@ test('Codex kernel config always uses its per-slot IPv6 proxy', (t) => {
     proxyRequired: true,
   })
   const cfg = JSON.parse(fs.readFileSync(written.configPath, 'utf8'))
-  assert.equal(cfg.proxy_required, true)
-  assert.match(cfg.proxy_url, /^socks5h:\/\/127\.0\.0\.1:\d+$/)
+  assert.equal(cfg.proxy_required, false)
+  assert.equal(cfg.proxy_url, '')
 })
 
-test('Codex kernel ignores deployment proxy environment variables', (t) => {
+test('local egress hands the kernel the deployment proxy and fails closed on it', (t) => {
   setEnv(t, { HTTPS_PROXY: 'http://proxy.test:8443', HTTP_PROXY: 'http://other.test:3128' })
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const written = writeCodexKernelConfig(root, LOCAL_CODEX, { token: 'secret', proxyUrl: '', proxyRequired: false })
   const cfg = JSON.parse(fs.readFileSync(written.configPath, 'utf8'))
-  assert.match(cfg.proxy_url, /^socks5h:\/\/127\.0\.0\.1:\d+$/)
+  assert.equal(cfg.proxy_url, 'http://proxy.test:8443')
   assert.equal(cfg.proxy_required, true)
 })
 
