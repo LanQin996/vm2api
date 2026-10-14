@@ -90,6 +90,7 @@ import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/opena
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
+import { codexIpv6EgressStatus } from '../vm/codex-ipv6-egress.mjs'
 
 export function ok(data, meta) {
   const out = { ok: true, data }
@@ -1774,6 +1775,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     has_refresh: !!(v.has_refresh || workerCred?.has_refresh),
     has_session_key: !!v.has_session_key,
     proxy: merged.proxy,
+    codex_ipv6_egress: isCodex ? codexIpv6EgressStatus(v.id) : null,
     proxy_id: merged.proxy?.id || v.proxy_id || v.proxy?.id || null,
     proxy_configured: merged.proxy_configured,
     can_import_credential: merged.can_import_credential,

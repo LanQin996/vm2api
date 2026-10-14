@@ -1,5 +1,6 @@
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import type { StatusTone } from '@/types/status'
+import { isCodexVm } from '@/lib/vm-kind'
 
 export type ProxyHealth = {
   score: number
@@ -12,6 +13,27 @@ export type ProxyHealth = {
  * 有票无代理是 fail-closed，直接 0 分。
  */
 export function proxyHealthOf(vm: Vm, proxy: VmProxySnap): ProxyHealth {
+  if (isCodexVm(vm)) {
+    const active = vm.codex_ipv6_egress?.active === true
+    const address = vm.codex_ipv6_egress?.address
+    const text = active ? 'IPv6 就绪' : 'IPv6 待启动'
+    return {
+      score: active ? 100 : 55,
+      tone: {
+        key: active ? 'ok' : 'caution',
+        text,
+        cls: active ? 'ok' : 'caution',
+        label: active
+          ? `Codex kernel 使用 ${address || '专属 IPv6'}`
+          : '启动 GPT 槽或发起 GPT 请求时自动分配专属 IPv6',
+      },
+      reasons: [
+        active
+          ? `Codex kernel 使用 ${address || '专属 IPv6'}`
+          : '启动 GPT 槽或发起 GPT 请求时自动分配专属 IPv6',
+      ],
+    }
+  }
   if (vm.has_token && !proxy.host && !vm.proxy_id) {
     return {
       score: 0,

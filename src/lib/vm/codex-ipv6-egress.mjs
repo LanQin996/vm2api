@@ -212,6 +212,13 @@ export function codexIpv6ProxyUrl(vmId) {
   return `socks5h://127.0.0.1:${portForVm(vmId)}`
 }
 
+export function codexIpv6EgressStatus(vmId) {
+  const exit = exits.get(String(vmId || ''))
+  return exit
+    ? { active: true, address: exit.address, interface: exit.iface }
+    : { active: false, address: null, interface: null }
+}
+
 export function codexIpv6DestinationAllowed(hostname) {
   const value = String(hostname || '')
   const family = net.isIP(value)
