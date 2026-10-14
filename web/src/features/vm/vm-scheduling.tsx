@@ -16,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { SEAT_CAP_MAX, SeatCells } from '@/components/scheduler-viz'
 import { dashboardQueryOptions } from '@/features/overview/queries'
@@ -39,7 +40,19 @@ type Draft = {
   /** 'auto' = 按 7D 重置倒计时自动算；数字 = 手动 1–10。 */
   level: 'auto' | number
   quota: Record<QuotaKey, Knob<number | boolean>>
+  /** 工作时段；own=false = 跟随全局（24h 接单）。timezone 是已钉住的值，面板不改但要原样带回。 */
+  hours: {
+    own: boolean
+    start: string
+    end: string
+    days: number[]
+    timezone?: string
+  }
 }
+
+const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6]
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+const DAY_LABELS = ['日', '一', '二', '三', '四', '五', '六']
 
 const QUOTA_FIELDS: { key: QuotaKey; label: string; desc: string }[] = [
   { key: 'limit_5h', label: '5h 闸线', desc: '5h 用量到这里写成受限并切号' },
@@ -102,7 +115,47 @@ function draftOf(vm: Vm): Draft {
         ? Number(vm.schedule_level)
         : 'auto',
     quota,
+    hours: {
+      own: !!vm.active_hours,
+      start: vm.active_hours?.start || '08:00',
+      end: vm.active_hours?.end || '22:00',
+      days: vm.active_hours?.days?.length
+        ? [...vm.active_hours.days]
+        : ALL_DAYS,
+      timezone: vm.active_hours?.timezone,
+    },
   }
+}
+
+function sortedDays(days: number[]): number[] {
+  return [...days].sort((a, b) => a - b)
+}
+
+function sameDays(a: number[], b: number[]): boolean {
+  const x = sortedDays(a)
+  const y = sortedDays(b)
+  return x.length === y.length && x.every((v, i) => v === y[i])
+}
+
+function sameHours(a: Draft['hours'], b: Draft['hours']): boolean {
+  if (a.own !== b.own) return false
+  if (!a.own) return true
+  return a.start === b.start && a.end === b.end && sameDays(a.days, b.days)
+}
+
+type DayPreset = 'all' | 'weekday' | 'weekend' | 'custom'
+
+function dayPreset(days: number[]): DayPreset {
+  if (sameDays(days, ALL_DAYS)) return 'all'
+  if (sameDays(days, [1, 2, 3, 4, 5])) return 'weekday'
+  if (sameDays(days, [0, 6])) return 'weekend'
+  return 'custom'
+}
+
+const DAY_PRESET_DAYS: Record<Exclude<DayPreset, 'custom'>, number[]> = {
+  all: ALL_DAYS,
+  weekday: [1, 2, 3, 4, 5],
+  weekend: [0, 6],
 }
 
 /** 只发生变化的字段；null = 去掉本槽覆盖。 */
@@ -126,6 +179,18 @@ function patchOf(vm: Vm, draft: Draft): VmPatch {
   if (isCodexVm(vm)) knob('max_sessions', draft.sessions, before.sessions)
   if (draft.level !== before.level) {
     body.schedule_level = draft.level === 'auto' ? null : draft.level
+  }
+  if (!sameHours(draft.hours, before.hours)) {
+    body.active_hours = draft.hours.own
+      ? {
+          start: draft.hours.start,
+          end: draft.hours.end,
+          ...(draft.hours.timezone ? { timezone: draft.hours.timezone } : {}),
+          ...(sameDays(draft.hours.days, ALL_DAYS)
+            ? {}
+            : { days: sortedDays(draft.hours.days) }),
+        }
+      : null
   }
   if (!isCodexVm(vm)) {
     const next: VmQuotaOverride = {}
@@ -154,7 +219,8 @@ function overrideCount(vm: Vm): number {
     Number(vm.session_slots_override === true) +
     Number(vm.concurrency_override === true) +
     Number(vm.rpm_override === true) +
-    Number(vm.max_sessions_override === true)
+    Number(vm.max_sessions_override === true) +
+    Number(!!vm.active_hours)
   )
 }
 
@@ -322,6 +388,28 @@ export function VmSchedulingBlock({
             title='等级高的 VM 先开席位；自动模式按 7D 重置倒计时算'
           />
         ) : null}
+        <Tile
+          label='工作时段'
+          value={
+            vm.active_hours_active === false
+              ? '休息中'
+              : vm.active_hours
+                ? `${vm.active_hours.start}–${vm.active_hours.end}`
+                : '全天'
+          }
+          own={!!vm.active_hours}
+          title={
+            vm.active_hours
+              ? `${vm.active_hours_timezone || vm.timezone || 'UTC'}` +
+                (vm.active_hours.days?.length
+                  ? ` · 星期${vm.active_hours.days.map((d) => DAY_LABELS[d]).join('')}`
+                  : ' · 每天') +
+                (vm.active_hours_active === false
+                  ? ' · 当前在窗口外，不接单'
+                  : ' · 当前在窗口内')
+              : '跟随全局：24h 接单'
+          }
+        />
         {codex || !policy
           ? null
           : QUOTA_FIELDS.map(({ key, label }) => (
@@ -414,6 +502,22 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
   })
 
   const submit = () => {
+    // 退格清掉一段时 <input type=time> 给出 ''；草稿留空，到这里再拦。
+    if (
+      draft.hours.own &&
+      !(HHMM.test(draft.hours.start) && HHMM.test(draft.hours.end))
+    ) {
+      toast.error('请填写完整的开工与收工时间')
+      return
+    }
+    if (draft.hours.own && draft.hours.start === draft.hours.end) {
+      toast.error('开工与收工时间不能相同')
+      return
+    }
+    if (draft.hours.own && !draft.hours.days.length) {
+      toast.error('至少保留一个工作日')
+      return
+    }
     const body = patchOf(vm, draft)
     if (!Object.keys(body).length) {
       setOpen(false)
@@ -436,6 +540,7 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
       rpm: { ...draft.rpm, own: false },
       sessions: { ...draft.sessions, own: false },
       level: 'auto',
+      hours: { ...draft.hours, own: false },
       quota: Object.fromEntries(
         QUOTA_FIELDS.map(({ key }) => [
           key,
@@ -620,6 +725,106 @@ export function VmSchedulingEditor({ vm }: { vm: Vm }) {
                   />
                 </div>
               ) : null}
+              <KnobRow
+                label='工作时段'
+                desc='只在此时段内接单，窗口外此号不参与调度（模拟真人作息）。开始晚于结束 = 跨夜班次；时区跟随槽位。'
+                inheritedText='全天'
+                own={draft.hours.own}
+                onOwnChange={(own) =>
+                  setDraft({ ...draft, hours: { ...draft.hours, own } })
+                }
+                disabled={pending}
+              >
+                <div className='flex flex-wrap items-center gap-2'>
+                  <Input
+                    type='time'
+                    aria-label='开工时间'
+                    className='h-8 w-28'
+                    value={draft.hours.start}
+                    disabled={pending}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        hours: {
+                          ...draft.hours,
+                          start: event.target.value,
+                        },
+                      })
+                    }
+                  />
+                  <span className='text-xs text-muted-foreground'>至</span>
+                  <Input
+                    type='time'
+                    aria-label='收工时间'
+                    className='h-8 w-28'
+                    value={draft.hours.end}
+                    disabled={pending}
+                    onChange={(event) =>
+                      setDraft({
+                        ...draft,
+                        hours: {
+                          ...draft.hours,
+                          end: event.target.value,
+                        },
+                      })
+                    }
+                  />
+                  <span className='text-[11px] text-muted-foreground'>
+                    {vm.active_hours_timezone || vm.timezone || 'UTC'}
+                  </span>
+                </div>
+                <ChipGroup
+                  label='工作日预设'
+                  value={dayPreset(draft.hours.days)}
+                  options={[
+                    ['all', '每天'],
+                    ['weekday', '工作日'],
+                    ['weekend', '周末'],
+                    ['custom', '自定义'],
+                  ]}
+                  onChange={(preset) => {
+                    if (preset === 'custom') return
+                    setDraft({
+                      ...draft,
+                      hours: { ...draft.hours, days: DAY_PRESET_DAYS[preset] },
+                    })
+                  }}
+                  disabled={pending}
+                />
+                <div className='flex flex-wrap gap-1.5'>
+                  {DAY_LABELS.map((label, day) => {
+                    const on = draft.hours.days.includes(day)
+                    return (
+                      <button
+                        key={day}
+                        type='button'
+                        disabled={
+                          pending || (on && draft.hours.days.length === 1)
+                        }
+                        onClick={() =>
+                          setDraft({
+                            ...draft,
+                            hours: {
+                              ...draft.hours,
+                              days: on
+                                ? draft.hours.days.filter((v) => v !== day)
+                                : sortedDays([...draft.hours.days, day]),
+                            },
+                          })
+                        }
+                        className={cn(
+                          'h-7 min-w-8 cursor-pointer rounded-md border px-2 text-xs transition-colors duration-150 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50',
+                          on
+                            ? 'border-primary bg-primary text-primary-foreground'
+                            : 'border-border bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground'
+                        )}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </KnobRow>
             </section>
 
             {codex || !quotaBase ? null : (

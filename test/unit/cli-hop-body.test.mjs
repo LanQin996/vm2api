@@ -30,6 +30,26 @@ test('prepareCliHopBody drops metadata and CLI-owned system but keeps official a
   assert.equal(body.stream, true)
 })
 
+test('prepareCliHopBody preserveSystem keeps official billing and system cache_control', () => {
+  const billing = 'x-anthropic-billing-header: cc_version=2.1.280.096; cc_entrypoint=cli; cch=bdff0;'
+  const body = prepareCliHopBody(
+    {
+      model: 'claude-opus-5-5',
+      max_tokens: 32,
+      system: [
+        { type: 'text', text: billing },
+        { type: 'text', text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        { type: 'text', text: 'RFC 2119 keywords', cache_control: { type: 'ephemeral' } },
+      ],
+      messages: [{ role: 'user', content: 'ping' }],
+    },
+    { preserveSystem: true },
+  )
+  assert.equal(body.system[0].text, billing)
+  assert.match(body.system[1].text, /You are Claude Code/)
+  assert.deepEqual(body.system[2].cache_control, { type: 'ephemeral' })
+})
+
 test('prepareCliHopBody keeps caller leftover system and tools', () => {
   const body = prepareCliHopBody({
     model: 'claude-opus-5',

@@ -10,6 +10,7 @@ import { orderOpenAIAccounts } from './openai-account-selector.mjs'
 import { bumpOpenAICursor, openAIRuntimeSignals, readOpenAICursor } from './openai-account-runtime.mjs'
 import { modelMatchesAllowlist } from './slot-model-gate.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
+import { activeHoursOf, evaluateActiveHours } from './active-hours.mjs'
 import { effectiveOpenAIPolicy, evaluateOpenAIQuotaGate, normalizeOpenAIQuotaPolicy } from './openai-quota-policy.mjs'
 
 // `stopped` is leftover Claude docker lifecycle. Codex kernel is independent.
@@ -83,7 +84,7 @@ function parkUntil(vm, now) {
  * Ready slots first (lowest 5h/7d stress), parked slots last so a
  * total-exhaust pool still has somewhere to fail instead of 503.
  */
-export function pickCodexSlots(vms, { pin = null, now = Date.now(), quotaPolicy = null } = {}) {
+export function pickCodexSlots(vms, { pin = null, now = Date.now(), quotaPolicy = null, model = null } = {}) {
   const list = Array.isArray(vms) ? vms : []
   if (pin) {
     const vm = list.find((item) => item?.id === pin) || null
@@ -94,8 +95,18 @@ export function pickCodexSlots(vms, { pin = null, now = Date.now(), quotaPolicy 
   }
   const ready = []
   const parked = []
+  const resting = []
+  let restUntil = null
   for (const vm of list) {
     if (!isCodexSlotReady(vm)) continue
+    // Operator rest window: not even a parked fallback — the slot is off-shift.
+    const rest = evaluateActiveHours(activeHoursOf(vm), now, vm.timezone)
+    if (!rest.active) {
+      resting.push(vm.id)
+      // Only a slot that could serve this model promises a wake time.
+      if (codexSlotAllowsModel(vm, model)) restUntil = restUntil == null ? rest.until : Math.min(restUntil, rest.until)
+      continue
+    }
     if (isCodexSlotParked(vm, now, quotaPolicy)) parked.push(vm)
     else ready.push(vm)
   }
@@ -108,11 +119,16 @@ export function pickCodexSlots(vms, { pin = null, now = Date.now(), quotaPolicy 
     return d !== 0 ? d : String(a.id).localeCompare(String(b.id))
   })
   const ids = [...ready, ...parked].map((vm) => vm.id)
-  if (!ids.length) return { error: 'no_codex_vm', ids: [], ready: [], parked: [] }
+  if (!ids.length) {
+    // Every ready slot is off-shift: a wait, not a missing pool.
+    if (restUntil != null) return { error: 'pool_resting', retryAt: restUntil, ids: [], ready: [], parked: [], resting }
+    return { error: 'no_codex_vm', ids: [], ready: [], parked: [], resting }
+  }
   return {
     ids,
     ready: ready.map((vm) => vm.id),
     parked: parked.map((vm) => vm.id),
+    resting,
   }
 }
 
@@ -192,7 +208,9 @@ export function codexAccountCandidate(vm, now = Date.now(), signals = null, poli
  * owes the conversation a `max_sessions` window; any other slot lends this
  * one request its execution seat. `session_slots` is not a window cap.
  * `boundState` is `gone` only when the bound slot left the pool for good
- * (quota, credential, operator, model); a busy home is still `live`.
+ * (quota, credential, operator, model); `resting` when it is outside its
+ * working window (back tomorrow, but not for this request); a busy home is
+ * still `live`.
  */
 export function orderCodexSessionSlots(
   vms,
@@ -214,9 +232,12 @@ export function orderCodexSessionSlots(
   const list = Array.isArray(vms) ? vms : []
   const byId = new Map(list.map((vm) => [vm.id, vm]))
   const policy = normalizeOpenAIQuotaPolicy(quotaPolicy)
-  const found = pickCodexSlots(vms, { pin, now, quotaPolicy: policy })
+  const found = pickCodexSlots(vms, { pin, now, quotaPolicy: policy, model })
+  const boundResting = !!boundVmId && (found.resting || []).includes(boundVmId)
   const picked = found.error ? found : withModelAllowed(found, byId, model)
-  if (picked.error) return { ...picked, sticky: false, candidates: [] }
+  if (picked.error) {
+    return { ...picked, sticky: false, boundState: boundResting ? 'resting' : undefined, candidates: [] }
+  }
   const pool = picked.ids.filter((id) => !excluded?.has(id))
   if (!pool.length)
     return { error: 'candidates_exhausted', ids: [], ready: [], parked: [], sticky: false, candidates: [] }
@@ -232,7 +253,15 @@ export function orderCodexSessionSlots(
     boundVmId && pool.includes(boundVmId) && codexAccountStatus(byId.get(boundVmId), now, policy) === 'normal'
       ? boundVmId
       : null
-  const boundState = boundVmId ? (home ? 'live' : excluded?.has(boundVmId) ? 'excluded' : 'gone') : null
+  const boundState = boundVmId
+    ? home
+      ? 'live'
+      : excluded?.has(boundVmId)
+        ? 'excluded'
+        : boundResting
+          ? 'resting'
+          : 'gone'
+    : null
   const claimsWindow = (id) => !!sessionKey && (!home || id === home)
   const accepts = (id) => {
     if (!claimsWindow(id) || typeof sessionLimit?.canAccept !== 'function') return true

@@ -16,7 +16,14 @@ test('recreated record keeps slot identity and drops credentials', () => {
     locale: 'en_US.UTF-8',
     note: 'keep me',
     proxy: { id: 'px-7', url: 'socks5h://127.0.0.1:1080' },
-    policy: { maxConcurrency: 12, weight: 3, priority: 9, inflight: 4, allowed_models: ['claude-sonnet-5'] },
+    policy: {
+      maxConcurrency: 12,
+      weight: 3,
+      priority: 9,
+      inflight: 4,
+      allowed_models: ['claude-sonnet-5'],
+      active_hours: { start: '20:00', end: '08:00', timezone: 'America/Chicago', days: [1, 2, 3, 4, 5] },
+    },
     claude: { email: 'old@kin.test', has_access: true },
     fingerprint: { device_id: 'old-dev', session_id: 'old-sess' },
     stats: { calls: 9 },
@@ -40,6 +47,7 @@ test('recreated record keeps slot identity and drops credentials', () => {
   assert.equal(next.policy.priority, 9)
   assert.equal(next.policy.inflight, 0)
   assert.deepEqual(next.policy.allowed_models, ['claude-sonnet-5'])
+  assert.deepEqual(next.policy.active_hours, prev.policy.active_hours)
   assert.deepEqual(next.claude, {})
   assert.equal(next.platform, 'anthropic')
   assert.equal(next.family, 'claude')

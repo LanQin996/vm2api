@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildUsage, indexBillingAccounts, lookupBilling } from '../../src/lib/admin/panel-api.mjs'
+import { buildUsage, buildVmList, indexBillingAccounts, lookupBilling } from '../../src/lib/admin/panel-api.mjs'
 
 test('billing index keeps UUID row when leftover vm-id account is empty', () => {
   const leftover = {
@@ -55,6 +55,41 @@ test('billing rows of an older account on a reused slot keep their own email', (
   })
   const emails = usage.data.billing.accounts.map((row) => row.email)
   assert.deepEqual(emails, ['old@example.com', 'new@example.com', 'three@example.com'])
+})
+
+test('VM list carries lifetime tokens from the same billing row as total_cost', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-billing-tokens-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  fs.writeFileSync(path.join(root, 'vms', 'vm-07.json'), JSON.stringify({ id: 'vm-07' }))
+  fs.writeFileSync(path.join(root, 'vms', 'vm-08.json'), JSON.stringify({ id: 'vm-08' }))
+  const listed = await buildVmList({
+    cfg: { paths: { project: root } },
+    accountQuota: { config: {}, snapshot: () => ({ accounts: [] }) },
+    routingConfig: {},
+    requestLog: {
+      billingStats: () => ({
+        accounts: [
+          {
+            account_id: 'vm-07',
+            vm_id: 'vm-07',
+            total_cost: 12.5,
+            input_tokens: 1200,
+            output_tokens: 300,
+            cache_read_tokens: 90000,
+            window_5h_tokens: 40,
+            window_7d_tokens: 900,
+          },
+        ],
+      }),
+    },
+  })
+  const byId = Object.fromEntries(listed.data.items.map((vm) => [vm.id, vm]))
+  assert.equal(byId['vm-07'].total_cost, 12.5)
+  assert.equal(byId['vm-07'].total_tokens, 1500)
+  assert.equal(byId['vm-07'].window_5h_tokens, 40)
+  assert.equal(byId['vm-07'].window_7d_tokens, 900)
+  assert.equal(byId['vm-08'].total_tokens, 0)
 })
 
 test('usage rows of a deleted VM are not listed', (t) => {

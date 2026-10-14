@@ -106,13 +106,47 @@ export function isUpstreamRefusal(result = {}, extra = {}) {
   return codes.some(isContentPolicyErrorCode)
 }
 
-export function refusalGuardError(requestId) {
+function refusalBlockSuffix(match) {
+  if (!match || typeof match !== 'object') return null
+  if (match.kind === 'device') {
+    const ban = String(match.row?.reason || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 80)
+    return {
+      message: ban ? ` 该设备此前已被封禁（${ban}）。` : ' 该设备此前已被封禁。',
+      details: ban ? { reason: 'device', ban_reason: ban } : { reason: 'device' },
+    }
+  }
+  if (match.kind === 'similar') {
+    const score = Number(match.score)
+    const finite = Number.isFinite(score)
+    const pct = finite ? Math.round(score * 100) : null
+    return {
+      message:
+        pct == null ? ' 当前提示词与曾被拒答的内容相似。' : ` 当前提示词与曾被拒答的内容相似（相似度 ${pct}%）。`,
+      details: finite ? { reason: 'similar', score } : { reason: 'similar' },
+    }
+  }
+  if (match.kind === 'exact') {
+    return {
+      message: ' 当前提示词与曾被拒答的内容完全一致。',
+      details: { reason: 'exact' },
+    }
+  }
+  return null
+}
+
+/** Original sentence stays; a match only appends why this call was blocked. */
+export function refusalGuardError(requestId, match) {
+  const extra = refusalBlockSuffix(match)
   return makeError({
     type: ErrorType.PERMISSION,
     code: ErrorCode.REFUSAL_GUARD,
-    message: REFUSAL_GUARD_MESSAGE,
+    message: extra ? REFUSAL_GUARD_MESSAGE + extra.message : REFUSAL_GUARD_MESSAGE,
     status: 503,
     request_id: requestId,
+    details: extra?.details,
   })
 }
 

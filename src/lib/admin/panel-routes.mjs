@@ -19,6 +19,7 @@ import { loadDistillRules, saveDistillRules, validateDistillPatch } from '../cor
 import { applyRefusalGuardPatch, refusalGuardPolicy } from '../core/refusal-guard.mjs'
 import {
   applyJevPatch,
+  buildScopeInventory,
   listPolicyModels as listDecisionModels,
   publicJevConfig,
   readJevConfig,
@@ -124,6 +125,7 @@ import {
   vmHasSchedulableCredential,
   persistAllowedModels,
   persistSlotEnginePolicy,
+  persistVmActiveHours,
   persistVmScheduleLevel,
   persistVmOwner,
   persistVmTimezone,
@@ -133,6 +135,7 @@ import { validTimezone } from '../core/timezone.mjs'
 import { stampVmKind, isCodexVm } from '../vm/vm-kind.mjs'
 import { parseAllowedModelsPatch } from '../pool/slot-model-gate.mjs'
 import { parseScheduleLevelInput } from '../pool/credential-weight.mjs'
+import { parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { validateOpenAIQuotaPatch, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import {
@@ -628,13 +631,37 @@ export function createPanelHandler(ctx) {
     }
   }
 
+  /**
+   * Account scope chips for the risk page: one entry per live platform+plan,
+   * plus any selected pair that currently has no slot.
+   */
+  function jevScopeInventory(selectedKeys = []) {
+    let vms = []
+    try {
+      vms = listVms(cfg.paths.project)
+    } catch {
+      vms = []
+    }
+    const inventory = buildScopeInventory(
+      vms.map((vm) => ({ ...vm, quota: panel.findAccount(accountQuota, vm)?.unified || null })),
+      selectedKeys,
+    )
+    return {
+      ...inventory,
+      account_type_options: [],
+      account_plan_type_options: [],
+    }
+  }
+
   function jevInterceptSnapshot() {
+    let config
     try {
       const settings = new SettingsRepo()
-      return publicJevConfig(readJevConfig((key, fallback) => settings.get(key, fallback)))
+      config = publicJevConfig(readJevConfig((key, fallback) => settings.get(key, fallback)))
     } catch {
-      return publicJevConfig(null)
+      config = publicJevConfig(null)
     }
+    return { ...config, account_scope: jevScopeInventory(config.account_platform_plans) }
   }
 
   function activateVmSlot(id) {
@@ -2182,6 +2209,7 @@ export function createPanelHandler(ctx) {
         const hasModels = body && Object.prototype.hasOwnProperty.call(body, 'allowed_models')
         const hasAuthScheme = body && (body.auth_scheme != null || body.authScheme != null)
         const hasScheduleLevel = body && Object.prototype.hasOwnProperty.call(body, 'schedule_level')
+        const hasActiveHours = body && Object.prototype.hasOwnProperty.call(body, 'active_hours')
         const hasTimezone = body && Object.prototype.hasOwnProperty.call(body, 'timezone')
         // `timezone_follow_proxy: true` re-attaches the slot to its exit node's
         // zone, undoing an earlier hand-pinned value.
@@ -2202,6 +2230,7 @@ export function createPanelHandler(ctx) {
           !hasAuthScheme &&
           !hasSlotPolicy &&
           !hasScheduleLevel &&
+          !hasActiveHours &&
           !hasTimezone &&
           !followProxyTz
         ) {
@@ -2209,7 +2238,7 @@ export function createPanelHandler(ctx) {
             ok: false,
             error: {
               message:
-                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, timezone or timezone_follow_proxy required',
+                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, active_hours, timezone or timezone_follow_proxy required',
             },
           })
         }
@@ -2228,6 +2257,10 @@ export function createPanelHandler(ctx) {
         const parsedScheduleLevel = hasScheduleLevel ? parseScheduleLevelInput(body.schedule_level) : null
         if (parsedScheduleLevel && !parsedScheduleLevel.ok) {
           return json(res, 400, { ok: false, error: { message: parsedScheduleLevel.error } })
+        }
+        const parsedActiveHours = hasActiveHours ? parseActiveHoursInput(body.active_hours) : null
+        if (parsedActiveHours && !parsedActiveHours.ok) {
+          return json(res, 400, { ok: false, error: { message: parsedActiveHours.error } })
         }
         const parsedQuotaOverride = hasQuotaOverride ? parseVmQuotaOverride(body.quota_override) : null
         if (parsedQuotaOverride && !parsedQuotaOverride.ok) {
@@ -2377,6 +2410,10 @@ export function createPanelHandler(ctx) {
         }
         if (parsedScheduleLevel) {
           const vm = persistVmScheduleLevel(cfg.paths.project, id, parsedScheduleLevel.value)
+          if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        }
+        if (parsedActiveHours) {
+          const vm = persistVmActiveHours(cfg.paths.project, id, parsedActiveHours.value)
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         if (hasTimezone) {
@@ -4395,7 +4432,11 @@ export function createPanelHandler(ctx) {
             },
           })
         }
-        return json(res, 200, panel.ok(patched.config))
+        return json(
+          res,
+          200,
+          panel.ok({ ...patched.config, account_scope: jevScopeInventory(patched.config.account_platform_plans) }),
+        )
       }
       if (req.method === 'POST' && p === '/api/panel/jev-intercept/models') {
         const body = await readBody(req, 8192).catch(() => ({}))

@@ -11,8 +11,17 @@
   "structure": {
     "min_max_tokens": 8192,
     "require_no_tools": true,
-    "require_single_turn": true
+    "require_single_turn": true,
+    "contest_pattern": "prove that|\\\\boxed|\\baime\\b|olympiad|\\bgpqa\\b|which of the following|livecodebench|amc[_\\s-]?aime"
   },
+  "hard_needles": [
+    "Memory-stage-one extractor",
+    "MUST return strict JSON only",
+    "MUST distill reusable",
+    "MUST extract durable memory",
+    "durable rollout knowledge",
+    "You MUST extract durable memory now"
+  ],
   "needles": [
     "<answer>",
     "<|begin_of_thought|>",
@@ -22,24 +31,9 @@
     "Generate an executable Python function generated from the given prompt",
     "systematic long thinking process",
     "as an internal monologue",
-    "Please reason step by step, and put your final answer within \\boxed{}",
-    "Memory-stage-one extractor",
-    "MUST return strict JSON only",
-    "MUST distill reusable",
-    "MUST extract durable memory",
-    "durable rollout knowledge",
-    "You MUST extract durable memory now"
+    "Please reason step by step, and put your final answer within \\boxed{}"
   ],
-  "patterns": [
-    "\\b(?:knowledge|model|teacher|student)\\s+distill(?:ation|ing)?\\b",
-    "\\bdistill(?:ation|ing)?\\s+(?:of\\s+)?(?:(?:the|your|a|an|reusable|durable|rollout|hidden|internal|full|complete)\\s+)?(?:reasoning(?:\\s+traces?)?|chain[- ]of[- ]thoughts?|teacher(?:\\s+model)?)\\b",
-    "\\b(?:extract|export|dump|reveal|harvest|exfiltrate)(?:ing|ed|ion|s)?\\s+(?:(?:the|your|a|an|full|hidden|internal|complete|raw|durable|entire)\\s+){0,4}(?:chain[- ]of[- ]thoughts?|reasoning\\s+traces?|hidden\\s+reasoning|internal\\s+reasoning|internal\\s+monologues?)\\b",
-    "\\b(?:chain[- ]of[- ]thought|reasoning\\s+trace)\\s+extraction\\b",
-    "(?:知识蒸馏|模型蒸馏|思维链蒸馏|推理蒸馏|思考链蒸馏)",
-    "(?:提取|导出|抽取|蒸馏|收割|扒取)\\s*(?:出|取)?\\s*(?:你的|本人的|完整|全部|隐藏|内部)?\\s*(?:的)?\\s*(?:思维链|思考链|推理链)",
-    "(?:思维链|思考链|推理链)\\s*(?:的)?\\s*(?:提取|导出|抽取|蒸馏|收割)",
-    "(?:提取|导出|抽取)\\s*(?:出)?\\s*(?:隐藏|内部)\\s*(?:的)?\\s*(?:推理|思维|思考)"
-  ],
+  "patterns": [],
   "fingerprints": [
     "Let  $a,b,A,B$  be given reals. We consider the function defined by",
     "The graph of the function $y=\\cos x - \\sin x$ has a line of symmetry given by",

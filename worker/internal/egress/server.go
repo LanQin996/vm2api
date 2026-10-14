@@ -353,28 +353,79 @@ func (s *Server) handleDNS(ctx context.Context, ln net.PacketConn, addr net.Addr
 
 func (s *Server) handleDNSTCP(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
-	var hdr [2]byte
-	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
-		return
+	// Resolvers pipeline A and AAAA, or reuse the TCP connection. One reply
+	// per accept drops the second query as EOF / reset.
+	for ctx.Err() == nil {
+		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return
+		}
+		var hdr [2]byte
+		if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+			return
+		}
+		n := int(binary.BigEndian.Uint16(hdr[:]))
+		if n <= 0 || n > 65535 {
+			return
+		}
+		query := make([]byte, n)
+		if _, err := io.ReadFull(conn, query); err != nil {
+			return
+		}
+		// Upstream attempts carry their own timeout. A client deadline left
+		// running here expires during lookup and the reply is never written.
+		if err := conn.SetDeadline(time.Time{}); err != nil {
+			return
+		}
+		reply, err := s.ResolveDNS(ctx, query)
+		if err != nil {
+			log.Printf("kin-egress dns tcp: %v", err)
+			if ctx.Err() != nil {
+				return
+			}
+			servfail, ok := dnsServFail(query)
+			if !ok {
+				return
+			}
+			reply = servfail
+		}
+		if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+			return
+		}
+		if err := writeDNSFrame(conn, reply); err != nil {
+			return
+		}
 	}
-	n := int(binary.BigEndian.Uint16(hdr[:]))
-	if n <= 0 || n > 65535 {
-		return
-	}
-	query := make([]byte, n)
-	if _, err := io.ReadFull(conn, query); err != nil {
-		return
-	}
-	reply, err := s.ResolveDNS(ctx, query)
-	if err != nil {
-		log.Printf("kin-egress dns tcp: %v", err)
-		return
+}
+
+func writeDNSFrame(conn net.Conn, reply []byte) error {
+	if len(reply) == 0 || len(reply) > 65535 {
+		return fmt.Errorf("dns tcp reply length %d", len(reply))
 	}
 	out := make([]byte, 2+len(reply))
 	binary.BigEndian.PutUint16(out[:2], uint16(len(reply)))
 	copy(out[2:], reply)
-	_, _ = conn.Write(out)
+	_, err := conn.Write(out)
+	return err
+}
+
+func dnsServFail(query []byte) ([]byte, bool) {
+	var msg dnsmessage.Message
+	if err := msg.Unpack(query); err != nil {
+		return nil, false
+	}
+	reply := dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID: msg.ID, Response: true, OpCode: msg.OpCode,
+			RecursionDesired: msg.RecursionDesired, RecursionAvailable: true,
+			RCode: dnsmessage.RCodeServerFailure,
+		},
+		Questions: msg.Questions,
+	}
+	packed, err := reply.Pack()
+	if err != nil {
+		return nil, false
+	}
+	return packed, true
 }
 
 // ResolveDNS tries each upstream in order, starting from the last one that

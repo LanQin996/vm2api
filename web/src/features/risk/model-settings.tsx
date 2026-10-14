@@ -245,7 +245,7 @@ export function ModelSettings({
           </ToggleItem>
           <ToggleItem
             label='失败放行'
-            desc='打分失败照常出站，记为「模型故障放行」'
+            desc='打分失败照常出站，记为「模型故障放行」。关掉后只拦截这一次，不封禁设备'
           >
             <Switch
               checked={draft.fail_open !== false}

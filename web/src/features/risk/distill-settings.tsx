@@ -33,12 +33,22 @@ export function DistillSettings({
   const qc = useQueryClient()
   const q = useQuery(distillQueryOptions())
   const [draft, setDraft] = useState<DistillRules | null>(null)
+  const [hardText, setHardText] = useState('')
   const [needlesText, setNeedlesText] = useState('')
   const [patternsText, setPatternsText] = useState('')
   const [fpText, setFpText] = useState('')
 
   const load = (data: DistillRules) => {
-    setDraft({ ...data, skip_zero: data.skip_zero !== false })
+    setDraft({
+      ...data,
+      hard_needles: data.hard_needles || [],
+      skip_zero: data.skip_zero !== false,
+      structure: {
+        ...data.structure,
+        contest_pattern: data.structure?.contest_pattern || '',
+      },
+    })
+    setHardText((data.hard_needles || []).join('\n'))
     setNeedlesText(data.needles.join('\n'))
     setPatternsText((data.patterns || []).join('\n'))
     setFpText(data.fingerprints.join('\n---\n'))
@@ -51,6 +61,7 @@ export function DistillSettings({
     !!draft &&
     JSON.stringify({
       ...draft,
+      hard_needles: linesOf(hardText),
       needles: linesOf(needlesText),
       patterns: linesOf(patternsText),
       fingerprints: fingerprintsOf(fpText),
@@ -63,6 +74,7 @@ export function DistillSettings({
         method: 'PUT',
         body: JSON.stringify({
           ...draft,
+          hard_needles: linesOf(hardText),
           needles: linesOf(needlesText),
           patterns: linesOf(patternsText),
           fingerprints: fingerprintsOf(fpText),
@@ -90,6 +102,7 @@ export function DistillSettings({
   const patchStructure = (next: Partial<DistillRules['structure']>) =>
     patch({ structure: { ...draft.structure, ...next } })
 
+  const hardCount = linesOf(hardText).length
   const needleCount = linesOf(needlesText).length
   const patternCount = linesOf(patternsText).length
   const fpCount = fingerprintsOf(fpText).length
@@ -135,12 +148,22 @@ export function DistillSettings({
               aria-label='结构特征 max_tokens 下限'
               className='w-24 text-right tabular-nums'
               type='number'
-              min={256}
+              min={1}
               value={draft.structure.min_max_tokens}
+              onChange={(e) => {
+                const value = Number(e.target.value)
+                if (!Number.isFinite(value) || value <= 0) return
+                patchStructure({ min_max_tokens: Math.floor(value) })
+              }}
+            />
+          </ToggleItem>
+          <ToggleItem label='赛题结构正则' desc='空着就不看结构赛题'>
+            <Input
+              aria-label='赛题结构正则'
+              className='w-72 font-mono text-xs'
+              value={draft.structure.contest_pattern}
               onChange={(e) =>
-                patchStructure({
-                  min_max_tokens: Number(e.target.value) || 8192,
-                })
+                patchStructure({ contest_pattern: e.target.value })
               }
             />
           </ToggleItem>
@@ -152,6 +175,21 @@ export function DistillSettings({
         hint='不要写单独的 distill，会误伤化学题；也不要写「请分步解答」。'
       >
         <FoldStack>
+          <Fold
+            flush
+            title='收割包装'
+            meta={hardCount ? `${hardCount} 条` : '还没有'}
+          >
+            <p className='mb-2 text-xs text-muted-foreground'>
+              一行一条。官方客户端和 0 注入也拦。删掉即停，不会补回。
+            </p>
+            <Textarea
+              aria-label='收割包装'
+              className='min-h-36 font-mono text-xs'
+              value={hardText}
+              onChange={(e) => setHardText(e.target.value)}
+            />
+          </Fold>
           <Fold
             flush
             title='拦截模板'
@@ -209,9 +247,11 @@ export function DistillSettings({
               min={400}
               max={599}
               value={draft.error.status}
-              onChange={(e) =>
-                patchError({ status: Number(e.target.value) || 403 })
-              }
+              onChange={(e) => {
+                const value = Number(e.target.value)
+                if (!Number.isFinite(value)) return
+                patchError({ status: Math.floor(value) })
+              }}
             />
           </div>
           <div className='space-y-1.5'>

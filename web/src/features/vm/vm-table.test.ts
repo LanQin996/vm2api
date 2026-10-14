@@ -86,6 +86,34 @@ describe('filterVms fleet chips', () => {
     expect(filterVms(all, '', 'off').map((row) => row.id)).toEqual(['off'])
   })
 
+  it('selects 无效凭证 and 已吊销 together under the dead zone', () => {
+    const bad = vm({
+      id: 'bad',
+      availability: {
+        key: 'bad',
+        usable: false,
+        text: '无效凭证',
+        reason: 'credential_refresh_failed',
+      },
+      refresh_error: 'invalid_grant',
+    })
+    const revoked = vm({
+      id: 'revoked',
+      schedulable: false,
+      schedule_disabled_reason: 'oauth_revoked',
+      refresh_error: 'oauth_revoked',
+      availability: {
+        key: 'off',
+        usable: false,
+        text: '调度关',
+        reason: 'oauth_revoked',
+      },
+    })
+    expect(
+      filterVms([...all, bad, revoked], '', 'dead').map((row) => row.id)
+    ).toEqual(['bad', 'revoked'])
+  })
+
   it('splits Claude and OpenAI slots', () => {
     const claude = vm({ id: 'claude', platform: 'anthropic' })
     const openai = vm({ id: 'openai', platform: 'openai' })

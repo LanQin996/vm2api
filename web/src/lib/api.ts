@@ -1,4 +1,4 @@
-import type { VmQuotaOverride } from '@/types/panel-vm'
+import type { VmActiveHours, VmQuotaOverride } from '@/types/panel-vm'
 import { apiBase, clearSession, hasSession, sessionToken } from '@/lib/session'
 
 export type PanelErrorMetadata = {
@@ -144,6 +144,8 @@ export type VmPatch = {
   allowed_models?: string[]
   auth_scheme?: string
   schedule_level?: number | 'auto' | null
+  /** null = 清除工作时段，恢复 24h 接单。 */
+  active_hours?: VmActiveHours | null
 }
 
 export function patchVm<T = unknown>(id: string, body: VmPatch) {

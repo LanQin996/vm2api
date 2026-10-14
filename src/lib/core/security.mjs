@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
+import { atomicWriteJson } from '../vm/vm-file.mjs'
 
 export function hashKey(key) {
   return crypto.createHash('sha256').update(String(key)).digest('hex')
@@ -96,10 +97,21 @@ function sessionFile() {
   return path.join(dir, 'panel-sessions.json')
 }
 
+function tightenSessionFile(file) {
+  try {
+    const mode = fs.statSync(file).mode & 0o777
+    if (mode !== 0o600) fs.chmodSync(file, 0o600)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return
+    console.warn(`kin-security: failed to tighten panel sessions: ${err.message}`)
+  }
+}
+
 function loadSessions() {
   try {
     const f = sessionFile()
     if (!fs.existsSync(f)) return
+    tightenSessionFile(f)
     const raw = JSON.parse(fs.readFileSync(f, 'utf8'))
     const now = Date.now()
     for (const [storedKey, s] of Object.entries(raw || {})) {
@@ -108,7 +120,9 @@ function loadSessions() {
         panelSessions.set(key, { user: s.user, role: s.role || null, exp: s.exp })
       }
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`kin-security: failed to load panel sessions: ${err.message}`)
+  }
 }
 
 function saveSessions() {
@@ -120,8 +134,10 @@ function saveSessions() {
     for (const [token, s] of panelSessions.entries()) {
       if (s.exp > now) obj[token] = s
     }
-    fs.writeFileSync(f, JSON.stringify(obj, null, 2))
-  } catch {}
+    atomicWriteJson(f, obj, { mode: 0o600 })
+  } catch (err) {
+    console.warn(`kin-security: failed to persist panel sessions: ${err.message}`)
+  }
 }
 
 loadSessions()

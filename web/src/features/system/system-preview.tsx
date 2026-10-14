@@ -8,7 +8,6 @@ import {
   PREVIEW_CALLER_SYSTEM,
   PREVIEW_REQUEST_VARS,
   agentStandingVar,
-  callerSystemStaysInSystem,
   envTimezoneText,
   estimateTokens,
   personaHideEnabled,
@@ -98,7 +97,6 @@ export function SystemPreview({
     !!standing &&
     presetFlagEnabled(compat, 'agent_standing_hide_presets', preset)
   const blocksMasked = personaHideEnabled(compat, preset, blocks)
-  const midSystem = withCaller && !callerSystemStaysInSystem(preset)
   const env = envTimezoneText(timezone)
   const rendered = vars.data
     ? previewSystemBlocks(blocks, {
@@ -111,7 +109,7 @@ export function SystemPreview({
           : '',
         agent_standing: agentStandingVar(compat, preset),
         caller_agent: withCaller ? PREVIEW_CALLER_AGENT : '',
-        caller_system: withCaller && !midSystem ? PREVIEW_CALLER_SYSTEM : '',
+        caller_system: withCaller ? PREVIEW_CALLER_SYSTEM : '',
       })
     : []
   const plain = rendered.map((block) => block.text).join('\n\n')
@@ -232,11 +230,6 @@ export function SystemPreview({
         ) : (
           <p className='text-xs text-muted-foreground'>无 system 块</p>
         )}
-        {midSystem ? (
-          <p className='font-mono text-[10px] text-muted-foreground'>
-            {PREVIEW_CALLER_SYSTEM} → 首条 user 后 role=system
-          </p>
-        ) : null}
       </CardContent>
       {rendered.length ? (
         <div className='flex items-center justify-between border-t border-border/40 px-4 pt-3 font-mono text-[10px] text-muted-foreground tabular-nums'>

@@ -666,3 +666,33 @@ describe('localProxyText', () => {
     ).toBe('东京-01local代理')
   })
 })
+
+describe('rest period (working window) is scheduling, not cooldown or credential', () => {
+  const resting = liveVm({
+    schedule_state: 'restricted',
+    restriction_reason: 'rest_period',
+    availability: {
+      key: 'rest',
+      usable: true,
+      text: '休息时段',
+      reason: 'rest_period',
+    },
+  })
+
+  it('pool status shows rest with the caution tone, not cool', () => {
+    expect(poolStatus(resting)).toMatchObject({
+      key: 'rest',
+      text: '休息时段',
+      cls: 'caution',
+    })
+    expect(accountStatus(resting).cls).toBe('caution')
+  })
+
+  it('groups as restricted', () => {
+    expect(fleetGroup(resting)).toBe('restricted')
+  })
+
+  it('credential cell still answers the credential question', () => {
+    expect(credentialStatus(resting).key).not.toBe('rest')
+  })
+})

@@ -17,7 +17,8 @@ import {
 import { RefusalGuardsRepo } from '../db/repos/refusal-guards-repo.mjs'
 import { RefusalDeviceBlocksRepo } from '../db/repos/refusal-device-blocks-repo.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
-import { readJevConfig } from './jev-intercept.mjs'
+import { findAccount } from '../admin/panel-api.mjs'
+import { jevScopeWaits, readJevConfig, scopeAccountFromVm } from './jev-intercept.mjs'
 import { runProtocolIntercept } from './intercept-gate.mjs'
 import {
   toClaudeMessages,
@@ -43,7 +44,6 @@ import { normalizeCodexRouting } from './codex-route.mjs'
 import { hasClaudeCode1mSuffix } from './context-1m.mjs'
 import {
   DEFAULT_HEALTH_PROBE,
-  HEALTH_REAL_HEADER,
   isHealthRealBypass,
   isHealthShape,
   synthesizeProtocolResponse,
@@ -106,6 +106,7 @@ import {
   extractFirstUserText,
   isOfficialClaudeCodeTraffic,
   isProxiedOfficialClaudeCode,
+  officialCcPassthroughFromRouting,
   personaHidesUsageFromRoutingFile,
   standingUsageFromRoutingFile,
   personaModeFromRoutingFile,
@@ -224,7 +225,8 @@ export function createHandleProtocol(deps) {
       }
     }
     // Pool 529 / pool-wide 429 always carry Retry-After: the runner's wake estimate, floored at 1s.
-    if (mapped.retryAfterSec && Number(result?.retryAfterSec) > 0) {
+    // A 503 carries one only when the runner knows a wake (all-rest pool).
+    if (Number(result?.retryAfterSec) > 0) {
       mapped.retryAfterSec = Math.max(1, Math.ceil(Number(result.retryAfterSec)))
     }
     return mapped
@@ -239,7 +241,18 @@ export function createHandleProtocol(deps) {
     return finalizeAssembledAssistantHop(result)
   }
 
-  async function applyProtocolIntercept({ req, inbound, body, fp, logBag, requestId, res }) {
+  function claudeScopePending() {
+    let jev
+    try {
+      const settings = deps.settings || new SettingsRepo()
+      jev = readJevConfig((key, fallback) => settings.get(key, fallback))
+    } catch {
+      jev = readJevConfig()
+    }
+    return jevScopeWaits(jev, 'claude')
+  }
+
+  async function applyProtocolIntercept({ req, inbound, body, fp, logBag, requestId, res, account = null }) {
     const official =
       isOfficialClaudeCodeTraffic(req.headers, inbound) ||
       isOfficialClaudeClient(fp.client_class) ||
@@ -263,6 +276,7 @@ export function createHandleProtocol(deps) {
       repo: refusalRepo(),
       devices: deviceRepo(),
       requestId,
+      account,
     })
     if (!decision || decision.action !== 'block') {
       if (decision?.intercept) logBag.intercept = decision.intercept
@@ -665,6 +679,19 @@ export function createHandleProtocol(deps) {
         sessions: accountQuota?.sessions || null,
         body: ctx.body,
       }
+      // Account scope needs the slot, so the Codex hop runs the same gate again
+      // once a candidate is claimed. Without a scope the pre-hop verdict stands.
+      const accountGate = (account) =>
+        applyProtocolIntercept({
+          req,
+          inbound,
+          body: ctx.body,
+          fp,
+          logBag,
+          requestId: logCtx.request_id,
+          res,
+          account,
+        })
       if (protocol === 'anthropic.messages') {
         const codex = normalizeCodexRouting(routing.codex)
         return handleCodexProtocol({
@@ -690,6 +717,7 @@ export function createHandleProtocol(deps) {
           },
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
+          accountGate,
           ...codexSticky,
         })
       }
@@ -706,6 +734,7 @@ export function createHandleProtocol(deps) {
         routing,
         projectRoot: cfg.paths.project,
         captureOutbound: logCtx.capture_outbound === true,
+        accountGate,
         ...codexSticky,
       })
     }
@@ -1048,7 +1077,8 @@ export function createHandleProtocol(deps) {
     const pinVmId = req.apiKeyKind === 'master' && isValidVmId(pinVmRaw) ? pinVmRaw : null
     // Pin is panel test-chat / diagnostics (manage). Unpinned /v1 is dispatch.
     const ownerScope = pinVmId ? { type: 'any' } : ownerScopeFromRequest(req, apiKeyStore?.users)
-    const healthReal = isHealthRealBypass(req.headers)
+    // Cache bypass is a client hint; only authenticated master-key probes may skip accounting.
+    const healthReal = req.apiKeyKind === 'master' && isHealthRealBypass(req.headers)
     // Cache lives per account; a failover to another account starts cold by design.
     const noteCachePrefix = (selected, sessionId, body) => {
       if (!sessionId) return
@@ -1086,6 +1116,23 @@ export function createHandleProtocol(deps) {
         deliveryMode,
         signal: clientAbort.signal,
         applyAttempt: async (body, selected, extra = {}) => {
+          if (claudeScopePending()) {
+            const blocked = await applyProtocolIntercept({
+              req,
+              inbound,
+              body: ctx.body,
+              fp,
+              logBag,
+              requestId: logCtx.request_id,
+              res,
+              account: scopeAccountFromVm(selected?.vm, findAccount(accountQuota, selected?.vm)?.unified),
+            })
+            if (blocked) {
+              const error = new Error('response already sent')
+              error.code = 'response_sent'
+              throw error
+            }
+          }
           try {
             touchTelemetrySession(cfg.paths.project, selected.vmId, selected.exec?.vm)
           } catch {}
@@ -1109,25 +1156,34 @@ export function createHandleProtocol(deps) {
           const credMode = credentialModeFromOauth(selected.vm?.claude || {})
           const modeOverride = slotPersonaModeOverride(selected.vm)
           const routingNow = getRouting()
+          const officialPassthrough = officialTraffic && officialCcPassthroughFromRouting(routingNow)
           const cliHop = resolveOfficialCcInference(selected.vm, routingNow) === 'cli-hop'
           let hopBody = body
           if (cliHop) {
             const repaired = extra.repaired === true
             const resolvedPersona = resolveSlotPersonaPreset(selected.vm, routingNow)
-            const cliAppliesNodePersona =
-              !requestContext && !officialTraffic && resolvedPersona !== 'zero' && resolvedPersona !== 'official_full'
-            if (cliAppliesNodePersona) {
-              hopBody = applyCrsUnofficialPersona(structuredClone(personaIn), {
+            // Classifier keeps its own system. Official family keeps its inbound
+            // system only when the protocol tab turns passthrough on.
+            const panelRewrite = !requestContext && !officialPassthrough
+            hopBody = prepareCliHopBody(repaired ? body : hopBody, {
+              stream: upstreamStream,
+              repaired,
+              cacheTtl: requestedCacheTtl,
+              requestContext,
+              preserveSystem: officialPassthrough,
+            })
+            hopBody = await materializeRemoteImageSources(hopBody)
+            if (panelRewrite) {
+              hopBody = applyCrsUnofficialPersona(hopBody, {
                 officialClient: false,
+                forceConfigured: true,
                 routingFile: routingConfigPath,
                 mode: resolvedPersona,
-                headers: req.headers,
                 sessionId: attemptSessionId,
-                model: personaIn?.model,
+                model: hopBody?.model || personaIn?.model,
                 cliVersion: OFFICIAL_CLI_VERSION,
                 identity,
               })
-              // The slot preset may differ from the global one; its panel mask applies.
               personaHideTokens = personaHideForUnofficial(personaIn, hopBody, {
                 officialClient: false,
                 mode: resolvedPersona,
@@ -1135,13 +1191,6 @@ export function createHandleProtocol(deps) {
                 standing: standingUsageFromRoutingFile(routingConfigPath, resolvedPersona),
               })
             }
-            hopBody = prepareCliHopBody(repaired ? body : hopBody, {
-              stream: upstreamStream,
-              repaired,
-              cacheTtl: requestedCacheTtl,
-              requestContext,
-            })
-            hopBody = await materializeRemoteImageSources(hopBody)
             if (identity) {
               hopBody = applyCrsIdentityReplace(hopBody, identity, inbound, req.headers, {
                 officialClient: officialTraffic,
@@ -1158,20 +1207,7 @@ export function createHandleProtocol(deps) {
             cacheTtl = requestedCacheTtl
             if (logCtx.capture_outbound) logBag.outbound_body = hopBody
 
-            // 0注入 hides CLI billing + env and the standing Node left in the leftover.
-            // 官方提示词 must show real usage.
-            const cliHide = requestContext
-              ? 0
-              : resolvedPersona === 'official'
-                ? 0
-                : personaHideForCliZero(personaIn, hopBody, {
-                    officialClient: officialTraffic,
-                    timezone: selected.vm?.timezone || selected.vm?.fingerprint?.timezone,
-                    // A re-applied Node persona's hide (summed below) already counts its overlay.
-                    overlay: cliAppliesNodePersona ? 0 : personaHideTokens?.overlay,
-                    hides: personaHidesUsageFromRoutingFile(routingConfigPath, resolvedPersona),
-                  })
-            personaHideTokens = cliAppliesNodePersona ? (Number(personaHideTokens) || 0) + cliHide : cliHide
+            if (!panelRewrite) personaHideTokens = 0
             logBag.inference_engine = resolveInferenceEngine(selected.vm, routingNow)
             logBag.persona_preset = resolveSlotPersonaPreset(selected.vm, routingNow)
             logBag.official_cc_inference = 'cli-hop'
@@ -1193,12 +1229,13 @@ export function createHandleProtocol(deps) {
           }
 
           cacheTtl = requestedCacheTtl
-          if (!requestContext && !officialTraffic && modeOverride) {
+          if (!requestContext && !officialPassthrough && (modeOverride || officialTraffic)) {
+            const configuredMode = modeOverride || resolveSlotPersonaPreset(selected.vm, routingNow)
             const rewritten = applyCrsUnofficialPersona(structuredClone(personaIn), {
-              officialClient: officialTraffic,
+              officialClient: false,
+              forceConfigured: true,
               routingFile: routingConfigPath,
-              mode: modeOverride,
-              headers: req.headers,
+              mode: configuredMode,
               sessionId: attemptSessionId,
               model: personaIn?.model,
               cliVersion: OFFICIAL_CLI_VERSION,
@@ -1206,10 +1243,10 @@ export function createHandleProtocol(deps) {
             })
             hopBody = officialMessagesBody(rewritten)
             personaHideTokens = personaHideForUnofficial(personaIn, rewritten, {
-              officialClient: officialTraffic,
-              mode: modeOverride,
-              hides: personaHidesUsageFromRoutingFile(routingConfigPath, modeOverride),
-              standing: standingUsageFromRoutingFile(routingConfigPath, modeOverride),
+              officialClient: false,
+              mode: configuredMode,
+              hides: personaHidesUsageFromRoutingFile(routingConfigPath, configuredMode),
+              standing: standingUsageFromRoutingFile(routingConfigPath, configuredMode),
             })
           }
           logBag.inference_engine = resolveInferenceEngine(selected.vm, routingNow)
@@ -1368,6 +1405,8 @@ export function createHandleProtocol(deps) {
       }
     }
 
+    if (result?.responseSent) return
+
     result = acceptAssistantHop(result)
     if (result?.finalState === 'verified' && logBag.cache_prefix_key) {
       confirmCachePrefix(logBag.cache_prefix_key)
@@ -1427,7 +1466,7 @@ export function createHandleProtocol(deps) {
           if (vm) pool.syncQuotaSchedule(vm)
         }
       } catch {}
-      if (managedKey && !healthReal) {
+      if (managedKey) {
         try {
           apiKeyStore.recordUsage(managedKey, logBag.usage || {}, {
             model: logBag.upstream_model || logBag.model,

@@ -224,6 +224,18 @@ export function vmWindowCosts(
   }
 }
 
+/** 5h / 7d 窗口 token（输入 + 输出，不含缓存）。取值顺序同 `vmWindowCosts`。 */
+export function vmWindowTokens(
+  vm: Vm,
+  accounts?: UsageAccountRow[]
+): { h5: number; d7: number } {
+  const acc = usageAccountForVm(vm, accounts)
+  return {
+    h5: num(acc?.window_5h_tokens ?? vm.window_5h_tokens),
+    d7: num(acc?.window_7d_tokens ?? vm.window_7d_tokens),
+  }
+}
+
 /**
  * 账号累计官方价费用。`/api/panel/vms` 不带任何费用字段，累计值只在 `/usage`
  * 账号行和 `/dashboard` 的槽位里；两边都可能缺，取较大者，和 `vmTodayView`
@@ -233,5 +245,13 @@ export function vmTotalCost(vm: Vm, accounts?: UsageAccountRow[]): number {
   return Math.max(
     num(vm.total_cost),
     num(usageAccountForVm(vm, accounts)?.total_cost)
+  )
+}
+
+/** 累计 token，与 `vmTotalCost` 同源同取舍。 */
+export function vmTotalTokens(vm: Vm, accounts?: UsageAccountRow[]): number {
+  return Math.max(
+    num(vm.total_tokens),
+    num(usageAccountForVm(vm, accounts)?.total_tokens)
   )
 }

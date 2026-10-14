@@ -1053,6 +1053,36 @@ test('#A11: an OpenAI pool that stays full answers 429 pool_overloaded', async (
   }
 })
 
+test('an all-rest OpenAI pool answers 503 with Retry-After for the next window', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-rest-'))
+  const vmId = 'vm-gpt-rest'
+  writeGptVm(root, vmId)
+  const file = path.join(root, 'vms', `${vmId}.json`)
+  // A UTC window opening 2–3h from now: `now` is always outside.
+  const pad = (n) => String(n).padStart(2, '0')
+  const hour = new Date().getUTCHours()
+  const active_hours = { start: `${pad((hour + 3) % 24)}:00`, end: `${pad((hour + 5) % 24)}:00`, timezone: 'UTC' }
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file, 'utf8')), policy: { active_hours } }))
+  const args = codexArgs(root, { ensureCodexKernel: async () => ({ ok: true }) })
+  const headers = {}
+  args.res.setHeader = (name, value) => {
+    headers[name] = value
+  }
+  try {
+    const out = await handleCodexProtocol(args)
+    assert.equal(out.status, 503)
+    assert.equal(out.body.error.code, 'pool_unavailable')
+    assert.equal(out.body.error.details.reason, 'pool_resting')
+    const secs = Number(headers['retry-after'])
+    assert.ok(secs > 2 * 3600 && secs <= 3 * 3600, `retry-after=${secs}`)
+  } finally {
+    rt.resetOpenAIAccountRuntime()
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 function emptyCodexRes() {
   return { headersSent: false, write() {}, end() {} }
 }

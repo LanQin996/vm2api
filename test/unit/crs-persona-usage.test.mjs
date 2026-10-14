@@ -148,7 +148,7 @@ test('official_prompt does not start usage hide, even with standing and env', ()
   try {
     const after = applyCrsUnofficialPersona(before, { mode: 'official_prompt', routingFile })
     assert.equal(personaHideForUnofficial(before, after, { mode: 'official_prompt' }), 0)
-    assert.ok(after.system.some((b) => String(b?.text || '') === `${DEFAULT_AGENT_STANDING}\n`))
+    assert.ok(after.system.some((b) => String(b?.text || '').startsWith(`${DEFAULT_AGENT_STANDING}\n`)))
     assert.ok(after.system.some((b) => String(b?.text || '').startsWith('# Environment')))
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

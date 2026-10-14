@@ -39,6 +39,8 @@ const PASS_LABEL = {
   'fail-open': '模型故障放行',
   unchecked: '未检查',
   platform: 'OpenAI 平台未接入',
+  scope: '账号不在范围',
+  'scope-wait': '等待账号判定',
   unknown: '未记录',
 }
 

@@ -37,6 +37,7 @@ function claudePackage(id, token = 'sk-ant-oat01-PACKAGE') {
         rpmOverride: true,
         weight: 4,
         inflight: 9,
+        active_hours: { start: '20:00', end: '08:00', timezone: 'asia/tokyo', days: [5, 1] },
       },
       claude: { auth_scheme: 'authorization_bearer', mode: 'oauth' },
       stats: { requests: 40 },
@@ -103,7 +104,30 @@ test('package keeps traits, SOCKS password and token, and drops runtime', () => 
   assert.equal(parsed.ok, true, parsed.error?.message)
   assert.equal(parsed.value.proxy.password, 's3cret')
   assert.equal(parsed.value.vm.policy.maxConcurrency, 3)
+  assert.deepEqual(parsed.value.vm.policy.active_hours, {
+    start: '20:00',
+    end: '08:00',
+    timezone: 'Asia/Tokyo',
+    days: [1, 5],
+  })
   assert.equal(parsed.value.vm.persona_preset, 'official')
+})
+
+test('package export keeps a window whose stored fields are partly invalid', () => {
+  const doc = buildVmPackage({
+    vm: {
+      id: 'vm-loose',
+      platform: 'anthropic',
+      family: 'claude',
+      policy: { active_hours: { start: '08:00', end: '22:00', days: [], timezone: 'Bad/Zone' } },
+    },
+  })
+  assert.deepEqual(doc.vm.policy.active_hours, { start: '08:00', end: '22:00' })
+  const plain = buildVmPackage({ vm: { id: 'vm-plain', platform: 'anthropic', family: 'claude', policy: {} } })
+  assert.equal(plain.vm.policy.active_hours, null)
+  const parsed = parseVmPackage(plain)
+  assert.equal(parsed.ok, true, parsed.error?.message)
+  assert.equal(parsed.value.vm.policy.active_hours, null)
 })
 
 test('import creates the slot and rolls a colliding id forward', async (t) => {

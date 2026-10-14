@@ -119,6 +119,22 @@ function AdmissionSection({
               aria-label='识别中转来的官方 Claude Code'
             />
           </SettingRow>
+          <SettingRow
+            label='官方 Claude Code 家族透传'
+            desc={
+              compat.official_cc_passthrough === true
+                ? '开：直连和被识别为中转的官方家族保留入站 system，不套用当前提示词档。'
+                : '关：官方家族也套用协议里的 system 档。打开后才透传。'
+            }
+          >
+            <Switch
+              checked={compat.official_cc_passthrough === true}
+              onCheckedChange={(on) =>
+                onCompatChange({ ...compat, official_cc_passthrough: on })
+              }
+              aria-label='官方 Claude Code 家族透传'
+            />
+          </SettingRow>
           <div
             className={cn(
               'space-y-3 pt-3 transition-opacity duration-200',

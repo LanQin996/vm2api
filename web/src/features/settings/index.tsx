@@ -105,6 +105,7 @@ export function SettingsPage() {
           },
           detect_proxied_official_cc: detectProxiedOfficialCcFromCompat(compat),
           claude_code_only: compat.claude_code_only === true,
+          official_cc_passthrough: compat.official_cc_passthrough === true,
           persona_rules: rules,
         }
       }

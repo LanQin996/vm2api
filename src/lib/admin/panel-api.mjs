@@ -47,6 +47,7 @@ import { unitCircuit } from '../pool/unit-circuit.mjs'
 import { accountIdOf, normalizePoolRouting } from '../pool/pool-scheduler.mjs'
 import { codexMaxSessions } from '../pool/codex-slot-pool.mjs'
 import { resolveCredentialScheduleLevel } from '../pool/credential-weight.mjs'
+import { activeHoursZoneOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import {
   evaluateAccount,
   credStatusFromAvailability,
@@ -366,6 +367,9 @@ export function validatePersonaRoutingPatch(body = {}) {
   }
   if (compat.claude_code_only != null && typeof compat.claude_code_only !== 'boolean') {
     problems.push('claude_code_only 必须是布尔')
+  }
+  if (compat.official_cc_passthrough != null && typeof compat.official_cc_passthrough !== 'boolean') {
+    problems.push('official_cc_passthrough 必须是布尔')
   }
   if (compat.cache_breakpoints != null) {
     const bp = compat.cache_breakpoints
@@ -1214,6 +1218,7 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
       cache_creation_tokens: a.cache_creation_tokens || 0,
       today_cost: cost?.today_cost || 0,
       total_cost: cost?.total_cost || 0,
+      total_tokens: Number(cost?.input_tokens || 0) + Number(cost?.output_tokens || 0),
       window_5h_cost: cost?.window_5h_cost || 0,
       window_5h_requests: cost?.window_5h_requests || 0,
       window_5h_tokens: cost?.window_5h_tokens || 0,
@@ -1680,6 +1685,9 @@ function enrichVm(v, accountQuota, active, extras = {}) {
       v.cooldown_reason ||
       null,
   })
+  const activeHours = v.active_hours || null
+  const activeHoursZone = activeHoursZoneOf(activeHours, v)
+  const activeHoursState = evaluateActiveHours(activeHours, undefined, v.timezone)
   if (isCodex && v.quota_policy?.reason && (availability.accept || availability.key === 'quota')) {
     const window = v.quota_policy.reason.includes('5h') ? '5h' : '7d'
     Object.assign(availability, {
@@ -1690,6 +1698,18 @@ function enrichVm(v, accountQuota, active, extras = {}) {
       reason: v.quota_policy.reason,
       window,
       until: v.quota_policy.restricted_until,
+    })
+  }
+  // Rest only repaints a slot that would otherwise accept — real failures
+  // (revoke, quota, cooldown) keep their own reason.
+  if (activeHours && !activeHoursState.active && availability.accept === true) {
+    Object.assign(availability, {
+      key: 'rest',
+      text: '休息时段',
+      accept: false,
+      usable: true,
+      reason: 'rest_period',
+      until: activeHoursState.until,
     })
   }
   const restrictionUntil =
@@ -1785,6 +1805,10 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     weight: v.weight ?? 1,
     schedule_level: scheduleLevel.level,
     schedule_level_mode: scheduleLevel.mode,
+    active_hours: activeHours,
+    active_hours_timezone: activeHours ? activeHoursZone : null,
+    // Window state on its own: availability may carry a stronger reason (cool, quota).
+    active_hours_active: activeHours ? activeHoursState.active : null,
     claude_code_version: v.claude_code_version,
     utilization_5h: u5,
     utilization_7d: u7,
@@ -2186,6 +2210,8 @@ function applyCostFields(target, cost, { scheme } = {}) {
   const todayOut = Number(cost?.today_output_tokens ?? (today?.output_tokens || 0))
   target.today_cost = cost?.today_cost ?? today?.total_cost ?? 0
   target.total_cost = cost?.total_cost || 0
+  // 与 total_cost 同源（计费日志累计行），口径同 window_*_tokens：输入 + 输出，不含缓存。
+  target.total_tokens = Number(cost?.input_tokens || 0) + Number(cost?.output_tokens || 0)
   target.today_requests = cost?.today_requests ?? today?.requests ?? 0
   target.today_tokens = todayInput + todayOut
   target.today_input_tokens = todayInput

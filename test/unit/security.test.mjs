@@ -39,11 +39,38 @@ test('panel session persistence stores only token hashes', async () => {
     const token = security.createPanelSession('admin', 60_000)
     assert.match(token, /^kin-panel-/)
     assert.equal(security.verifyPanelSession(token).user, 'admin')
-    const stored = fs.readFileSync(path.join(dir, 'panel-sessions.json'), 'utf8')
+    const file = path.join(dir, 'panel-sessions.json')
+    const stored = fs.readFileSync(file, 'utf8')
     assert.doesNotMatch(stored, /kin-panel-/)
     assert.doesNotMatch(stored, new RegExp(token))
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.deepEqual(
+      fs.readdirSync(dir).filter((name) => name.includes('.tmp')),
+      [],
+    )
     security.revokePanelSession(token)
     assert.equal(security.verifyPanelSession(token), null)
+  } finally {
+    if (previous == null) delete process.env.KIN_DATA_DIR
+    else process.env.KIN_DATA_DIR = previous
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('existing loose panel session file is tightened on load', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-panel-security-'))
+  const previous = process.env.KIN_DATA_DIR
+  process.env.KIN_DATA_DIR = dir
+  const file = path.join(dir, 'panel-sessions.json')
+  fs.writeFileSync(
+    file,
+    JSON.stringify({ 'kin-panel-load': { user: 'admin', role: 'admin', exp: Date.now() + 60_000 } }),
+  )
+  fs.chmodSync(file, 0o644)
+  try {
+    const security = await import(`../../src/lib/core/security.mjs?tighten=${Date.now()}`)
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+    assert.equal(security.verifyPanelSession('kin-panel-load').user, 'admin')
   } finally {
     if (previous == null) delete process.env.KIN_DATA_DIR
     else process.env.KIN_DATA_DIR = previous

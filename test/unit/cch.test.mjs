@@ -8,7 +8,11 @@ import {
   projectClaudeCodeCchText,
   sealClaudeCodeCch,
 } from '../../src/lib/identity/cch.mjs'
-import { buildBillingAttributionText, applyCrsUnofficialPersona } from '../../src/lib/identity/crs-persona.mjs'
+import {
+  CRS_OFFICIAL_AGENT_PROMPT,
+  applyCrsUnofficialPersona,
+  buildBillingAttributionText,
+} from '../../src/lib/identity/crs-persona.mjs'
 import { finalizeWorkerPayload } from '../../src/lib/transport/go-worker-client.mjs'
 
 test('xxh64 matches Python xxhash.xxh64 intdigest vectors', () => {
@@ -100,16 +104,35 @@ test('applyCrsUnofficialPersona keeps the placeholder until hop finalize', () =>
   const out = applyCrsUnofficialPersona({
     messages: [{ role: 'user', content: 'ping' }],
   })
-  assert.match(out.system[0].text, new RegExp(`cch=${CCH_PLACEHOLDER};`))
+  const billing = out.system.find((block) => /x-anthropic-billing-header:/i.test(block?.text || ''))
+  assert.match(billing.text, new RegExp(`cch=${CCH_PLACEHOLDER};`))
   const sealed = finalizeWorkerPayload({
     body: out,
     reqHeaders: {},
     exec: { homeDir: '', vm: { claude: { mode: 'setup-token', scope: 'user:inference' } } },
     identity: null,
   }).body
-  const cch = sealed.system[0].text.match(/cch=([0-9a-f]{5})/)[1]
+  const sealedBilling = sealed.system.find((block) => /x-anthropic-billing-header:/i.test(block?.text || ''))
+  const cch = sealedBilling.text.match(/cch=([0-9a-f]{5})/)[1]
   assert.notEqual(cch, CCH_PLACEHOLDER)
   const replay = JSON.stringify(sealed).replace(`cch=${cch}`, `cch=${CCH_PLACEHOLDER}`)
   const projected = projectClaudeCodeCchText(replay)
   assert.equal(computeClaudeCodeCch(Buffer.from(projected, 'utf8')), cch)
+})
+
+test('no inbound system still emits billing, identity, official prompt, and env', () => {
+  const sessionId = '11111111-2222-4333-8444-555555555555'
+  const out = applyCrsUnofficialPersona(
+    {
+      model: 'claude-sonnet-5-5',
+      messages: [{ role: 'user', content: '你好呀。' }],
+    },
+    { mode: 'official_prompt', sessionId },
+  )
+  assert.equal(out.system.length, 4)
+  assert.match(out.system[0].text, /^x-anthropic-billing-header: /)
+  assert.equal(out.system[1].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.")
+  assert.equal(out.system[2].text, CRS_OFFICIAL_AGENT_PROMPT)
+  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h', scope: 'global' })
+  assert.match(out.system[3].text, /^# Environment\n/)
 })

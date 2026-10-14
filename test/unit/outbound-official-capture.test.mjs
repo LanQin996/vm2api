@@ -92,12 +92,12 @@ test('unofficial outbound envelope matches official 2.1.281 capture keys', () =>
   assert.equal(body.output_config.effort, 'high')
   assert.equal(body.context_management.edits[0].type, 'clear_thinking_20251015')
   assert.equal(body.system.length, 4)
-  assert.match(body.system[0].text, /cc_entrypoint=sdk-cli;/)
-  assert.match(body.system[0].text, /cch=/)
-  assert.match(body.system[0].text, /cc_prompt_id=/)
-  assert.equal(body.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(body.system[2].text, CRS_AGENT_EXPANSION)
-  assert.deepEqual(body.system[2].cache_control, AGENT_EXPANSION_CACHE_CONTROL)
+  assert.equal(body.system[0].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(body.system[1].text, CRS_AGENT_EXPANSION)
+  assert.deepEqual(body.system[1].cache_control, AGENT_EXPANSION_CACHE_CONTROL)
+  assert.match(body.system[2].text, /cc_entrypoint=sdk-cli;/)
+  assert.match(body.system[2].text, /cch=/)
+  assert.match(body.system[2].text, /cc_prompt_id=/)
   assert.match(body.system[3].text, /# Environment/)
   assert.ok(!body.system[3].text.includes('Linux 7.0.0-14-generic'))
   assert.match(body.system[3].text, /Timezone: America\/Los_Angeles/)
@@ -193,10 +193,10 @@ test('outbound headers align with Claude Code 2.1.293 and keep the 2.1.281 finge
   assert.equal(headers['x-stainless-retry-count'], '0')
   assert.equal(headers['x-stainless-timeout'], '600')
   assert.match(
-    body.system[0].text,
+    body.system[2].text,
     new RegExp(`cc_version=2\\.1\\.293\\.${computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.293')}`),
   )
-  assert.match(body.system[0].text, /cc_prompt_index=0; cc_turn_index=1;/)
+  assert.match(body.system[2].text, /cc_prompt_index=0; cc_turn_index=1;/)
   const uid = JSON.parse(body.metadata.user_id)
   assert.equal(headers['x-claude-code-session-id'], uid.session_id)
   fs.rmSync(dir, { recursive: true, force: true })

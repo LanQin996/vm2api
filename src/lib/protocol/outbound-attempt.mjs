@@ -172,14 +172,16 @@ function stabilizeMessageBudgets(body) {
  */
 export function prepareCliHopBody(
   canonicalBody,
-  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL, requestContext = null } = {},
+  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL, requestContext = null, preserveSystem = false } = {},
 ) {
   if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
   let body = officialMessagesBody(canonicalBody, { stream })
   delete body.metadata
-  const leftover = stripCliOwnedSystem(body.system)
-  if (leftover == null) delete body.system
-  else body.system = leftover
+  if (!preserveSystem) {
+    const leftover = stripCliOwnedSystem(body.system)
+    if (leftover == null) delete body.system
+    else body.system = leftover
+  }
   body = stabilizeSystemBudget(body)
   body = stabilizeMessageBudgets(body)
   // cli-node sends mid-conversation-system. Only models that reject the role need the lift.
@@ -197,7 +199,7 @@ export function prepareCliHopBody(
   body = ensureOutputConfigSchema(body)
   body = alignSamplingWithThinking(body)
   body = stripIllegalCacheControlFields(body)
-  body = removeCacheControlFields(body)
+  body = removeCacheControlFields(body, { keepSystem: preserveSystem })
   body = applyMessageBreakpoints(body, normalizeCacheTtl(cacheTtl), 'rewrite')
   return body
 }

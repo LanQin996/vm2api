@@ -1,3 +1,4 @@
+import type { JevScopeAccount } from '@/types/panel-routing'
 import type { UsageLogRow } from '@/types/panel-usage-logs'
 
 /** Gate order matches `evaluateProtocolIntercept`: cheap rules first, the model last. */
@@ -42,10 +43,50 @@ export const PASS_REASONS: Record<string, { label: string; hint: string }> = {
     label: 'OpenAI 平台未接入',
     hint: 'GPT / Codex 请求，「OpenAI 平台」开关关闭',
   },
+  scope: {
+    label: '账号不在范围',
+    hint: '请求落到的槽位不在选中的平台和套餐里',
+  },
+  'scope-wait': {
+    label: '等待账号判定',
+    hint: '范围含这个平台或指定了账号，等到槽位确定后再判',
+  },
   unknown: {
     label: '未经关卡',
     hint: '鉴权、请求体等错误在关卡前结束，或升级前的旧日志',
   },
+}
+
+/** 风控的账号范围。一对是 `claude:max` / `gpt:plus` 这种平台+套餐。 */
+export type AccountScope = {
+  account_platform_plans: string[]
+  account_ids: string[]
+}
+
+export function scopeConfigured(scope: AccountScope) {
+  return scope.account_platform_plans.length > 0 || scope.account_ids.length > 0
+}
+
+/**
+ * 与后端 `jevAccountInScope` 同一套判断：平台+套餐和指定账号取并集，
+ * 全空 = 所有账号。面板用它实时算「当前范围命中几个槽位」。
+ */
+export function accountInScope(scope: AccountScope, account: JevScopeAccount) {
+  if (!scopeConfigured(scope)) return true
+  const ids = scope.account_ids.map((item) => item.trim().toLowerCase())
+  const id = (account.id || '').trim().toLowerCase()
+  const email = (account.email || '').trim().toLowerCase()
+  const name = (account.name || '').trim().toLowerCase()
+  if (
+    ids.some((want) => want && (want === id || want === email || want === name))
+  )
+    return true
+  const key = (account.scope_key || '').trim().toLowerCase()
+  return !!key && scope.account_platform_plans.includes(key)
+}
+
+export function scopeMatches(scope: AccountScope, accounts: JevScopeAccount[]) {
+  return accounts.filter((account) => accountInScope(scope, account))
 }
 
 /** `upstream` = passed every gate and the upstream refused it. */

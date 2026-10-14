@@ -17,6 +17,7 @@ import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
 import { isLeftoverQuotaScheduleOff } from '../pool/availability.mjs'
 import { manualScheduleLevelOf, parseScheduleLevelInput } from '../pool/credential-weight.mjs'
 import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
+import { activeHoursOf, parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { normalizeOwnerId, vmOriginOf } from '../admin/resource-owner.mjs'
 import { isCodexVm, normalizeVmKind } from './vm-kind.mjs'
 import { canClaudeResetCredits } from '../oauth/credential-mode.mjs'
@@ -127,6 +128,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
         : null,
     weight: vm.policy?.weight ?? 1,
     schedule_level_manual: manualScheduleLevelOf(vm),
+    active_hours: activeHoursOf(vm),
     timezone: vm.timezone || null,
     timezone_source: vm.timezone_source || 'auto',
     locale: vm.locale || null,
@@ -345,6 +347,21 @@ export function persistVmQuotaOverride(projectRoot, vmId, override) {
   vm.policy = { ...(vm.policy || {}) }
   if (override) vm.policy.quota = override
   else delete vm.policy.quota
+  vm.updated_at = new Date().toISOString()
+  atomicWriteJson(file, vm, { mode: 0o600 })
+  return vm
+}
+
+/** `value` is a parsed `active_hours` window (null clears it: the slot runs 24h). */
+export function persistVmActiveHours(projectRoot, vmId, value) {
+  const parsed = parseActiveHoursInput(value)
+  if (!parsed.ok) throw new TypeError(parsed.error)
+  const file = path.join(projectRoot, 'vms', `${vmId}.json`)
+  if (!fs.existsSync(file)) return null
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.policy = { ...(vm.policy || {}) }
+  if (parsed.value == null) delete vm.policy.active_hours
+  else vm.policy.active_hours = parsed.value
   vm.updated_at = new Date().toISOString()
   atomicWriteJson(file, vm, { mode: 0o600 })
   return vm

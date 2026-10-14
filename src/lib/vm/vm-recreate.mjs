@@ -11,6 +11,7 @@ import { atomicWriteJson, invalidateVmSlotReadCache } from './vm-file.mjs'
 import { defaultSeedPolicy } from '../protocol/seed-policy.mjs'
 import { writeSlotSeedFiles } from './slot-seed.mjs'
 import { manualScheduleLevelOf } from '../pool/credential-weight.mjs'
+import { activeHoursOf } from '../pool/active-hours.mjs'
 import { stampVmKind } from './vm-kind.mjs'
 import { materializeWrapCli } from './wrap-cli-runtime.mjs'
 import { listVms } from './vm-registry.mjs'
@@ -57,6 +58,7 @@ export function buildRecreatedVmRecord(prev, generated) {
   const rpmOverride = policy.rpmOverride === true
   const weight = Number.isFinite(Number(policy.weight)) ? Math.max(1, Math.min(100, Number(policy.weight))) : 1
   const priority = manualScheduleLevelOf(prev)
+  const activeHours = activeHoursOf({ policy })
   const allowed = Array.isArray(policy.allowed_models)
     ? [...new Set(policy.allowed_models.map((id) => String(id || '').trim()).filter(Boolean))]
     : []
@@ -82,6 +84,7 @@ export function buildRecreatedVmRecord(prev, generated) {
       inflight: 0,
       ...(allowed.length ? { allowed_models: allowed } : {}),
       ...(policy.quota && typeof policy.quota === 'object' ? { quota: policy.quota } : {}),
+      ...(activeHours ? { active_hours: activeHours } : {}),
     },
     claude: {},
     fingerprint: applyGeneratedFingerprint({}, { ...pack, timezone, locale, reset_at: now }),

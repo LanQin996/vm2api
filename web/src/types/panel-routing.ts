@@ -46,7 +46,11 @@ export type DistillRules = {
     min_max_tokens: number
     require_no_tools: boolean
     require_single_turn: boolean
+    /** 结构收割用的赛题正则。空字符串表示不做这项。 */
+    contest_pattern: string
   }
+  /** 官方客户端和 0 注入也拦。面板删掉即停，不会被代码补回。 */
+  hard_needles: string[]
   needles: string[]
   /** Extra regexes. Built-in distillation / CoT patterns live on the hard rules. */
   patterns: string[]
@@ -101,12 +105,48 @@ export type PolicyRule = {
   source: string
   enabled: boolean
 }
+
+/** 账号范围里的一个可选项：`3` 是当前槽位数，`none` 表示「没有该字段」。 */
+export type JevScopeOption = {
+  id: string
+  label: string
+  count: number
+}
+
+/** 面板用来算「当前范围命中几个槽位」的槽位清单（`GET /api/panel/jev-intercept`）。 */
+export type JevScopeAccount = {
+  id: string
+  email: string | null
+  name: string | null
+  platform: string | null
+  plan_type: string | null
+  account_tier?: string | null
+  /** `claude:max` / `gpt:plus`. The chip id. */
+  scope_key?: string
+  type?: string
+  schedulable: boolean
+}
+
+export type JevScopeInventory = {
+  account_platform_plan_options?: JevScopeOption[]
+  account_type_options?: JevScopeOption[]
+  account_plan_type_options?: JevScopeOption[]
+  accounts_total: number
+  accounts: JevScopeAccount[]
+}
+
 /** `GET/PUT /api/panel/jev-intercept`。决策模型与硬正则。密钥只回 api_key_set。 */
 export type JevInterceptConfig = {
   enabled: boolean
   hard_regex_enabled: boolean
   /** GPT / Codex 请求是否过拦截关卡，默认 false。 */
   openai_platform_enabled: boolean
+  /** 账号范围。空 = 所有账号都进关卡。平台+套餐与指定账号取并集。 */
+  account_platform_plans: string[]
+  account_types: string[]
+  account_plan_types: string[]
+  account_ids: string[]
+  account_scope?: JevScopeInventory
   provider: 'jev' | 'laya' | 'modernbert'
   providers?: {
     id: string

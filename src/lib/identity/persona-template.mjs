@@ -85,8 +85,8 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
       text: '{{identity}}',
     }),
     Object.freeze({
-      id: 'caller_agent',
-      note: '常驻约束 + 调用方 agent prompt，都空则整块丢弃。2.1.263 起 1h global',
+      id: 'agent',
+      note: '常驻约束 + 调用方官方提示词。空则丢弃。1h 断点在本块，排在会变的第5段之前。',
       drop_if_empty: true,
       type: 'text',
       text: '{{agent_standing}}{{caller_agent}}',
@@ -101,7 +101,7 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'caller_system',
-      note: '调用方 --append-system-prompt 剩余 system，原文追加不清洗',
+      note: '第5段可选。只放顶层 system。role=system 留在消息列表。空则丢弃',
       drop_if_empty: true,
       type: 'text',
       text: '{{caller_system}}',
@@ -159,7 +159,7 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
       id: 'agent_slot',
       hide: true,
       type: 'text',
-      text: '{{agent_standing}}{{caller_agent}}',
+      text: '{{agent_standing}}',
       cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h' }),
     }),
     Object.freeze({
@@ -171,6 +171,7 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'caller_system',
+      note: '第5段可选。调用方 system 都写这里，空则丢弃',
       drop_if_empty: true,
       type: 'text',
       text: '{{caller_system}}',

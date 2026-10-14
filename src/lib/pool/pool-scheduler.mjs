@@ -49,6 +49,7 @@ import {
 import { resolveSessionSlots } from '../vm/slot-engine.mjs'
 import { SeatPlanner, rankSeatCandidates } from './seat-planner.mjs'
 import { GATE_DRAINING } from './quota-gate.mjs'
+import { activeHoursOf, evaluateActiveHours } from './active-hours.mjs'
 
 const WAIT_TIMEOUT_MIN_MS = 1000
 const WAIT_TIMEOUT_MAX_MS = 120000
@@ -183,7 +184,8 @@ function scopedSeatKey(seatKey, scope = PLATFORM_SCOPE) {
  * Nothing eligible. Fable keeps its Max gate; otherwise an upstream cooldown on
  * the dropped accounts names the cause: any 529 overload cooldown is capacity
  * (529), only 429 rate-limit cooldowns are the provider's limit (429). Without
- * either, nothing will come back by waiting (503).
+ * either, nothing will come back by waiting (503) — unless every slot is just
+ * inside its operator rest window, whose open time rides along as retry_after.
  */
 function emptyPoolFailure(model, candidates, now = Date.now()) {
   if (isFableModel(model)) return { reason: 'fable_requires_max', retry_after_ms: null }
@@ -196,7 +198,8 @@ function emptyPoolFailure(model, candidates, now = Date.now()) {
     return { reason: 'pool_overload_cooldown', retry_after_ms: Math.max(0, until - now) }
   }
   if (limited != null) return { reason: 'pool_rate_limited', retry_after_ms: Math.max(0, limited - now) }
-  return { reason: 'no_eligible_accounts', retry_after_ms: null }
+  const restUntil = Number(candidates?.rest_until) || 0
+  return { reason: 'no_eligible_accounts', retry_after_ms: restUntil > now ? restUntil - now : null }
 }
 
 function selectionSnapshot(candidates = [], available = [], extras = {}) {
@@ -870,6 +873,9 @@ export class PoolScheduler extends EventEmitter {
     // that cause (pool_rate_limited / pool_overload_cooldown) instead of 503.
     candidates.cooldowns = { rate_limited: null, overloaded: null }
     candidates.rejections = { quota_guard_request_too_large: 0 }
+    // Soonest working-window open across resting slots; an all-rest pool
+    // reports it as retry_after so the client can time the next attempt.
+    candidates.rest_until = null
     const pin = pinVmId ? String(pinVmId).trim() : ''
     for (const summary of summaries) {
       if (signal?.aborted) throw makeAbortError()
@@ -900,6 +906,9 @@ export class PoolScheduler extends EventEmitter {
           candidates.cooldowns[kind] = prev == null ? until : Math.min(prev, until)
         } else if (kind === 'quota_guard_request_too_large') {
           candidates.rejections.quota_guard_request_too_large += 1
+        } else if (kind === 'rest_period') {
+          const until = Number(eligibility.until) || 0
+          candidates.rest_until = candidates.rest_until == null ? until : Math.min(candidates.rest_until, until)
         }
         continue
       }
@@ -1039,6 +1048,12 @@ export class PoolScheduler extends EventEmitter {
         }
         headroom = budgetHeadroom({ account: { ...account, last_used_at: lastUsedAt }, quota, policy, now })
       }
+      // Operator-set working window: outside it the slot simply is not a
+      // candidate. Checked after the model / account gates so only a slot that
+      // would otherwise serve feeds the pool's rest_until (Retry-After), and
+      // before the worker health hop. Pins are diagnostics and still reach the slot.
+      const rest = evaluateActiveHours(activeHoursOf(vm), now, vm.timezone)
+      if (!rest.active) return { ok: false, reason: 'rest_period', until: rest.until }
     }
     const workerStatus = await this.getWorkerHealth(this.executionContext(vm, accountId), { signal })
     const cred = evaluateCredentialEligibility({ vm, workerStatus, now })

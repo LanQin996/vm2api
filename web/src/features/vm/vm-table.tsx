@@ -1,177 +1,18 @@
-import type { KeyboardEvent } from 'react'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { credTypeLabel, credTypeOf } from '@/lib/cred-type'
-import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
-import { tierVisual } from '@/lib/tier-visual'
-import { cn } from '@/lib/utils'
-import { isCodexVm, platformLabel, slotNameLabel } from '@/lib/vm-kind'
-import {
-  claudeTier,
-  credentialStatus,
-  fleetGroup,
-  vmCredDead,
-  vmFailedAt,
-} from '@/lib/vm-status'
-import { vmCacheHitPct, vmTotalCost } from '@/lib/vm-usage'
+import { usedPctOf } from '@/lib/format'
+import { isCodexVm, platformLabel } from '@/lib/vm-kind'
+import { claudeTier, fleetGroup, vmCredDead, vmFailedAt } from '@/lib/vm-status'
+import { vmCacheHitPct, vmTotalCost, vmWindowCosts } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
-import {
-  CredLaneChip,
-  PlatformChip,
-  SlotIdentity,
-} from '@/components/platform-chip'
-import { StatusMark } from '@/components/status-mark'
-import { ProxyChip } from '@/features/proxies/proxy-chip'
-import { NodeChip } from '@/features/vm/node-chip'
-import { RuntimeChip } from '@/features/vm/runtime-chip'
-import {
-  SchedulableSwitch,
-  vmSchedulableProps,
-} from '@/features/vm/schedulable-switch'
-import { VmUsageWindows } from '@/features/vm/usage-windows'
-import { VmActionMenu } from '@/features/vm/vm-action-menu'
-import { useVmActions } from '@/features/vm/vm-actions-context'
-
-/**
- * 网格卡片。三段式：**是谁**（名称 / 邮箱 / 等级）→ **还剩多少**（统一用量窗口）
- * → **能不能用**（左下有效性 + 右下调度开关与扩展菜单）。
- *
- * 卡面底色即等级：Pro 蓝 / Max 紫 / 无凭证中性。点击卡片弹出详情卡；
- * 诊断字段留在详情卡与详情页——卡片是分诊面，不是明细面。
- */
-export function VmCards({
-  vms,
-  accounts,
-}: {
-  vms: Vm[]
-  accounts?: UsageAccountRow[]
-}) {
-  return (
-    <div className='grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
-      {vms.map((vm) => (
-        <VmCard key={vm.id} vm={vm} accounts={accounts} />
-      ))}
-    </div>
-  )
-}
-
-function VmCard({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
-  const actions = useVmActions()
-  const skin = tierVisual(vm)
-  const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.target !== e.currentTarget) return
-    if (e.key !== 'Enter' && e.key !== ' ') return
-    e.preventDefault()
-    actions.openDetail(vm)
-  }
-
-  return (
-    <div
-      role='button'
-      tabIndex={0}
-      aria-label={`查看 ${vm.id} 详情`}
-      className={cn(
-        'group flex h-full min-w-0 cursor-pointer flex-col gap-2 overflow-hidden rounded-[10px] border p-3 transition-[background-color,border-color] duration-150 ease-out focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-        skin.card
-      )}
-      onClick={() => actions.openDetail(vm)}
-      onKeyDown={onKey}
-    >
-      <div className='flex min-w-0 items-start justify-between gap-2'>
-        <div className='min-w-0 flex-1 overflow-hidden'>
-          <div className='flex min-w-0 items-center gap-1.5'>
-            <SlotIdentity
-              vm={vm}
-              compact
-              className='min-w-0 flex-1 font-[590]'
-            />
-            <RuntimeChip vm={vm} />
-            <NodeChip nodeId={vm.node_id} />
-            <CredLaneChip vm={vm} />
-          </div>
-          <p
-            className={cn(
-              'truncate text-[11px] leading-[1.45] tracking-[-0.003em]',
-              skin.muted
-            )}
-          >
-            {slotNameLabel(vm)}
-          </p>
-        </div>
-        {skin.key === 'none' ? null : (
-          <span
-            className={cn(
-              'shrink-0 rounded-[5px] px-2 py-0.5 text-[10px] leading-none font-bold tracking-[0.03em] uppercase',
-              skin.badge
-            )}
-          >
-            {skin.label}
-          </span>
-        )}
-      </div>
-
-      <ProxyChip vm={vm} className='w-full' compact />
-
-      <VmUsageWindows vm={vm} accounts={accounts} quiet quotaActions />
-
-      {/* 层级靠尺寸与字重建立，不靠颜色：累计是决策数字，今日是参考值。 */}
-      <div className='mt-auto flex items-end justify-between gap-3'>
-        <div className='min-w-0'>
-          <div
-            className={cn(
-              'text-[10.5px] leading-none',
-              skin.key === 'none'
-                ? 'text-[color:var(--text-tertiary)]'
-                : skin.muted
-            )}
-          >
-            累计消耗
-          </div>
-          <div
-            className={cn(
-              'mt-1 truncate text-[17px] leading-none font-[590] tracking-[-0.02em] tabular-nums',
-              skin.accent
-            )}
-          >
-            {fmtUsd(vmTotalCost(vm, accounts), 2)}
-          </div>
-        </div>
-        <div className='shrink-0 text-right'>
-          <div
-            className={cn(
-              'text-[10.5px] leading-none',
-              skin.key === 'none'
-                ? 'text-[color:var(--text-tertiary)]'
-                : skin.muted
-            )}
-          >
-            今日
-          </div>
-          <div className='mt-1 text-[13px] leading-none tracking-[-0.01em] tabular-nums'>
-            {fmtUsd(vm.today_cost, 2)}
-          </div>
-        </div>
-      </div>
-
-      <div className='hairline-t flex items-center justify-between gap-2 pt-1.5'>
-        <div className='flex min-w-0 items-center gap-1.5'>
-          <StatusMark tone={credentialStatus(vm)} variant='pill' />
-        </div>
-        <div
-          className='flex items-center gap-1'
-          onClick={(e) => e.stopPropagation()}
-        >
-          <SchedulableSwitch {...vmSchedulableProps(vm)} />
-          <VmActionMenu vm={vm} className={skin.muted} />
-        </div>
-      </div>
-    </div>
-  )
-}
+import { PlatformChip } from '@/components/platform-chip'
+import { zoneOf, type VmZoneFilter } from '@/features/vm/vm-rack-model'
 
 export { VmTable } from './vm-list-table'
 
-export type VmSortKey = 'name' | 'today' | 'cache' | 'remain' | 'status'
+export type VmSortKey =
+  'name' | 'today' | 'cache' | 'remain' | 'status' | 'cost7' | 'total'
 
 /**
  * 状态优先级：在池 → 受限 → 关闭调用 → 未使用 → 无效凭证 → revoke。
@@ -225,6 +66,10 @@ export function sortVms(
     switch (key) {
       case 'today':
         return Number(vm.today_cost || 0)
+      case 'cost7':
+        return vmWindowCosts(vm, accounts).d7
+      case 'total':
+        return vmTotalCost(vm, accounts)
       // null (no prompt tokens) sorts below a real 0% hit rate
       case 'cache':
         return vmCacheHitPct(vm, accounts) ?? -1
@@ -254,7 +99,7 @@ export function sortVms(
 }
 
 /**
- * 按 fleetGroup 粗分档位筛选 + 全文搜索。
+ * 按状态分区筛选 + 全文搜索。
  * 等级与凭证类型仍参与全文搜索（可以直接搜 "Max" / "OAuth"）。
  * `kind` 切 Claude / GPT 凭证面，默认全部。
  */
@@ -308,13 +153,13 @@ export function KindFilterChips({
 export function filterVms(
   vms: Vm[],
   q: string,
-  filter: string,
+  filter: VmZoneFilter,
   kind: VmKindFilter = 'all'
 ) {
   const needle = q.trim().toLowerCase()
   return vms.filter((vm) => {
     if (!matchesKind(vm, kind)) return false
-    if (filter !== 'all' && fleetGroup(vm) !== filter) return false
+    if (filter !== 'all' && zoneOf(vm) !== filter) return false
     if (!needle) return true
     const hay = [
       vm.name,
@@ -333,5 +178,3 @@ export function filterVms(
     return hay.includes(needle)
   })
 }
-
-export { fmtNum }

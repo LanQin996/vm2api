@@ -8,6 +8,7 @@ import { isOfficialClaudeUa } from '../identity/crs-headers.mjs'
 import { isOfficialClaudeCodeTraffic } from '../identity/crs-persona.mjs'
 import { vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { isValidVmId } from '../vm/vm-file.mjs'
+import { activeHoursOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import { fromClaudeToOpenAIChat, fromClaudeToOpenAICompletions, fromClaudeToResponses } from '../protocol/convert.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 
@@ -572,7 +573,7 @@ export function formatHealthSse(protocol, inbound, snapshot, cfg = DEFAULT_HEALT
 
 const HARD_UNAVAILABLE = new Set(['stopped', 'dead', 'error', 'disabled'])
 
-export function isHealthProbeTarget(vm) {
+export function isHealthProbeTarget(vm, now = Date.now()) {
   if (!vm) return false
   if (vm.schedulable === false) return false
   const status = String(vm.status || '').toLowerCase()
@@ -588,15 +589,17 @@ export function isHealthProbeTarget(vm) {
   ) {
     return false
   }
+  // Off-shift slots take no real traffic, probes included (a probe is a pinned real chat).
+  if (!evaluateActiveHours(activeHoursOf(vm), now, vm.timezone).active) return false
   if (vm.claude) return vmHasClaudeCredential(vm)
   return !!(vm.has_token || vm.has_refresh)
 }
 
-export function selectHealthProbeTargets(vms = [], cfg = DEFAULT_HEALTH_PROBE) {
+export function selectHealthProbeTargets(vms = [], cfg = DEFAULT_HEALTH_PROBE, now = Date.now()) {
   const allow = new Set((cfg.real?.vm_ids || []).map((id) => String(id)))
   return (vms || []).filter((vm) => {
     if (allow.size && !allow.has(vm.id)) return false
-    return isHealthProbeTarget(vm)
+    return isHealthProbeTarget(vm, now)
   })
 }
 
@@ -632,10 +635,13 @@ export function createHealthProbeMonitor(opts = {}) {
 
   const probePlatform = async (platform, real, started) => {
     const vms = typeof opts.listTargets === 'function' ? opts.listTargets() || [] : []
-    const targets = selectHealthProbeTargets(vms, config).filter(
+    const targets = selectHealthProbeTargets(vms, config, nowFn()).filter(
       (vm) => (String(vm.platform || '').toLowerCase() === 'openai' ? 'openai' : 'anthropic') === platform,
     )
     if (!targets.length) {
+      // Every slot off-shift: a still-valid good reply keeps serving until it expires.
+      const prev = snapshots[platform]
+      if (prev?.ok && isSnapshotValid(prev, config, nowFn())) return
       snapshots[platform] = {
         ok: false,
         at: new Date(started).toISOString(),

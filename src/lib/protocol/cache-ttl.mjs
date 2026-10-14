@@ -165,7 +165,7 @@ export function stripIllegalCacheControlFields(body) {
   return out
 }
 /** Drop caller cache_control so Node can restamp last + penultimate user. */
-export function removeCacheControlFields(body) {
+export function removeCacheControlFields(body, { keepSystem = false } = {}) {
   if (!body || typeof body !== 'object') return body
   const out = { ...body }
   delete out.cache_control
@@ -176,7 +176,7 @@ export function removeCacheControlFields(body) {
     return next
   }
   if (Array.isArray(out.tools)) out.tools = out.tools.map(clearNode)
-  if (Array.isArray(out.system)) out.system = out.system.map(clearNode)
+  if (!keepSystem && Array.isArray(out.system)) out.system = out.system.map(clearNode)
   if (Array.isArray(out.messages)) {
     out.messages = out.messages.map((message) => {
       if (!Array.isArray(message?.content)) return message

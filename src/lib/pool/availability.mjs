@@ -519,6 +519,14 @@ export function resolveScheduleState({
   }
   const until = Number(restrictionUntil) || Number(availability.until) || 0
   const liveRestriction = until > now
+  // Rest is a scheduled shift, not a cooldown: stale cooldown fields must not mask it.
+  if (!liveRestriction && availability.key === 'rest') {
+    return {
+      schedule_state: 'restricted',
+      restriction_reason: availability.reason || 'rest_period',
+      restriction_until: Number(availability.until) || null,
+    }
+  }
   const restricted = liveRestriction || availability.key === 'quota' || availability.key === 'cool'
   if (restricted) {
     return {
@@ -566,7 +574,7 @@ export function credStatusFromAvailability(av = {}) {
       ? 'ok'
       : key === 'quota' || key === 'warn'
         ? 'warn'
-        : key === 'cool' || key === 'caution' || key === 'drain'
+        : key === 'cool' || key === 'caution' || key === 'drain' || key === 'rest'
           ? 'caution'
           : key === 'off'
             ? 'off'
@@ -589,9 +597,11 @@ export function credStatusFromAvailability(av = {}) {
                 ? av.reason === 'auth_cooldown'
                   ? AUTH_COOLDOWN_TEXT
                   : '冷却中'
-                : av.reason === 'oauth_revoked'
-                  ? REVOKE_TEXT
-                  : INVALID_CREDENTIAL_TEXT)
+                : key === 'rest'
+                  ? '休息时段'
+                  : av.reason === 'oauth_revoked'
+                    ? REVOKE_TEXT
+                    : INVALID_CREDENTIAL_TEXT)
   return {
     key,
     text,

@@ -9,7 +9,7 @@ import {
   resolveCredentialScheduleLevel,
   weeklyResetAt,
 } from '../../src/lib/pool/credential-weight.mjs'
-import { persistVmScheduleLevel, summarizeVm } from '../../src/lib/vm/vm-registry.mjs'
+import { persistVmActiveHours, persistVmScheduleLevel, summarizeVm } from '../../src/lib/vm/vm-registry.mjs'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const NOW = Date.parse('2026-09-01T12:00:00.000Z')
@@ -77,4 +77,30 @@ test('VM schedule level persists independently from WRR weight and can return to
   assert.equal(saved.policy.priority, undefined)
   assert.equal(saved.policy.weight, 3)
   assert.equal(summarizeVm(saved).schedule_level_manual, null)
+})
+
+test('VM active hours persist, normalize, and clear to 24h duty', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-active-hours-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms'), { recursive: true })
+  const file = path.join(root, 'vms', 'vm-01.json')
+  fs.writeFileSync(file, JSON.stringify({ id: 'vm-01', name: 'one', policy: { weight: 3 } }))
+
+  persistVmActiveHours(root, 'vm-01', { start: '20:00', end: '08:00', timezone: 'asia/shanghai', days: [6, 0, 0] })
+  let saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.deepEqual(saved.policy.active_hours, {
+    start: '20:00',
+    end: '08:00',
+    timezone: 'Asia/Shanghai',
+    days: [0, 6],
+  })
+  assert.deepEqual(summarizeVm(saved).active_hours, saved.policy.active_hours)
+
+  persistVmActiveHours(root, 'vm-01', null)
+  saved = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.equal(saved.policy.active_hours, undefined)
+  assert.equal(saved.policy.weight, 3)
+  assert.equal(summarizeVm(saved).active_hours, null)
+
+  assert.throws(() => persistVmActiveHours(root, 'vm-01', { start: '8:00', end: '22:00' }), TypeError)
 })

@@ -164,7 +164,7 @@ export function HardRegexSettings({
           </ToggleItem>
           <ToggleItem
             label='OpenAI 平台'
-            desc='GPT / Codex 请求默认不过关卡；开启后与 Claude 走同一套硬正则、拒答缓存与决策模型'
+            desc='没设账号范围时，GPT 默认不过关卡。设了范围后，只有命中的平台和套餐进关卡'
           >
             <Switch
               checked={draft.openai_platform_enabled}

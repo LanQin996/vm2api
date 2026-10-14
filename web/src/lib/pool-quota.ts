@@ -76,6 +76,16 @@ export function poolEligible(vm: Vm): boolean {
   return accountUsable(vm)
 }
 
+/** 该窗口有没有实测用量。缺省时 `usedPctOf` 回 0，不能当成「确认没用过」。 */
+export function windowProbed(vm: Vm, window: '5h' | '7d'): boolean {
+  return Boolean(
+    (window === '5h' ? vm.utilization_5h : vm.utilization_7d) != null ||
+    vm.codex_usage?.windows?.some(
+      (w) => w.id === window && w.used_percent != null
+    )
+  )
+}
+
 export function poolQuota(vms: Vm[]): {
   windows: [PoolWindow, PoolWindow, PoolWindow]
   eligible: number
@@ -91,24 +101,14 @@ export function poolQuota(vms: Vm[]): {
       id: vm.id,
       name,
       usedPct: usedPctOf(vm, '5h'),
-      probed: Boolean(
-        vm.utilization_5h != null ||
-        vm.codex_usage?.windows?.some(
-          (w) => w.id === '5h' && w.used_percent != null
-        )
-      ),
+      probed: windowProbed(vm, '5h'),
       resetAt: expiresAtToMs(vm.reset_5h),
     })
     w7.push({
       id: vm.id,
       name,
       usedPct: usedPctOf(vm, '7d'),
-      probed: Boolean(
-        vm.utilization_7d != null ||
-        vm.codex_usage?.windows?.some(
-          (w) => w.id === '7d' && w.used_percent != null
-        )
-      ),
+      probed: windowProbed(vm, '7d'),
       resetAt: expiresAtToMs(vm.reset_7d),
     })
     const fb = vm.fable || {}

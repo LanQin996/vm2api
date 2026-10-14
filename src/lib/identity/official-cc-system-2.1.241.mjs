@@ -5,6 +5,7 @@
  * Unofficial agent block is CRS_AGENT_EXPANSION (not the official SWE prompt).
  */
 import { createRequire } from 'node:module'
+import { validTimezone } from '../core/timezone.mjs'
 
 const require = createRequire(import.meta.url)
 const FIXTURE = require('./official-cc-system-2.1.241.json')
@@ -135,8 +136,8 @@ export function parseInboundEnvFacts(texts = []) {
       facts.locale = sanitizeEnvToken(firstEnvField(loc?.[1] || ''), 64)
     }
     if (!facts.timezone) {
-      const tz = text.match(/\bTimezone:\s*([^\n]+)/i)
-      facts.timezone = sanitizeEnvToken(firstEnvField(tz?.[1] || ''), 64)
+      const tz = text.match(/(?:^|\n)\s*-?\s*(?:Timezone|Time zone|TZ)\s*[:=]\s*([^\n]+)/i)
+      facts.timezone = validTimezone(firstEnvField(tz?.[1] || ''))
     }
     if (!facts.osVersion) {
       const os = text.match(/(?:^|\n)\s*-?\s*OS Version:\s*([^\n]+)/i)
@@ -253,9 +254,7 @@ export function buildOverwriteEnvironmentSection({
   const shellLine = `\n - Shell: ${sanitizeEnvToken(shell) || 'unknown'}`
   const osLine = resolvedOs
     ? `\n - OS Version: ${resolvedOs}${loc}${tz}`
-    : loc || tz
-      ? `\n - OS Version:${loc}${tz}`
-      : ''
+    : `${loc ? `\n - Locale: ${locValue}` : ''}${tz ? `\n - Timezone: ${tzValue}` : ''}`
   return `# Environment
 You have been invoked in the following environment: 
 ${cwdLine}${gitLine}${platformLine}${shellLine}${osLine}

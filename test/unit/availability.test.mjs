@@ -489,3 +489,16 @@ test('availabilityFromQuotaRefresh still aliases evaluateAccount', () => {
   })
   assert.equal(av.key, 'ok')
 })
+
+test('rest stays restricted even with a stale cooldown left on the slot', () => {
+  const now = Date.parse('2026-09-17T12:00:00.000Z')
+  const until = Date.parse('2026-09-17T20:00:00.000Z')
+  const triad = resolveScheduleState({
+    schedulable: true,
+    availability: { key: 'rest', reason: 'rest_period', until },
+    restrictionUntil: now - 60_000,
+    restrictionReason: 'rate_limited',
+    now,
+  })
+  assert.deepEqual(triad, { schedule_state: 'restricted', restriction_reason: 'rest_period', restriction_until: until })
+})

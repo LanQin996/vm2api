@@ -1422,3 +1422,21 @@ test('explicit VM pin is not redirected by a family locked elsewhere', async () 
   assert.equal(scheduler.state.selects.length, 3)
   assert.equal(scheduler.state.inflight, 0)
 })
+
+test('an all-rest pool 503 carries Retry-After for the next window open', async () => {
+  const scheduler = {
+    async selectAndReserve() {
+      return { ok: false, reason: 'no_eligible_accounts', retry_after_ms: 90_500, eligible: 0, available: 0 }
+    },
+  }
+  const runner = new FailoverRunner({ scheduler })
+  const result = await runner.run({
+    requestId: 'req-all-rest',
+    canonicalBody: { model: 'claude-sonnet-test' },
+    model: 'claude-sonnet-test',
+    callAttempt: () => success(),
+  })
+  assert.equal(result.status, 503)
+  assert.equal(result.body.error.code, 'account_pool_exhausted')
+  assert.equal(result.retryAfterSec, 91)
+})

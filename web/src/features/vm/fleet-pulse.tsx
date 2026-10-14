@@ -3,34 +3,18 @@ import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
 import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
 import { cn } from '@/lib/utils'
-import { fleetGroup, type FleetGroup } from '@/lib/vm-status'
 import { vmTodayStats, vmWeekOutcome } from '@/lib/vm-usage'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
-
-/**
- * 舰队构成的六个分组，顺序即「可用性降序」：能打的在左，废的在右。
- *
- * `revoke` 用 red 而不是 pink：它和 `bad` 在筛选上是两档，堆叠条上挨着，
- * 同色相会糊成一段。red/pink 是主题里唯二的相邻红相，拿来做这组区分正好。
- * `off`（运维主动关）与 `none`（没绑凭证）都走中性灰，靠 alpha 分层——
- * 它们不是故障，不该占红色。
- */
-const GROUPS: { key: FleetGroup; label: string; color: string }[] = [
-  { key: 'pool', label: '在池', color: 'var(--status-ok-solid)' },
-  { key: 'restricted', label: '受限', color: 'var(--status-warn-solid)' },
-  { key: 'off', label: '关闭调用', color: 'var(--status-none)' },
-  {
-    key: 'none',
-    label: '未使用',
-    color: 'color-mix(in oklch, var(--status-none) 55%, transparent)',
-  },
-  { key: 'bad', label: '无效凭证', color: 'var(--status-bad-solid)' },
-  { key: 'revoke', label: '已吊销', color: 'var(--red-4)' },
-]
+import {
+  ZONES,
+  zoneOf,
+  type VmZone,
+  type VmZoneFilter,
+} from '@/features/vm/vm-rack-model'
 
 /** 7d 余量直方图的档位。越靠左越危险，和用量条的风险轴同向。 */
 const HEADROOM_BUCKETS: { label: string; color: string }[] = [
@@ -43,7 +27,7 @@ const HEADROOM_BUCKETS: { label: string; color: string }[] = [
 
 type Pulse = {
   total: number
-  counts: Record<FleetGroup, number>
+  counts: Record<VmZone, number>
   /** 有票槽位的 7d 余量，按 20% 一档分桶。 */
   headroom: number[]
   headroomMedian: number | null
@@ -59,13 +43,12 @@ type Pulse = {
 }
 
 function computePulse(vms: Vm[], accounts?: UsageAccountRow[]): Pulse {
-  const counts: Record<FleetGroup, number> = {
+  const counts: Record<VmZone, number> = {
     pool: 0,
     restricted: 0,
     off: 0,
     none: 0,
-    bad: 0,
-    revoke: 0,
+    dead: 0,
   }
   const headroom = [0, 0, 0, 0, 0]
   const remains: number[] = []
@@ -79,7 +62,7 @@ function computePulse(vms: Vm[], accounts?: UsageAccountRow[]): Pulse {
   let topBurner: { name: string; cost: number } | null = null
 
   for (const vm of vms) {
-    counts[fleetGroup(vm)] += 1
+    counts[zoneOf(vm)] += 1
     if (vm.has_token) {
       const remain = Math.max(0, 100 - usedPctOf(vm, '7d'))
       remains.push(remain)
@@ -152,12 +135,12 @@ function Cell({
 }
 
 /**
- * 舰队脉搏。列表上方的四格总览，回答运维打开这一页时的四个问题：
- * 现在有多少能打（构成）· 还剩多少余量（余量分布）· 今天烧了多少（消耗）
+ * 舰队脉搏。列表上方的总览，回答运维打开这一页时的四个问题：
+ * 现在有多少能打（分区）· 还剩多少余量（余量分布）· 今天烧了多少（消耗）
  * · 打出去的成了没有（成败）。
  *
- * 构成条的分段同时是筛选入口 —— 不另起一排按钮，图例即控件：
- * 比例给「多不多」，数字给「多少」，点击给「只看这档」。
+ * 分区段同时是筛选入口：宽度给「多不多」，数字给「多少」，点击给「只看这区」。
+ * 分区与机架内的分段同一套定义（`ZONES`），吊销并入无效凭证。
  */
 export function FleetPulse({
   vms,
@@ -169,12 +152,12 @@ export function FleetPulse({
   /** 已按凭证面（Claude / GPT）筛过、但未经搜索与分组筛选的全集。 */
   vms: Vm[]
   accounts?: UsageAccountRow[]
-  filter: string
-  onFilter: (next: string) => void
+  filter: VmZoneFilter
+  onFilter: (next: VmZoneFilter) => void
   className?: string
 }) {
   const pulse = useMemo(() => computePulse(vms, accounts), [vms, accounts])
-  const segments = GROUPS.filter((g) => pulse.counts[g.key] > 0)
+  const segments = ZONES.filter((z) => pulse.counts[z.key] > 0)
   const focused = filter !== 'all'
   const headroomMax = Math.max(...pulse.headroom, 1)
   const weekTotal = pulse.weekSuccess + pulse.weekFail
@@ -188,88 +171,62 @@ export function FleetPulse({
       )}
     >
       <Cell
-        title='舰队构成'
-        className='xl:col-span-4'
+        title='状态分区'
+        className='sm:col-span-2 xl:col-span-6'
         meta={
-          <span className='text-[13px] leading-none font-[590] tracking-[-0.01em] tabular-nums'>
-            <span className='text-[color:var(--status-ok)]'>
-              {pulse.counts.pool}
-            </span>
-            <span className='text-muted-foreground'> / {pulse.total} 在池</span>
-          </span>
-        }
-      >
-        <div className='flex h-2.5 w-full gap-px overflow-hidden rounded-full track-recessed'>
-          {segments.map((g) => (
-            <Tooltip key={g.key}>
-              <TooltipTrigger asChild>
-                <button
-                  type='button'
-                  aria-label={`${g.label} ${pulse.counts[g.key]} 台`}
-                  aria-pressed={filter === g.key}
-                  onClick={() => onFilter(filter === g.key ? 'all' : g.key)}
-                  className={cn(
-                    'h-full min-w-[3px] motion-safe:transition-[flex-grow,opacity] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]',
-                    focused && filter !== g.key && 'opacity-25'
-                  )}
-                  style={{
-                    flexGrow: pulse.counts[g.key],
-                    flexBasis: 0,
-                    backgroundColor: g.color,
-                  }}
-                />
-              </TooltipTrigger>
-              <TooltipContent>
-                {g.label} {pulse.counts[g.key]} 台
-              </TooltipContent>
-            </Tooltip>
-          ))}
-        </div>
-        <div className='-mx-1 flex flex-wrap items-center gap-x-0.5 gap-y-0.5'>
           <button
             type='button'
             aria-pressed={filter === 'all'}
             onClick={() => onFilter('all')}
             className={cn(
-              'rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-accent/60',
-              filter === 'all'
-                ? 'font-medium text-foreground'
-                : 'text-muted-foreground'
+              'rounded-md px-1.5 py-0.5 text-[12px] leading-none transition-colors hover:bg-accent/60',
+              focused ? 'text-muted-foreground' : 'font-medium text-foreground'
             )}
           >
-            全部 <span className='font-medium tabular-nums'>{pulse.total}</span>
+            全部 <span className='tabular-nums'>{pulse.total}</span>
           </button>
-          {GROUPS.map((g) => (
-            <button
-              key={g.key}
-              type='button'
-              aria-pressed={filter === g.key}
-              onClick={() => onFilter(filter === g.key ? 'all' : g.key)}
-              className={cn(
-                'inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-accent/60',
-                filter === g.key
-                  ? 'font-medium text-foreground'
-                  : 'text-muted-foreground',
-                !pulse.counts[g.key] && 'opacity-45'
-              )}
-            >
-              <span
-                className='size-2 shrink-0 rounded-[3px]'
-                style={{ backgroundColor: g.color }}
-                aria-hidden='true'
-              />
-              {g.label}
-              <span className='font-medium tabular-nums'>
-                {pulse.counts[g.key]}
-              </span>
-            </button>
+        }
+      >
+        <div
+          role='group'
+          aria-label='按状态分区筛选'
+          className='flex min-h-8 flex-wrap gap-[3px]'
+        >
+          {segments.map((z) => (
+            <Tooltip key={z.key}>
+              <TooltipTrigger asChild>
+                <button
+                  type='button'
+                  aria-pressed={filter === z.key}
+                  onClick={() => onFilter(filter === z.key ? 'all' : z.key)}
+                  className={cn(
+                    "flex h-8 min-w-max items-center gap-1.5 overflow-hidden rounded-[7px] px-2.5 text-xs font-semibold whitespace-nowrap before:h-3.5 before:w-[3px] before:shrink-0 before:rounded-[2px] before:bg-[color:var(--zc)] before:content-[''] motion-safe:transition-[flex-grow,opacity] motion-safe:duration-500 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)]",
+                    'bg-[color:color-mix(in_oklch,var(--zc)_20%,var(--card))] shadow-[inset_0_0_0_1px_color-mix(in_oklch,var(--zc)_40%,transparent)]',
+                    focused && filter !== z.key && 'opacity-35'
+                  )}
+                  style={
+                    {
+                      flexGrow: pulse.counts[z.key],
+                      flexBasis: 'auto',
+                      '--zc': z.color,
+                    } as React.CSSProperties
+                  }
+                >
+                  <span className='tabular-nums'>{pulse.counts[z.key]}</span>
+                  <span className='font-medium text-muted-foreground'>
+                    {z.label}
+                  </span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>{z.hint}</TooltipContent>
+            </Tooltip>
           ))}
         </div>
       </Cell>
 
       <Cell
         title='7d 余量分布'
-        className='xl:col-span-3'
+        className='xl:col-span-2'
         meta={
           <span className='text-[13px] leading-none font-[590] tracking-[-0.01em] tabular-nums'>
             {pulse.headroomMedian == null ? (
@@ -326,7 +283,7 @@ export function FleetPulse({
 
       <Cell
         title='今日消耗'
-        className='xl:col-span-3'
+        className='xl:col-span-2'
         meta={
           <span className='text-[11px] text-muted-foreground tabular-nums'>
             7d {fmtUsd(pulse.weekCost, 2)}

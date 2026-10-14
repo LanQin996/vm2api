@@ -289,7 +289,7 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
 
   if (vm?.availability?.key && !probeTaintedAvailability(vm)) {
     const a = vm.availability
-    // 6 个 key 的完整映射，对齐 index.html 的 accountStatus。
+    // 8 个 key 的完整映射，对齐 index.html 的 accountStatus。
     const fallback: Record<typeof a.key, string> = {
       none: '无凭证',
       ok: '可用',
@@ -298,6 +298,7 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
       quota: '额度限制',
       drain: '临近闸线',
       bad: '无效凭证',
+      rest: '休息时段',
     }
     // 与 poolStatus 同口径：off 只表达调度意图，凭证死活先于它判。
     if (a.key === 'off') {
@@ -311,7 +312,7 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
         ? 'ok'
         : a.key === 'quota'
           ? 'warn'
-          : a.key === 'cool' || a.key === 'drain'
+          : a.key === 'cool' || a.key === 'drain' || a.key === 'rest'
             ? 'caution'
             : a.key === 'off'
               ? 'off'
@@ -407,7 +408,8 @@ export function accountStatus(vm: Vm | undefined): StatusTone {
  */
 export function credentialStatus(vm: Vm | undefined): StatusTone {
   const base = accountStatus(vm)
-  if (base.key !== 'off') return base
+  // 休息时段同理是调度意图（排班），不是凭证状态。
+  if (base.key !== 'off' && base.key !== 'rest') return base
   if (!vm?.has_token) return { cls: 'none', key: 'none', text: '无凭证' }
   const exp = credExpiry(vm)
   if (exp.cls === 'bad') return { cls: 'bad', key: 'bad', text: '已过期' }
@@ -472,6 +474,14 @@ function restrictionTone(vm: Vm | undefined): StatusTone | null {
     const reason = String(
       vm.restriction_reason || vm.availability?.reason || ''
     )
+    // 休息时段是操作员排班，不是上游冷却：单独成态，别引人去点「清冷却」。
+    if (vm.availability?.key === 'rest' || /rest_period/.test(reason)) {
+      return {
+        key: 'rest',
+        text: restrictionLabel(vm, '休息时段'),
+        cls: 'caution',
+      }
+    }
     if (
       vm.availability?.key === 'cool' ||
       /cool|rate_limited|account_quota/i.test(reason)
@@ -539,6 +549,8 @@ export function poolStatus(vm: Vm | undefined): StatusTone {
     if (a.key === 'quota') {
       return { key: 'quota', text: a.text || '额度限制', cls: 'warn' }
     }
+    if (a.key === 'rest')
+      return { key: 'rest', text: a.text || '休息时段', cls: 'caution' }
     if (a.key === 'cool' || vmCooldown(vm))
       return { key: 'cool', text: a.text || '冷却中', cls: 'caution' }
     if (a.key === 'drain')
@@ -692,7 +704,8 @@ export function fleetGroup(vm: Vm): FleetGroup {
   if (k === 'bad') return 'bad'
   if (k === 'none') return 'none'
   if (k === 'off') return 'off'
-  if (isRestrictedSchedule(vm) || k === 'cool') return 'restricted'
+  if (isRestrictedSchedule(vm) || k === 'cool' || k === 'rest')
+    return 'restricted'
   if (k === 'quota' && !/警告/.test(String(status.text || '')))
     return 'restricted'
   return 'pool'

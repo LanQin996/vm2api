@@ -2708,3 +2708,80 @@ test('a vm pool drops a sticky VM that is no longer a member', async (t) => {
   assert.equal(blocked.ok, false)
   assert.equal(blocked.vmId, undefined)
 })
+
+function setActiveHours(root, id, activeHours) {
+  const file = path.join(root, 'vms', `${id}.json`)
+  const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+  vm.policy = { ...(vm.policy || {}), active_hours: activeHours }
+  fs.writeFileSync(file, JSON.stringify(vm))
+}
+
+// A UTC window opening ~2h from now: `now` is always outside, `until` is exact.
+function restingWindow() {
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const startHour = (now.getUTCHours() + 2) % 24
+  const endHour = (now.getUTCHours() + 4) % 24
+  const until = new Date(now)
+  until.setUTCMinutes(0, 0, 0)
+  until.setUTCHours(startHour)
+  if (until.getTime() <= now.getTime()) until.setUTCDate(until.getUTCDate() + 1)
+  return {
+    config: { start: `${pad(startHour)}:00`, end: `${pad(endHour)}:00`, timezone: 'UTC' },
+    until: until.getTime(),
+  }
+}
+
+test('a resting slot is skipped and the pool fails over', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  setActiveHours(root, 'vm-01', restingWindow().config)
+  const selected = await scheduler(root).selectAndReserve({ model: 'claude-test', allowWait: false })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-02')
+  selected.release()
+})
+
+test('an all-rest pool reports retry_after_ms for the next window open', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const rest = restingWindow()
+  setActiveHours(root, 'vm-01', rest.config)
+  setActiveHours(root, 'vm-02', rest.config)
+  const selected = await scheduler(root).selectAndReserve({ model: 'claude-test', allowWait: false })
+  assert.equal(selected.ok, false)
+  assert.equal(selected.reason, 'no_eligible_accounts')
+  const delta = rest.until - Date.now()
+  assert.ok(selected.retry_after_ms > 0, `retry_after_ms=${selected.retry_after_ms}`)
+  assert.ok(Math.abs(selected.retry_after_ms - delta) < 5000)
+})
+
+test('a pinned diagnostic still reaches a resting slot', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  setActiveHours(root, 'vm-01', restingWindow().config)
+  const selected = await scheduler(root).selectAndReserve({
+    model: 'claude-test',
+    pinVmId: 'vm-01',
+    allowWait: false,
+  })
+  assert.equal(selected.ok, true)
+  assert.equal(selected.vmId, 'vm-01')
+  selected.release()
+})
+
+test('a resting slot that cannot serve the model does not promise a Retry-After', async (t) => {
+  const root = project()
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const rest = restingWindow()
+  for (const id of ['vm-01', 'vm-02']) {
+    setActiveHours(root, id, rest.config)
+    const file = path.join(root, 'vms', `${id}.json`)
+    const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
+    vm.policy.allowed_models = ['claude-other']
+    fs.writeFileSync(file, JSON.stringify(vm))
+  }
+  const selected = await scheduler(root).selectAndReserve({ model: 'claude-test', allowWait: false })
+  assert.equal(selected.ok, false)
+  assert.equal(selected.retry_after_ms, null)
+})

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isUpstreamRefusal, refusalFingerprint } from '../../src/lib/core/refusal-guard.mjs'
+import { isUpstreamRefusal, refusalFingerprint, REFUSAL_GUARD_MESSAGE } from '../../src/lib/core/refusal-guard.mjs'
 import { classifyUpstreamResult } from '../../src/lib/pool/upstream-error-policy.mjs'
 import {
   applyJevPatch,
@@ -266,7 +266,10 @@ test('unsafe jev verdict blocks and bans the device without caching the prompt',
     fetchImpl,
   })
   assert.equal(second.kind, 'device')
-  assert.equal(fetches, 1)
+  assert.equal(second.reason, 'refusal_device')
+  assert.equal(second.final_state, 'refusal_device')
+  assert.equal(second.error.body.error.message, `${REFUSAL_GUARD_MESSAGE} 该设备此前已被封禁（jev:safety）。`)
+  assert.deepEqual(second.error.body.error.details, { reason: 'device', ban_reason: 'jev:safety' })
 })
 
 test('model failure fails open', async () => {
@@ -283,6 +286,36 @@ test('model failure fails open', async () => {
   const intercept = JSON.parse(decision.intercept)
   assert.equal(intercept.by, 'fail-open')
   assert.equal(intercept.keyword, '网络异常')
+})
+
+test('fail closed blocks this request without banning the device', async () => {
+  const banned = []
+  const decision = await runProtocolIntercept({
+    inbound: userBody('hello'),
+    headers: { 'x-kin-device-id': DEVICE },
+    policy: { enabled: true, similarity_enabled: false, similarity: 90, device_block_enabled: true },
+    jev: {
+      enabled: true,
+      hard_regex_enabled: false,
+      fail_open: false,
+      base_url: 'http://127.0.0.1:9/v1',
+      model: 'jev',
+      timeout_ms: 200,
+      dedup_sec: 0,
+    },
+    repo: { get: () => null },
+    devices: { block: (row) => banned.push(row), get: () => null, hit: () => {} },
+    fetchImpl: async () => ({ ok: false, status: 500 }),
+    requestId: 'req-down',
+  })
+  assert.equal(decision.action, 'block')
+  assert.equal(decision.banDevice, false)
+  assert.equal(decision.reason, 'jev:unavailable')
+  assert.equal(banned.length, 0)
+  assert.match(decision.error.body.error.message, /决策模型不可用（上游 500）/)
+  assert.match(decision.error.body.error.message, /未封禁设备/)
+  assert.deepEqual(decision.error.body.error.details, { reason: 'unavailable', detail: '上游 500' })
+  assert.equal(decision.error.body.error.code, 'policy_blocked')
 })
 
 test('content-policy error codes are refusals; generic api errors are not', () => {

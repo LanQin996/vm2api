@@ -12,6 +12,7 @@ import {
   type DetailState,
   LogDetailDialog,
 } from '@/features/logs/log-detail/log-detail-dialog'
+import { AccountScopeSettings } from './account-scope'
 import { Panel } from './blocks'
 import { DistillSettings } from './distill-settings'
 import { RiskFeed } from './feed'
@@ -141,7 +142,11 @@ export function RiskAuditPage() {
         </Button>
       }
     >
-      <GateRail stats={stats.data} states={states} view={view} onView={go} />
+      <AccountScopeSettings />
+
+      <div className='mt-4'>
+        <GateRail stats={stats.data} states={states} view={view} onView={go} />
+      </div>
       {stats.error ? (
         <p className='mt-2 text-sm text-destructive' role='alert'>
           今日计数读取失败：{(stats.error as Error).message}

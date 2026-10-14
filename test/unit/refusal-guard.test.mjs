@@ -142,7 +142,17 @@ test('guard error is HTTP 503 refusal_guard not distill_blocked', () => {
   assert.equal(err.body.error.code, 'refusal_guard')
   assert.equal(err.body.error.type, 'permission_error')
   assert.equal(err.body.error.message, REFUSAL_GUARD_MESSAGE)
-  assert.notEqual(err.body.error.code, 'distill_blocked')
+  assert.equal(err.body.error.details, undefined)
+
+  const device = refusalGuardError('abc', { kind: 'device', row: { reason: 'jev:safety' } })
+  assert.equal(device.body.error.message, `${REFUSAL_GUARD_MESSAGE} 该设备此前已被封禁（jev:safety）。`)
+  assert.deepEqual(device.body.error.details, { reason: 'device', ban_reason: 'jev:safety' })
+  const exact = refusalGuardError('abc', { kind: 'exact' })
+  assert.equal(exact.body.error.message, `${REFUSAL_GUARD_MESSAGE} 当前提示词与曾被拒答的内容完全一致。`)
+  assert.deepEqual(exact.body.error.details, { reason: 'exact' })
+  const similar = refusalGuardError('abc', { kind: 'similar', score: 0.93 })
+  assert.equal(similar.body.error.message, `${REFUSAL_GUARD_MESSAGE} 当前提示词与曾被拒答的内容相似（相似度 93%）。`)
+  assert.deepEqual(similar.body.error.details, { reason: 'similar', score: 0.93 })
 })
 
 test('list remove and clear', () => {
