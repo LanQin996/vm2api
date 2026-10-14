@@ -1,32 +1,10 @@
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
-import { expiresAtToMs } from '@/lib/fable-status'
 import { usedPctOf } from '@/lib/format'
 import { windowProbed } from '@/lib/pool-quota'
-import { claudeTier, fleetGroup, type FleetGroup } from '@/lib/vm-status'
-import {
-  vmTotalCost,
-  vmTotalTokens,
-  vmWindowCosts,
-  vmWindowTokens,
-} from '@/lib/vm-usage'
+import { fleetGroup, type FleetGroup } from '@/lib/vm-status'
+import { vmCostLedger, type VmLedgerRow } from '@/lib/vm-usage'
 import { fableRow } from '@/features/vm/usage-meter'
-
-/**
- * 竖柱下的重置标签只给一个单位（38m / 5h / 3d），完整倒计时放悬停提示。
- * 两个单位在三列竖柱下挤不下，且这里只需回答「快了没有」。
- */
-export function resetShort(v: unknown, now: number): string | null {
-  const t = expiresAtToMs(v)
-  if (!t) return null
-  const left = t - now
-  if (left <= 0) return '到点'
-  const min = Math.max(1, Math.round(left / 60_000))
-  if (min < 60) return `${min}m`
-  const h = Math.round(min / 60)
-  if (h < 48) return `${h}h`
-  return `${Math.round(h / 24)}d`
-}
 
 /**
  * 状态分区。机架内按它分段，顶部构成条用它筛选。
@@ -103,73 +81,51 @@ export function zoneCounts(vms: Vm[]): Record<VmZone, number> {
   return c
 }
 
-// ---------- 单台读数 ----------
+// ---------- 单台额度窗口 ----------
 
 export type WindowKey = '5h' | '7d' | 'fable'
 
+/** 只描述额度占用；费用与 token 走 `vmCostLedger`，两处不重复。 */
 export type WindowReadout = {
   key: WindowKey
   label: string
-  /** null = 未探测；note 非空时也为 null（Fable 拒 / 满）。 */
+  /** null = 未探测（或无凭证）；note 非空时也为 null（Fable 拒 / 满）。 */
   pct: number | null
   note: string | null
-  /** Fable 没有独立计费，恒为 null。 */
-  cost: number | null
-  tokens: number | null
   reset: unknown
 }
 
-export type VmReadout = {
-  windows: WindowReadout[]
-  totalCost: number
-  totalTokens: number
-  /** 近 7d 费用占累计的百分比；累计为 0 时为 null。 */
-  weekShare: number | null
-}
-
-export function vmReadout(vm: Vm, accounts?: UsageAccountRow[]): VmReadout {
-  const costs = vmWindowCosts(vm, accounts)
-  const tokens = vmWindowTokens(vm, accounts)
+/** 5H → 7D → Fable。Fable 只在 Max 且有读数或明确态时出现。 */
+export function vmWindows(vm: Vm): WindowReadout[] {
+  const probed = (w: '5h' | '7d') =>
+    vm.has_token && windowProbed(vm, w) ? usedPctOf(vm, w) : null
   const windows: WindowReadout[] = [
     {
       key: '5h',
-      label: '5h',
-      pct: windowProbed(vm, '5h') ? usedPctOf(vm, '5h') : null,
+      label: '5H',
+      pct: probed('5h'),
       note: null,
-      cost: costs.h5,
-      tokens: tokens.h5,
       reset: vm.reset_5h,
     },
     {
       key: '7d',
-      label: '7d',
-      pct: windowProbed(vm, '7d') ? usedPctOf(vm, '7d') : null,
+      label: '7D',
+      pct: probed('7d'),
       note: null,
-      cost: costs.d7,
-      tokens: tokens.d7,
       reset: vm.reset_7d,
     },
   ]
-  if (claudeTier(vm).key === 'max') {
-    const fable = fableRow(vm)
+  const fable = fableRow(vm)
+  if (fable) {
     windows.push({
       key: 'fable',
       label: 'Fable',
-      pct: fable?.kind === 'bar' ? fable.pct : null,
-      note: fable?.kind === 'note' ? fable.text : null,
-      cost: null,
-      tokens: null,
+      pct: fable.kind === 'bar' ? fable.pct : null,
+      note: fable.kind === 'note' ? fable.text : null,
       reset: vm.reset_7d_oi,
     })
   }
-  const totalCost = vmTotalCost(vm, accounts)
-  return {
-    windows,
-    totalCost,
-    totalTokens: vmTotalTokens(vm, accounts),
-    weekShare:
-      totalCost > 0 ? Math.min(100, (costs.d7 / totalCost) * 100) : null,
-  }
+  return windows
 }
 
 /**
@@ -239,10 +195,8 @@ export type RackTotals = {
   groups: Record<FleetGroup, number>
   seatsUsed: number
   seatsMax: number
-  h5Cost: number
-  h5Tokens: number
-  d7Cost: number
-  d7Tokens: number
+  /** 5H / 7D / 总计，逐行与单台 `vmCostLedger` 同口径相加。 */
+  ledger: VmLedgerRow[]
 }
 
 export function rackTotals(
@@ -253,10 +207,7 @@ export function rackTotals(
     groups: { pool: 0, restricted: 0, off: 0, none: 0, bad: 0, revoke: 0 },
     seatsUsed: 0,
     seatsMax: 0,
-    h5Cost: 0,
-    h5Tokens: 0,
-    d7Cost: 0,
-    d7Tokens: 0,
+    ledger: [],
   }
   for (const vm of vms) {
     t.groups[fleetGroup(vm)] += 1
@@ -264,12 +215,14 @@ export function rackTotals(
       t.seatsUsed += Number(vm.seats_used) || 0
       t.seatsMax += Number(vm.seats_max) || 0
     }
-    const c = vmWindowCosts(vm, accounts)
-    const k = vmWindowTokens(vm, accounts)
-    t.h5Cost += c.h5
-    t.d7Cost += c.d7
-    t.h5Tokens += k.h5
-    t.d7Tokens += k.d7
+    const rows = vmCostLedger(vm, accounts)
+    t.ledger = t.ledger.length
+      ? t.ledger.map((r, i) => ({
+          ...r,
+          cost: r.cost + rows[i].cost,
+          tokens: r.tokens + rows[i].tokens,
+        }))
+      : rows
   }
   return t
 }

@@ -20,7 +20,7 @@ import {
   toCodexResponses,
 } from './codex-convert.mjs'
 import { extraFromCodexHeaders, codexQuotaPark, CODEX_DEFAULT_PARK_MS } from './codex-usage.mjs'
-import { extractOpenaiUsage } from './openai-usage.mjs'
+import { extractOpenaiUsage, openaiAnthropicUsageFromExtract, disjointOpenaiUsage } from './openai-usage.mjs'
 import { streamCodexKernel } from '../transport/codex-kernel-client.mjs'
 import { ensureCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
 import { boundProxyUrl, isLocalEgressProxy } from '../vm/egress.mjs'
@@ -816,12 +816,19 @@ export async function handleCodexProtocol({
           bindSticky(outboundSessionId)
           const extracted = extractOpenaiUsage(usage)
           const serviceTier = responseServiceTier || converted.body?.service_tier || usage?.service_tier || null
-          logBag.usage = usage && serviceTier ? { ...usage, service_tier: serviceTier } : usage
-          logBag.input_tokens = extracted?.input_tokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null
-          logBag.output_tokens = extracted?.output_tokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null
+          const disjoint = extracted ? openaiAnthropicUsageFromExtract(extracted) : null
+          const logged = disjointOpenaiUsage(usage && serviceTier ? { ...usage, service_tier: serviceTier } : usage)
+          logBag.usage = logged
+          logBag.input_tokens = disjoint?.input_tokens ?? usage?.input_tokens ?? usage?.prompt_tokens ?? null
+          logBag.output_tokens = disjoint?.output_tokens ?? usage?.output_tokens ?? usage?.completion_tokens ?? null
           logBag.cache_read_tokens =
-            extracted?.cached_tokens ?? usage?.input_tokens_details?.cached_tokens ?? usage?.cache_read_tokens ?? null
+            disjoint?.cache_read_input_tokens ??
+            extracted?.cached_tokens ??
+            usage?.input_tokens_details?.cached_tokens ??
+            usage?.cache_read_tokens ??
+            null
           logBag.cache_creation_tokens =
+            disjoint?.cache_creation_input_tokens ??
             extracted?.cache_write_tokens ??
             usage?.input_tokens_details?.cache_write_tokens ??
             usage?.cache_creation_tokens ??

@@ -1,4 +1,5 @@
 import type { BillingSnapshot } from './panel-overview'
+import type { WindowEstimate } from './panel-pricing'
 
 export type UsageAccountRow = {
   account_id?: string
@@ -7,7 +8,7 @@ export type UsageAccountRow = {
   credential_mode?: 'oauth' | 'setup-token' | 'apikey' | string | null
   today_cost?: number
   total_cost?: number
-  /** 累计 token（输入 + 输出，不含缓存），与 total_cost 同源。 */
+  /** 累计 token（含缓存），与 total_cost 同源。 */
   total_tokens?: number
   today_requests?: number
   today_input_tokens?: number
@@ -21,6 +22,10 @@ export type UsageAccountRow = {
   window_7d_success?: number
   window_7d_errors?: number
   window_7d_tokens?: number
+  window_fable_cost?: number
+  estimate_5h?: WindowEstimate
+  estimate_7d?: WindowEstimate
+  estimate_fable?: WindowEstimate | null
   cache_hit_rate?: number | null
   today?: {
     requests?: number

@@ -35,6 +35,7 @@ test('classifyRequestError maps known codes and statuses', () => {
   )
   assert.equal(classifyRequestError({ status: 403, error_code: 'api_key_expired' }).error_class, 'auth')
   assert.equal(classifyRequestError({ status: 403, error_code: 'distill_blocked' }).error_class, 'distill')
+  assert.equal(classifyRequestError({ status: 400, error_code: 'refusal_guard' }).error_class, 'refusal')
   assert.equal(classifyRequestError({ status: 403, error_code: 'refusal_guard' }).error_class, 'refusal')
   assert.equal(classifyRequestError({ status: 500, error_code: 'refusal_guard' }).error_class, 'refusal')
   assert.equal(classifyRequestError({ status: 503, error_code: 'refusal_guard' }).error_class, 'refusal')

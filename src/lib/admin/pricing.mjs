@@ -1,71 +1,13 @@
 /**
- * Official Anthropic Messages API list prices (USD).
- * Source: https://docs.anthropic.com/en/docs/about-claude/pricing (2026-08)
- *
- * KIN is an OAuth proxy — this is the official standard cost of the tokens
- * that went through the gateway, not Claude Code included-quota or extra-usage.
+ * Official request cost from the three-layer price catalog.
+ * Usage reaching this module is treated as DISJOINT after normalizeUsage:
+ * input_tokens excludes cache read/write.
  */
-import { normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
-import { extractOpenaiUsage } from '../protocol/openai-usage.mjs'
-import { OPENAI_PRICING_SOURCE, resolveOpenaiOfficialRates, selectOpenaiRates } from './openai-pricing.mjs'
+import { extractOpenaiUsage, isOpenaiWireUsage } from '../protocol/openai-usage.mjs'
+import { resolvePrice } from './price-catalog.mjs'
 
-export const PRICING_SOURCE = 'anthropic-official-2026-08'
 export const PRICING_CURRENCY = 'USD'
-
-/** USD per million tokens. Cache write 5m = 1.25× input, 1h = 2×, read = 0.1×. */
-export const OFFICIAL_RATES = {
-  'fable-5': { input: 10, output: 50, cache_5m: 12.5, cache_1h: 20, cache_read: 1 },
-  'mythos-5': { input: 10, output: 50, cache_5m: 12.5, cache_1h: 20, cache_read: 1 },
-  'opus-5': { input: 5, output: 25, cache_5m: 6.25, cache_1h: 10, cache_read: 0.5 },
-  // 2.1.280 tier_4_20_cache_read_0_20. Write stays 1.25× / 2×; read is the published $0.20, not 0.1×.
-  'opus-5.5': { input: 4, output: 20, cache_5m: 5, cache_1h: 8, cache_read: 0.2 },
-  'opus-4.5': { input: 5, output: 25, cache_5m: 6.25, cache_1h: 10, cache_read: 0.5 },
-  'opus-4': { input: 15, output: 75, cache_5m: 18.75, cache_1h: 30, cache_read: 1.5 },
-  'sonnet-5': { input: 2, output: 10, cache_5m: 2.5, cache_1h: 4, cache_read: 0.2 },
-  'sonnet-4.6': { input: 3, output: 15, cache_5m: 3.75, cache_1h: 6, cache_read: 0.3 },
-  'sonnet-4': { input: 3, output: 15, cache_5m: 3.75, cache_1h: 6, cache_read: 0.3 },
-  // Claude Code 2.1.293 haiku_55. Over 100K prompt tokens uses the premium band below.
-  'haiku-5.5': { input: 0.1, output: 0.5, cache_5m: 0.125, cache_1h: 0.2, cache_read: 0.01 },
-  'haiku-4.5': { input: 1, output: 5, cache_5m: 1.25, cache_1h: 2, cache_read: 0.1 },
-  'haiku-3.5': { input: 0.8, output: 4, cache_5m: 1, cache_1h: 1.6, cache_read: 0.08 },
-}
-
-/**
- * Long-context premium.
- * Sonnet 4 / 4.5: above 200K prompt tokens (input + cache read + cache write),
- * input/cache 2× and output 1.5×. Claude 4.6+ otherwise bill the full 1M at standard rates.
- * Haiku 5.5: above 100K prompt tokens the whole request switches to $0.50 / $2.50,
- * cache read $0.05. Cache writes stay 1.25× / 2× of that premium input.
- */
-export const ANTHROPIC_LONG_CONTEXT_THRESHOLD = 200_000
-export const HAIKU_55_LONG_CONTEXT_THRESHOLD = 100_000
-export const LONG_CONTEXT_RATES = {
-  'sonnet-4': { input: 6, output: 22.5, cache_5m: 7.5, cache_1h: 12, cache_read: 0.6 },
-  'haiku-5.5': { input: 0.5, output: 2.5, cache_5m: 0.625, cache_1h: 1, cache_read: 0.05 },
-}
-const LONG_CONTEXT_THRESHOLDS = {
-  'sonnet-4': ANTHROPIC_LONG_CONTEXT_THRESHOLD,
-  'haiku-5.5': HAIKU_55_LONG_CONTEXT_THRESHOLD,
-}
-
-/**
- * Fast mode (research preview, Claude API only): Opus 5.5 $8/$40, Opus 5 / 4.8 $10/$50.
- * Applies across the full context; cache multipliers stack on the fast input price
- * (5m 1.25×, 1h 2×, read 0.1× — Opus 5.5 read 0.05×).
- */
-export const FAST_MODE_RATES = {
-  'opus-5.5': { input: 8, output: 40, cache_5m: 10, cache_1h: 16, cache_read: 0.4 },
-  'opus-5': { input: 10, output: 50, cache_5m: 12.5, cache_1h: 20, cache_read: 1 },
-  'opus-4.8': { input: 10, output: 50, cache_5m: 12.5, cache_1h: 20, cache_read: 1 },
-}
-
-/** Fast-mode pricing row for a model, or null when the model has no fast mode (4.6 runs standard, 4.7 errors). */
-export function resolveFastModeKey(raw) {
-  const key = resolvePricingKey(raw)
-  if (key === 'opus-5.5' || key === 'opus-5') return key
-  if (key === 'opus-4.5' && /opus-4[-.]8(?![0-9])/.test(normalizeModelId(raw))) return 'opus-4.8'
-  return null
-}
+export const UNPRICED_MODEL = 'unpriced'
 
 /** Response `usage.speed` is authoritative; request `speed` is the fallback. */
 export function billedSpeed(usage = {}) {
@@ -77,12 +19,15 @@ export function billedSpeed(usage = {}) {
     : 'standard'
 }
 
-const FAMILY_ALIASES = {
-  fable: 'fable-5',
-  mythos: 'mythos-5',
-  opus: 'opus-5',
-  sonnet: 'sonnet-4',
-  haiku: 'haiku-4.5',
+/** Request/response `service_tier` → billing band. Unknown tiers stay unpriced. */
+export function normalizeOpenaiServiceTier(raw) {
+  const t = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+  if (!t || t === 'default' || t === 'standard' || t === 'auto') return 'standard'
+  if (t === 'flex') return 'flex'
+  if (t === 'fast' || t === 'priority') return 'fast'
+  return null
 }
 
 export function shanghaiDay(d = new Date()) {
@@ -99,58 +44,20 @@ export function shanghaiDayStartIso(d = new Date()) {
   return new Date(`${shanghaiDay(d)}T00:00:00+08:00`).toISOString()
 }
 
-export function normalizeModelId(raw) {
-  const s =
-    String(raw || '')
-      .split('/')
-      .filter(Boolean)
-      .pop() || ''
-  return s
-    .replace(/\[[^\]]+\]$/g, '')
-    .replace(/-fast$/i, '')
-    .trim()
-    .toLowerCase()
-}
-
-export function resolvePricingKey(raw) {
-  const m = normalizeModelId(raw)
-  if (!m) return null
-  if (FAMILY_ALIASES[m]) return FAMILY_ALIASES[m]
-  if (/fable/.test(m)) return 'fable-5'
-  if (/mythos/.test(m)) return 'mythos-5'
-  if (/haiku-5(?:[-.]5)?(?:-|$)/.test(m)) return 'haiku-5.5'
-  if (/haiku-3-5|haiku-3\.5/.test(m)) return 'haiku-3.5'
-  if (/haiku/.test(m)) return 'haiku-4.5'
-  if (/sonnet-5/.test(m)) return 'sonnet-5'
-  if (/sonnet-4[-.][6-9]/.test(m)) return 'sonnet-4.6'
-  if (/sonnet/.test(m)) return 'sonnet-4'
-  if (/opus-5(?:[-.]5)(?:-|$)/.test(m)) return 'opus-5.5'
-  if (/opus-5/.test(m)) return 'opus-5'
-  if (/opus-4-[5-9]|opus-4\.[5-9]/.test(m)) return 'opus-4.5'
-  if (/opus/.test(m)) return 'opus-4'
-  return null
-}
-
-export function resolveOfficialRates(raw) {
-  const key = resolvePricingKey(raw)
-  const rates = key ? OFFICIAL_RATES[key] : null
-  return {
-    key,
-    rates: rates ? { ...rates } : null,
-    source: PRICING_SOURCE,
-    known: !!rates,
-  }
-}
-
 function n(v) {
   const x = Number(v)
   return Number.isFinite(x) && x > 0 ? x : 0
 }
 
+function webSearchRequestsOf(usage) {
+  const v = usage?.server_tool_use?.web_search_requests ?? usage?.web_search_requests ?? 0
+  const x = Number(v)
+  return Number.isFinite(x) && x > 0 ? x : 0
+}
+
 /**
- * Accept Anthropic usage plus OpenAI-shaped aliases
- * (prompt_tokens / completion_tokens / prompt_tokens_details).
- * Does not invent zeros — missing fields stay undefined.
+ * DISJOINT usage, idempotent. OpenAI wire shape (inclusive input) is converted
+ * to Anthropic cache names so a second pass is a no-op.
  */
 export function normalizeUsage(usage = {}) {
   if (!usage || typeof usage !== 'object') return {}
@@ -166,6 +73,22 @@ export function normalizeUsage(usage = {}) {
     details.cache_creation_tokens ??
     details.cache_write_tokens ??
     extracted?.cache_write_tokens
+  const web_search_requests = webSearchRequestsOf(usage)
+  if (isOpenaiWireUsage(usage)) {
+    const read = n(cacheRead)
+    const write = n(cacheCreate)
+    const inp = n(input)
+    return {
+      ...usage,
+      input_tokens: Math.max(inp - read - write, 0),
+      output_tokens: output,
+      cache_read_tokens: read,
+      cache_read_input_tokens: read,
+      cache_creation_tokens: write,
+      cache_creation_input_tokens: write,
+      web_search_requests,
+    }
+  }
   return {
     ...usage,
     input_tokens: input,
@@ -174,6 +97,7 @@ export function normalizeUsage(usage = {}) {
     cache_read_input_tokens: usage.cache_read_input_tokens ?? cacheRead,
     cache_creation_tokens: cacheCreate,
     cache_creation_input_tokens: usage.cache_creation_input_tokens ?? cacheCreate,
+    web_search_requests,
   }
 }
 
@@ -186,150 +110,171 @@ function round8(v) {
   return Math.round((Number(v) || 0) * 1e8) / 1e8
 }
 
-/**
- * Official standard cost for one request's usage object.
- * Anthropic `input_tokens` is the uncached bucket.
- * OpenAI Responses `input_tokens` includes cache; uncached = input - cached - billed cache-write.
- */
-export function calculateCost(usage = {}, model = null) {
-  const u = normalizeUsage(usage)
-  const mid = model || u.model || u.upstream_model || u.requested_model || ''
-  const openai = resolveOpenaiOfficialRates(mid)
-  const anthropic = resolveOfficialRates(mid)
-  const resolved = openai.known ? openai : anthropic
-  let rates = resolved.rates
-  const outputTokens = n(u.output_tokens)
-  const cacheRead = n(u.cache_read_tokens)
+function cacheSplit(u) {
   let cache5m = n(u.cache_creation_5m_tokens ?? u.cache_creation?.ephemeral_5m_input_tokens)
   let cache1h = n(u.cache_creation_1h_tokens ?? u.cache_creation?.ephemeral_1h_input_tokens)
-  const cacheCreate = n(u.cache_creation_tokens)
-  const inputTokens = n(u.input_tokens)
-
-  if (openai.known) {
-    const selected = selectOpenaiRates(resolved.key, { serviceTier: u.service_tier, inputTokens })
-    if (cacheRead + cacheCreate > inputTokens || !selected) {
-      return emptyCost({
-        model: mid || null,
-        pricing_key: null,
-        pricing_source: OPENAI_PRICING_SOURCE,
-        input_tokens: inputTokens,
-        output_tokens: outputTokens,
-        cache_read_tokens: cacheRead,
-        cache_creation_5m_tokens: cacheCreate,
-        cache_creation_1h_tokens: 0,
-      })
-    }
-    rates = selected.rates
-    const billedRead = rates.cache_read ? cacheRead : 0
-    const billedWrite = rates.cache_write ? cacheCreate : 0
-    const uncached = inputTokens - billedRead - billedWrite
-    const input_cost = usd(uncached, rates.input)
-    const output_cost = usd(outputTokens, rates.output)
-    const cache_read_cost = usd(billedRead, rates.cache_read)
-    const cache_creation_cost = usd(billedWrite, rates.cache_write)
-    const total_cost = input_cost + output_cost + cache_read_cost + cache_creation_cost
-    return {
-      model: mid || null,
-      pricing_key: resolved.key,
-      pricing_source: OPENAI_PRICING_SOURCE,
-      currency: PRICING_CURRENCY,
-      known: true,
-      rates,
-      service_tier: selected.service_tier,
-      long_context: selected.long_context,
-      input_tokens: uncached,
-      output_tokens: outputTokens,
-      cache_read_tokens: billedRead,
-      cache_creation_5m_tokens: billedWrite,
-      cache_creation_1h_tokens: 0,
-      input_cost: round8(input_cost),
-      output_cost: round8(output_cost),
-      cache_read_cost: round8(cache_read_cost),
-      cache_creation_cost: round8(cache_creation_cost),
-      cache_creation_5m_cost: round8(cache_creation_cost),
-      cache_creation_1h_cost: 0,
-      total_cost: round8(total_cost),
-    }
-  }
-
+  const cacheCreate = n(u.cache_creation_tokens ?? u.cache_creation_input_tokens)
   if (!cache5m && !cache1h && cacheCreate) {
-    if (normalizeCacheTtl(u.cache_ttl) === '1h') cache1h = cacheCreate
+    // Explicit TTL only — never DEFAULT_CACHE_TTL (which is 1h for upstream).
+    if (u.cache_ttl === '1h') cache1h = cacheCreate
     else cache5m = cacheCreate
-  } else if (normalizeCacheTtl(u.cache_ttl) === '1h' && cache5m && !cache1h) {
-    cache1h = cache5m
-    cache5m = 0
   }
-
-  if (!rates) {
-    return emptyCost({
-      model: mid || null,
-      pricing_key: null,
-      known: false,
-      input_tokens: inputTokens,
-      output_tokens: outputTokens,
-      cache_read_tokens: cacheRead,
-      cache_creation_5m_tokens: cache5m,
-      cache_creation_1h_tokens: cache1h,
-    })
-  }
-
-  const fastKey = billedSpeed(u) === 'fast' ? resolveFastModeKey(mid) : null
-  const promptTokens = inputTokens + cacheRead + cache5m + cache1h
-  const longThreshold = LONG_CONTEXT_THRESHOLDS[resolved.key]
-  const longContext = !fastKey && longThreshold != null && promptTokens > longThreshold
-  if (fastKey) rates = { ...FAST_MODE_RATES[fastKey] }
-  else if (longContext) rates = { ...LONG_CONTEXT_RATES[resolved.key] }
-
-  const input_cost = usd(inputTokens, rates.input)
-  const output_cost = usd(outputTokens, rates.output)
-  const cache_read_cost = usd(cacheRead, rates.cache_read)
-  const cache_creation_5m_cost = usd(cache5m, rates.cache_5m)
-  const cache_creation_1h_cost = usd(cache1h, rates.cache_1h)
-  const cache_creation_cost = cache_creation_5m_cost + cache_creation_1h_cost
-  const total_cost = input_cost + output_cost + cache_read_cost + cache_creation_cost
-
-  return {
-    model: mid || null,
-    pricing_key: resolved.key,
-    pricing_source: PRICING_SOURCE,
-    currency: PRICING_CURRENCY,
-    known: true,
-    rates,
-    speed: fastKey ? 'fast' : 'standard',
-    long_context: longContext,
-    input_tokens: inputTokens,
-    output_tokens: outputTokens,
-    cache_read_tokens: cacheRead,
-    cache_creation_5m_tokens: cache5m,
-    cache_creation_1h_tokens: cache1h,
-    input_cost: round8(input_cost),
-    output_cost: round8(output_cost),
-    cache_read_cost: round8(cache_read_cost),
-    cache_creation_cost: round8(cache_creation_cost),
-    cache_creation_5m_cost: round8(cache_creation_5m_cost),
-    cache_creation_1h_cost: round8(cache_creation_1h_cost),
-    total_cost: round8(total_cost),
-  }
+  return { cache5m, cache1h, cacheCreate }
 }
 
 function emptyCost(extra = {}) {
   return {
-    pricing_source: PRICING_SOURCE,
+    price_source: extra.price_source ?? null,
+    price_version: extra.price_version ?? null,
     currency: PRICING_CURRENCY,
     known: false,
     rates: null,
+    mode: extra.mode ?? 'standard',
+    long_context: extra.long_context ?? false,
     input_cost: 0,
     output_cost: 0,
     cache_read_cost: 0,
     cache_creation_cost: 0,
     cache_creation_5m_cost: 0,
     cache_creation_1h_cost: 0,
+    web_search_cost: 0,
     total_cost: 0,
     ...extra,
   }
 }
 
-export const UNPRICED_MODEL = 'unpriced'
+function openaiBillingMode(usage) {
+  const tier = normalizeOpenaiServiceTier(usage.service_tier)
+  if (!tier) return { tier: null, mode: null }
+  if (tier === 'flex') return { tier, mode: 'flex' }
+  if (tier === 'fast') return { tier, mode: 'priority' }
+  return { tier, mode: 'standard' }
+}
+
+function selectBand(price, mode, prompt) {
+  let band = price
+  let selectedMode = 'standard'
+  if (mode && mode !== 'standard') {
+    if (!price.modes?.[mode]) return { unpriced: true, mode, long_context: false }
+    band = price.modes[mode]
+    selectedMode = mode
+  }
+  let long_context = false
+  if (Array.isArray(band.tiers) && band.tiers.length) {
+    let chosen = null
+    for (const t of band.tiers) {
+      if (prompt > t.above) chosen = t
+    }
+    if (chosen) {
+      long_context = true
+      if (chosen.unpriced) return { unpriced: true, mode: selectedMode, long_context }
+      band = chosen
+    }
+  }
+  return { rates: band, mode: selectedMode, long_context, unpriced: false }
+}
+
+/**
+ * Official standard cost for one request's usage object.
+ * After normalizeUsage, input_tokens is the uncached bucket for every vendor.
+ */
+export function calculateCost(usage = {}, model = null) {
+  const u = normalizeUsage(usage)
+  const mid = model || u.model || u.upstream_model || u.requested_model || ''
+  const resolved = resolvePrice(mid)
+  const outputTokens = n(u.output_tokens)
+  const cacheRead = n(u.cache_read_tokens)
+  const { cache5m, cache1h } = cacheSplit(u)
+  const inputTokens = n(u.input_tokens)
+  const webSearchRequests = n(u.web_search_requests)
+  const tokens = {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    cache_read_tokens: cacheRead,
+    cache_creation_5m_tokens: cache5m,
+    cache_creation_1h_tokens: cache1h,
+    web_search_requests: webSearchRequests,
+  }
+
+  if (!resolved) {
+    return emptyCost({
+      model: mid || null,
+      pricing_key: null,
+      ...tokens,
+    })
+  }
+
+  const { platform, price, source, version, id } = resolved
+  let mode = 'standard'
+  let service_tier = null
+  if (platform === 'openai') {
+    const billed = openaiBillingMode(u)
+    service_tier = billed.tier
+    if (!billed.mode) {
+      return emptyCost({
+        model: mid || null,
+        pricing_key: id,
+        price_source: source,
+        price_version: version,
+        service_tier: null,
+        ...tokens,
+      })
+    }
+    mode = billed.mode
+  } else if (billedSpeed(u) === 'fast' && price.modes?.fast) {
+    mode = 'fast'
+  }
+
+  const prompt = inputTokens + cacheRead + cache5m + cache1h
+  const selected = selectBand(price, mode, prompt)
+  if (selected.unpriced) {
+    return emptyCost({
+      model: mid || null,
+      pricing_key: id,
+      price_source: source,
+      price_version: version,
+      mode: selected.mode,
+      service_tier,
+      speed: selected.mode === 'fast' ? 'fast' : platform === 'anthropic' ? 'standard' : billedSpeed(u),
+      long_context: selected.long_context,
+      ...tokens,
+    })
+  }
+
+  const rates = selected.rates
+  const input_cost = usd(inputTokens, rates.input)
+  const output_cost = usd(outputTokens, rates.output)
+  const cache_read_cost = usd(cacheRead, rates.cache_read)
+  const cache_creation_5m_cost = usd(cache5m, rates.cache_5m)
+  const cache_creation_1h_cost = usd(cache1h, rates.cache_1h)
+  const cache_creation_cost = cache_creation_5m_cost + cache_creation_1h_cost
+  const web_search_cost = webSearchRequests * (price.per_call?.web_search || 0)
+  const total_cost = input_cost + output_cost + cache_read_cost + cache_creation_cost + web_search_cost
+  const speed = selected.mode === 'fast' ? 'fast' : 'standard'
+
+  return {
+    model: mid || null,
+    pricing_key: id,
+    price_source: source,
+    price_version: version,
+    currency: PRICING_CURRENCY,
+    known: true,
+    rates,
+    mode: selected.mode,
+    service_tier,
+    speed,
+    long_context: selected.long_context,
+    ...tokens,
+    input_cost: round8(input_cost),
+    output_cost: round8(output_cost),
+    cache_read_cost: round8(cache_read_cost),
+    cache_creation_cost: round8(cache_creation_cost),
+    cache_creation_5m_cost: round8(cache_creation_5m_cost),
+    cache_creation_1h_cost: round8(cache_creation_1h_cost),
+    web_search_cost: round8(web_search_cost),
+    total_cost: round8(total_cost),
+  }
+}
 
 /** Raw billing band inputs, persisted so a later backfill re-prices with the same band. */
 export function billingBandFromUsage(usage = {}) {
@@ -349,9 +294,11 @@ export function costColumnsFromUsage(usage, model) {
     output_cost: c.known ? c.output_cost : null,
     cache_read_cost: c.known ? c.cache_read_cost : null,
     cache_creation_cost: c.known ? c.cache_creation_cost : null,
+    web_search_cost: c.known ? c.web_search_cost : null,
     total_cost: c.known ? c.total_cost : null,
-    // 'unpriced' marks a deliberate no-estimate so backfill never guesses a price for it.
     pricing_model: c.known ? c.pricing_key : UNPRICED_MODEL,
+    price_source: c.known ? c.price_source : null,
+    price_version: c.known ? c.price_version : null,
     ...billingBandFromUsage(normalizeUsage(usage)),
     long_context: c.known ? (c.long_context ? 1 : 0) : null,
   }

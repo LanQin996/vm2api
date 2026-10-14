@@ -30,6 +30,8 @@ jobs:
           go-version: '1.25.x'
           cache-dependency-path: worker/go.sum
       - run: npm ci
+      - name: panel user and onboarding regression tests
+        run: node --test test/unit/panel-users.test.mjs test/unit/onboarding.test.mjs test/e2e/panel-users.e2e.test.mjs
       - name: format-check
         run: npx biome format
       - name: syntax-check Node source and scripts

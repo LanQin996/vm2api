@@ -7,6 +7,7 @@ import {
   retryAfterSeconds,
   isWrapConnectionError,
   isUsagePolicyErrorMessage,
+  makeRefusalGuardError,
   isAssistantMessageBody,
   isCompleteAssistantMessage,
   isIncompleteAssistantMessage,
@@ -275,7 +276,7 @@ test('wrap Connection error is not upstream', () => {
   assert.notEqual(mapped.body.error.type, 'upstream_error')
 })
 
-test('Claude Code AUP API Error is 503 refusal_guard, not 400 or content_filter 403', () => {
+test('Claude Code AUP API Error is a non-retryable 400 policy rejection, not a login error', () => {
   const msg =
     'provider error: provider error: API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request'
   assert.equal(isUsagePolicyErrorMessage(msg), true)
@@ -284,11 +285,35 @@ test('Claude Code AUP API Error is 503 refusal_guard, not 400 or content_filter 
       type: 'error',
       error: { type: 'api_error', message: msg },
     })
-    assert.equal(mapped.status, 503)
+    assert.equal(mapped.status, 400)
     assert.equal(mapped.body.error.code, 'refusal_guard')
-    assert.equal(mapped.body.error.type, 'permission_error')
+    assert.equal(mapped.body.error.type, 'policy_blocked')
     assert.notEqual(mapped.body.error.code, 'content_filter_refusal')
     assert.notEqual(mapped.body.error.code, 'upstream_invalid_request')
+  }
+})
+
+test('real authentication failures keep their HTTP status and are not policy refusals', () => {
+  const policyText =
+    'Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup).'
+  for (const status of [401, 403]) {
+    const mapped = mapUpstreamError(status, {
+      error: { type: 'authentication_error', message: status === 401 ? policyText : 'Expired OAuth credentials' },
+    })
+    assert.equal(mapped.status, status)
+    assert.equal(mapped.body.error.code, 'upstream_auth_error')
+    assert.notEqual(mapped.body.error.code, 'refusal_guard')
+  }
+})
+
+test('mapping an existing refusal error retains its block kind and safe device source', () => {
+  for (const blockedBy of ['exact', 'similar', 'device']) {
+    const original = makeRefusalGuardError({
+      requestId: 'current',
+      blockedBy,
+      sourceRequestId: '36e239bf-7e70-4a79-80fd-c8a717ff464b',
+    })
+    assert.deepEqual(mapUpstreamError(original.status, original.body), original)
   }
 })
 

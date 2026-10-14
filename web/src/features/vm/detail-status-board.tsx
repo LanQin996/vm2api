@@ -21,6 +21,7 @@ import {
   scheduleStateLabel,
   vmRunning,
 } from '@/lib/vm-status'
+import { formatWindowSpend } from '@/lib/vm-usage'
 import {
   kernelHopReady,
   kernelProcessUp,
@@ -176,6 +177,10 @@ export function VmStatusBoard(props: Props) {
   const reset7 = acc.reset_7d ?? vm.reset_7d
   const cost5 = money(acc.window_5h_cost ?? vm.window_5h_cost ?? cost.w)
   const cost7 = money(acc.window_7d_cost ?? vm.window_7d_cost)
+  const fableCost = money(acc.window_fable_cost ?? vm.window_fable_cost)
+  const spend5 = formatWindowSpend(cost5, vm.estimate_5h)
+  const spend7 = formatWindowSpend(cost7, vm.estimate_7d)
+  const spendFable = formatWindowSpend(fableCost, vm.estimate_fable)
   const telemetry = telemetryView(vm.seed_policy, kernel?.telemetry)
   const topology = kernel?.process_topology
   const rust = wrapHealthLabel(kernel?.rust_health)
@@ -278,7 +283,13 @@ export function VmStatusBoard(props: Props) {
                   gate={
                     vm.quota_policy ? vm.quota_policy.limit_5h * 100 : undefined
                   }
-                  hint={`${quotaWindowHint(u5, reset5, now)} · 合计 ${fmtUsd(cost5, 2)}`}
+                  hint={[
+                    quotaWindowHint(u5, reset5, now),
+                    spend5.costText,
+                    spend5.remainText,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 />
                 <Meter
                   label='7 天已用'
@@ -286,13 +297,25 @@ export function VmStatusBoard(props: Props) {
                   gate={
                     vm.quota_policy ? vm.quota_policy.limit_7d * 100 : undefined
                   }
-                  hint={`${quotaWindowHint(u7, reset7, now)} · 合计 ${fmtUsd(cost7, 2)}`}
+                  hint={[
+                    quotaWindowHint(u7, reset7, now),
+                    spend7.costText,
+                    spend7.remainText,
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 />
                 {fable.usedPct != null ? (
                   <Meter
                     label='Fable 已用'
                     value={fable.usedPct}
-                    hint={fable.bits.join(' · ')}
+                    hint={[
+                      ...fable.bits,
+                      spendFable.costText,
+                      spendFable.remainText,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
                   />
                 ) : (
                   <div className='flex items-center justify-between gap-2 text-sm'>

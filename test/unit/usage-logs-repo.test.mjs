@@ -6,6 +6,7 @@ import path from 'node:path'
 import { createDatabase } from '../../src/lib/db/database.mjs'
 import { UsageLogsRepo } from '../../src/lib/db/repos/usage-logs-repo.mjs'
 import { codexBodyToAnthropicMessage } from '../../src/lib/protocol/codex-convert.mjs'
+import { estimateWindow } from '../../src/lib/admin/window-estimate.mjs'
 
 let seq = 0
 
@@ -62,7 +63,7 @@ test('mixed Claude/Codex usage keeps a row-wise prompt denominator on totals and
         account_id: 'acc-1',
         via: 'codex-kernel',
         model: 'gpt-5.4',
-        input_tokens: 100,
+        input_tokens: 5,
         cache_read_tokens: 95,
       },
       {
@@ -122,7 +123,7 @@ test('aligned account windows re-sum per-row prompt tokens instead of mixed Anth
         account_id: 'acc-1',
         via: 'codex-kernel',
         model: 'gpt-5.4',
-        input_tokens: 100,
+        input_tokens: 5,
         cache_read_tokens: 95,
       },
     ])
@@ -171,13 +172,149 @@ test('converted non-streaming Anthropic API usage stays disjoint in UsageLogsRep
         user_id: 'u1',
         via: 'codex-kernel',
         model: 'gpt-5.4',
-        input_tokens: 100,
+        input_tokens: 20,
         cache_read_tokens: 80,
       },
     ])
     assert.equal(message.usage.input_tokens, 20)
     assert.equal(message.usage.cache_read_input_tokens, 80)
     assertHit(repo.totals(), 200, 160, 'converted+codex totals')
+  } finally {
+    db.close()
+  }
+})
+
+test('billingStats window tokens are total including cache', () => {
+  const { db, repo } = freshDb()
+  try {
+    const now = Date.parse('2026-09-26T12:00:00.000Z')
+    seed(repo, [
+      {
+        created_at: '2026-09-26T11:00:00.000Z',
+        vm_id: 'vm-a',
+        account_id: 'acc-1',
+        input_tokens: 20,
+        output_tokens: 2,
+        cache_read_tokens: 80,
+      },
+    ])
+    const bill = repo.billingStats({ now })
+    assert.equal(bill.accounts[0].window_5h_tokens, 102)
+    const window = repo.windowStats({ since: '2026-09-26T00:00:00.000Z', until: '2026-09-26T12:00:00.000Z' })
+    assert.equal(window.input_tokens + window.output_tokens + window.cache_read_tokens, 102)
+  } finally {
+    db.close()
+  }
+})
+
+test('log coverage follows recorded prunes, not the oldest row or the current retention', () => {
+  const { db, repo } = freshDb()
+  try {
+    const now = Date.now()
+    const iso = (msAgo) => new Date(now - msAgo).toISOString()
+    db.prepare("UPDATE schema_migrations SET applied_at = ? WHERE version = '001'").run(iso(30 * 86400_000))
+    seed(repo, [
+      { created_at: iso(3 * 86400_000), vm_id: 'vm-a', account_id: 'acc-1', input_tokens: 1 },
+      { created_at: iso(3600_000), vm_id: 'vm-a', account_id: 'acc-1', input_tokens: 1 },
+    ])
+    // Never pruned: a quiet stretch before the oldest row is still complete history.
+    assert.equal(repo.billingStats().log_coverage_start, iso(30 * 86400_000))
+
+    assert.equal(repo.cleanup({ retainDays: 1 }).usage_logs, 1)
+    const afterPrune = Date.parse(repo.logCoverageStart())
+    assert.ok(afterPrune >= now - 86400_000 && afterPrune <= Date.now() - 86400_000 + 1000)
+
+    // Raising retention later does not bring the deleted day back.
+    assert.equal(repo.cleanup({ retainDays: 7 }).usage_logs, 0)
+    assert.equal(Date.parse(repo.logCoverageStart()), afterPrune)
+    const week = estimateWindow({
+      spentUsd: 5,
+      usedRatio: 0.5,
+      reset: iso(-86400_000),
+      windowStart: iso(6 * 86400_000),
+      coveredSince: repo.logCoverageStart(),
+    })
+    assert.equal(week.status, 'log_gap')
+  } finally {
+    db.close()
+  }
+})
+
+test('window_fable only counts fable rows since reset_7d_oi', () => {
+  const { db, repo } = freshDb()
+  try {
+    const now = Date.parse('2026-09-26T12:00:00.000Z')
+    seed(repo, [
+      {
+        created_at: '2026-09-20T11:00:00.000Z',
+        vm_id: 'vm-a',
+        account_id: 'acc-1',
+        model: 'claude-fable-5-1',
+        upstream_model: 'claude-fable-5-1',
+        pricing_model: 'claude-fable-5-1',
+        input_tokens: 10,
+        output_tokens: 1,
+        total_cost: 9,
+      },
+      {
+        created_at: '2026-09-25T11:00:00.000Z',
+        vm_id: 'vm-a',
+        account_id: 'acc-1',
+        model: 'claude-fable-5-1',
+        upstream_model: 'claude-fable-5-1',
+        pricing_model: 'claude-fable-5-1',
+        input_tokens: 20,
+        output_tokens: 2,
+        total_cost: 3,
+      },
+      {
+        created_at: '2026-09-25T11:30:00.000Z',
+        vm_id: 'vm-a',
+        account_id: 'acc-1',
+        model: 'claude-sonnet-5',
+        pricing_model: 'claude-sonnet-5',
+        input_tokens: 50,
+        total_cost: 8,
+      },
+    ])
+    const bill = repo.billingStats({
+      now,
+      accountWindows: [
+        {
+          account_id: 'acc-1',
+          vm_id: 'vm-a',
+          reset_7d_oi: '2026-10-01T12:00:00.000Z',
+        },
+      ],
+    })
+    const fable = bill.accounts[0].window_fable
+    assert.ok(fable)
+    assert.equal(fable.requests, 1)
+    assert.equal(fable.cost, 3)
+    assert.equal(fable.tokens, 22)
+    assert.equal(bill.accounts[0].window_fable, fable)
+    const none = repo.billingStats({
+      now,
+      accountWindows: [{ account_id: 'acc-1', vm_id: 'vm-a' }],
+    })
+    assert.equal(none.accounts[0].window_fable, null)
+  } finally {
+    db.close()
+  }
+})
+
+test('unpricedModels lists unpriced rows', () => {
+  const { db, repo } = freshDb()
+  try {
+    seed(repo, [
+      { model: 'mystery', pricing_model: 'unpriced', input_tokens: 10 },
+      { model: 'mystery', pricing_model: 'unpriced', input_tokens: 4 },
+      { model: 'claude-sonnet-5', pricing_model: 'sonnet-5', input_tokens: 8 },
+    ])
+    const rows = repo.unpricedModels()
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].model, 'mystery')
+    assert.equal(rows[0].requests, 2)
   } finally {
     db.close()
   }

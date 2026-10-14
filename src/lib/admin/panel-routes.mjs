@@ -58,14 +58,8 @@ import {
 import { officialCcHome, readOfficialCcStatus, scheduleOfficialCcBootstrap } from '../oauth/official-cc-bootstrap.mjs'
 import { invalidateLiveCredentialCache } from './panel-live-credentials.mjs'
 import { LOGIN_RATE_LIMITED_MESSAGE, createLoginGuard, loginGuardOptionsFromEnv } from './login-guard.mjs'
-import { listOfficialModels, seedModelCatalog, getCatalogIds } from '../protocol/models.mjs'
-import {
-  getModelPolicy,
-  saveModelPolicy,
-  resetModelPolicy,
-  listPolicyModels,
-  syncWorkerModelsIntoPolicy,
-} from '../protocol/model-policy.mjs'
+import { listOfficialModels, seedModelCatalog } from '../protocol/models.mjs'
+import { getModelPolicy, saveModelPolicy, resetModelPolicy, listPolicyModels } from '../protocol/model-policy.mjs'
 import {
   getGptModelPolicy,
   listGptPolicyModels,
@@ -81,6 +75,9 @@ import {
 } from '../protocol/seed-policy.mjs'
 
 import { runVmTestChat, resolveTestModels, syncCodexCatalog } from './vm-test-chat.mjs'
+import { readCatalogSync, syncClaudeCatalog, syncGptCatalog } from './catalog-monitor.mjs'
+import { setPriceOverride, listPriceOverrides, syncModelsDev } from './price-catalog.mjs'
+import { buildPricing } from './pricing-view.mjs'
 import { publicKeyView } from './api-keys.mjs'
 import { assertVmScope, normalizeKeyScope } from './key-scope.mjs'
 import {
@@ -135,7 +132,7 @@ import { syncVmTimezoneFromProxy } from '../vm/proxy-timezone.mjs'
 import { validTimezone } from '../core/timezone.mjs'
 import { stampVmKind, isCodexVm } from '../vm/vm-kind.mjs'
 import { parseAllowedModelsPatch } from '../pool/slot-model-gate.mjs'
-import { parseScheduleLevelInput } from '../pool/credential-weight.mjs'
+import { parseScheduleLevelInput, manualScheduleLevelOf } from '../pool/credential-weight.mjs'
 import { parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { validateOpenAIQuotaPatch, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
@@ -290,7 +287,7 @@ function collectOnboardingFacts(req, ctx) {
   const admin = getPanelAdmin()
   return {
     envPassword: admin.password,
-    envAdminExists: !!ctx.panelUsers.getByUsername(admin.username),
+    envAdmin: ctx.panelUsers.getByUsername(admin.username),
     proxyCount: (snap.proxies || []).length,
     ...vmStepFacts(visible),
     activeKeyCount: mine.filter((k) => k.status === 'active').length,
@@ -2123,6 +2120,125 @@ export function createPanelHandler(ctx) {
         }
         return json(res, 200, panel.ok(report))
       }
+      // POST /api/panel/vms/pool-policy — batch slot policy
+      // ({ ids: [...] } or { all: true }, plus any of weight / schedule_level /
+      //  max_concurrency / max_rpm / max_sessions). Same pins and inherit
+      //  semantics as the single-slot PATCH, but it only writes the records:
+      //  the PATCH rebuilds a full slot detail (~4s each on a busy host), so
+      //  fanning that out over 100+ slots starves the control plane.
+      if (req.method === 'POST' && p === '/api/panel/vms/pool-policy') {
+        const body = await readBody(req, 64 * 1024).catch(() => ({}))
+        const targets = parseSlotPolicyTargets(body)
+        if (!targets.ok) return json(res, 400, { ok: false, error: { message: targets.error } })
+        const has = (key) => Object.prototype.hasOwnProperty.call(body, key)
+        const hasWeight = has('weight')
+        const hasLevel = has('schedule_level')
+        const hasConc = has('max_concurrency')
+        const hasRpm = has('max_rpm')
+        const hasSessions = has('max_sessions')
+        if (!hasWeight && !hasLevel && !hasConc && !hasRpm && !hasSessions) {
+          return json(res, 400, {
+            ok: false,
+            error: { message: 'weight, schedule_level, max_concurrency, max_rpm or max_sessions required' },
+          })
+        }
+        // null (or '') unpins a slot: weight goes back to the default 1,
+        // schedule_level to auto, and the runtime caps to their tier / global
+        // default — exactly what the single-slot PATCH does.
+        const readIntOrNull = (value, min, max, label) => {
+          if (value === null || value === '') return { ok: true, value: null }
+          if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+            return { ok: false, error: `${label} must be an integer from ${min} to ${max}, or null` }
+          }
+          return { ok: true, value }
+        }
+        let nextWeight = null
+        if (hasWeight) {
+          const parsed = readIntOrNull(body.weight, 1, 100, 'weight')
+          if (!parsed.ok) {
+            return json(res, 400, { ok: false, error: { code: 'invalid_weight', message: parsed.error } })
+          }
+          nextWeight = parsed.value === null ? 1 : parsed.value
+        }
+        let nextLevel = null
+        if (hasLevel) {
+          const parsed = parseScheduleLevelInput(body.schedule_level)
+          if (!parsed.ok) return json(res, 400, { ok: false, error: { message: parsed.error } })
+          nextLevel = parsed.value
+        }
+        let nextConc = null
+        if (hasConc) {
+          const parsed = readIntOrNull(body.max_concurrency, 1, 256, 'max_concurrency')
+          if (!parsed.ok) {
+            return json(res, 400, { ok: false, error: { code: 'invalid_concurrency', message: parsed.error } })
+          }
+          nextConc = parsed.value
+        }
+        let nextRpm = null
+        if (hasRpm) {
+          const parsed = readIntOrNull(body.max_rpm, 0, 1_000_000, 'max_rpm')
+          if (!parsed.ok) {
+            return json(res, 400, { ok: false, error: { code: 'invalid_rpm', message: parsed.error } })
+          }
+          nextRpm = parsed.value
+        }
+        let nextSessions = null
+        if (hasSessions) {
+          const parsed = readIntOrNull(body.max_sessions, 0, 256, 'max_sessions')
+          if (!parsed.ok) {
+            return json(res, 400, { ok: false, error: { code: 'invalid_sessions', message: parsed.error } })
+          }
+          nextSessions = parsed.value
+        }
+        const ids = targets.all ? listVms(cfg.paths.project).map((vm) => vm.id) : targets.ids
+        const missing = []
+        const failed = []
+        const items = []
+        for (const id of ids) {
+          try {
+            let record = null
+            if (hasWeight || hasLevel) {
+              record = patchVmRecord(cfg.paths.project, id, (current) => {
+                const policy = { ...(current.policy || {}) }
+                if (hasWeight) policy.weight = nextWeight
+                if (hasLevel) {
+                  if (nextLevel == null) delete policy.priority
+                  else policy.priority = nextLevel
+                }
+                return { policy }
+              })
+            } else {
+              record = getVm(cfg.paths.project, id)
+            }
+            if (!record) {
+              missing.push(id)
+              continue
+            }
+            if (hasConc && nextConc !== null) applyVmConcurrency(id, nextConc, { override: true })
+            if (hasRpm && nextRpm !== null) applyVmRpm(id, nextRpm, { override: true })
+            if (hasSessions && nextSessions !== null) ctx.applyVmMaxSessions(id, nextSessions, { override: true })
+            const inherit = {}
+            if (hasConc && nextConc === null) inherit.concurrency = true
+            if (hasRpm && nextRpm === null) inherit.rpm = true
+            if (hasSessions && nextSessions === null) inherit.maxSessions = true
+            if (Object.keys(inherit).length) inheritVmScheduling(id, inherit)
+            const fresh = getVm(cfg.paths.project, id) || record
+            const policy = fresh.policy || {}
+            items.push({
+              id,
+              weight: Number(policy.weight ?? 1),
+              schedule_level: manualScheduleLevelOf(fresh) ?? 'auto',
+              max_concurrency: policy.maxConcurrency ?? null,
+              concurrency_override: !!policy.concurrencyOverride,
+              max_rpm: policy.maxRpm ?? null,
+              max_sessions: policy.maxSessions ?? null,
+            })
+          } catch (error) {
+            failed.push({ id, error: (error && error.message) || String(error) })
+          }
+        }
+        return json(res, 200, panel.ok({ updated: items.length, missing, failed, items }))
+      }
       // POST /api/panel/vms/:id/reload
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/reload$/.test(p)) {
         const id = p.split('/')[4]
@@ -2236,6 +2352,7 @@ export function createPanelHandler(ctx) {
         const hasScheduleLevel = body && Object.prototype.hasOwnProperty.call(body, 'schedule_level')
         const hasActiveHours = body && Object.prototype.hasOwnProperty.call(body, 'active_hours')
         const hasTimezone = body && Object.prototype.hasOwnProperty.call(body, 'timezone')
+        const hasWeight = body && Object.prototype.hasOwnProperty.call(body, 'weight')
         // `timezone_follow_proxy: true` re-attaches the slot to its exit node's
         // zone, undoing an earlier hand-pinned value.
         const followProxyTz = body?.timezone_follow_proxy === true || body?.timezoneFollowProxy === true
@@ -2257,13 +2374,14 @@ export function createPanelHandler(ctx) {
           !hasScheduleLevel &&
           !hasActiveHours &&
           !hasTimezone &&
+          !hasWeight &&
           !followProxyTz
         ) {
           return json(res, 400, {
             ok: false,
             error: {
               message:
-                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, active_hours, timezone or timezone_follow_proxy required',
+                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, active_hours, timezone, weight or timezone_follow_proxy required',
             },
           })
         }
@@ -2273,6 +2391,8 @@ export function createPanelHandler(ctx) {
           if (hasSessionSlots && body.session_slots !== null)
             strictInteger(body.session_slots, SESSION_SLOT_MIN, SESSION_SLOT_MAX, 'session_slots')
           if (hasMaxSessions && body.max_sessions !== null) strictInteger(body.max_sessions, 0, 256, 'max_sessions')
+          // null puts the slot back on the default weight of 1
+          if (hasWeight && body.weight !== null) strictInteger(body.weight, 1, 100, 'weight')
         } catch (error) {
           return json(res, 400, {
             ok: false,
@@ -2454,6 +2574,13 @@ export function createPanelHandler(ctx) {
             const kernel = projectSlotKernelConfig({ id })
             timezoneSync.kernel_hot = kernel?.changed === true
           }
+        }
+        if (hasWeight) {
+          const nextWeight = body.weight === null ? 1 : body.weight
+          const vm = patchVmRecord(cfg.paths.project, id, (record) => ({
+            policy: { ...(record.policy || {}), weight: nextWeight },
+          }))
+          if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
         const detail = await panel.buildVmDetail({
           cfg,
@@ -4200,35 +4327,67 @@ export function createPanelHandler(ctx) {
           }),
         )
       }
-      // POST /api/panel/model-policy/sync-worker
+      // POST /api/panel/model-policy/sync-worker — live Anthropic /v1/models through a Claude OAuth slot
       if (req.method === 'POST' && p === '/api/panel/model-policy/sync-worker') {
-        let workerIds = []
-        try {
-          workerIds = getCatalogIds()
-        } catch {}
-        if (!workerIds.length) {
-          try {
-            const raw = JSON.parse(fs.readFileSync('/opt/kin-gateway/data/cli-models.json', 'utf8'))
-            if (Array.isArray(raw?.ids)) workerIds = raw.ids
-          } catch {}
+        const status = await syncClaudeCatalog({ projectRoot: cfg.paths.project })
+        if (status.status !== 'ok') {
+          return json(res, status.status === 'skipped' ? 400 : 502, {
+            ok: false,
+            error: { code: status.error, message: status.error },
+            data: { synced: 0, catalog_sync: readCatalogSync() },
+          })
         }
-        const saved = syncWorkerModelsIntoPolicy(workerIds)
-        seedModelCatalog()
         return json(
           res,
           200,
           panel.ok({
-            policy: saved,
+            policy: getModelPolicy(),
             models: listPolicyModels(),
             effective: listOfficialModels(),
-            synced: workerIds.length,
+            synced: status.added.length,
+            added: status.added,
+            catalog_sync: readCatalogSync(),
           }),
         )
+      }
+      // GET /api/panel/pricing — effective price catalog for the 计费 tab
+      if (req.method === 'GET' && p === '/api/panel/pricing') {
+        return json(res, 200, panel.ok(buildPricing({ requestLog })))
+      }
+      // PUT /api/panel/pricing/overrides { key, price|null }
+      if (req.method === 'PUT' && p === '/api/panel/pricing/overrides') {
+        const body = await readBody(req, 256 * 1024)
+        const saved = setPriceOverride(String(body?.key || ''), body?.price ?? null)
+        if (!saved.ok) {
+          return json(res, 400, { ok: false, error: { code: 'invalid_price', message: saved.error } })
+        }
+        return json(res, 200, panel.ok({ ok: true, overrides: listPriceOverrides() }))
+      }
+      // POST /api/panel/pricing/sync — pull models.dev now
+      if (req.method === 'POST' && p === '/api/panel/pricing/sync') {
+        return json(res, 200, panel.ok({ models_dev: await syncModelsDev() }))
+      }
+      // POST /api/panel/pricing/reprice { since, until } — rewrite official cost only
+      if (req.method === 'POST' && p === '/api/panel/pricing/reprice') {
+        const body = await readBody(req, 8192)
+        const since = Date.parse(body?.since || '')
+        const until = Date.parse(body?.until || '')
+        if (!Number.isFinite(since) || !Number.isFinite(until) || since >= until) {
+          return json(res, 400, {
+            ok: false,
+            error: { code: 'invalid_range', message: 'since/until must be ISO times with since < until' },
+          })
+        }
+        const result = requestLog.repo.repriceRange({
+          since: new Date(since).toISOString(),
+          until: new Date(until).toISOString(),
+        })
+        return json(res, 200, panel.ok(result))
       }
       // POST /api/panel/model-policy/sync-codex — ChatGPT GPT catalog via a Codex OAuth slot
       if (req.method === 'POST' && p === '/api/panel/model-policy/sync-codex') {
         const body = await readBody(req, 8192).catch(() => ({}))
-        const result = await syncCodexCatalog({
+        const result = await syncGptCatalog({
           projectRoot: cfg.paths.project,
           vmId: body?.vm_id || body?.vmId || url.searchParams.get('vm_id') || '',
           rotate: true,
@@ -4269,6 +4428,8 @@ export function createPanelHandler(ctx) {
             vm_id: result.vm_id,
             catalog_version: result.catalog_version,
             ids: result.ids,
+            added: result.added || [],
+            catalog_sync: readCatalogSync(),
           }),
         )
       }

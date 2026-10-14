@@ -3,11 +3,11 @@
  * Fingerprint is model + normalized system/user/tool names (not stream/max_tokens).
  *
  * Claude Code "API Error: ... Usage Policy" is a real refusal: cache that exact
- * prompt with no expiry and answer 503. Do not strip envelope JSON — 1.3.8 did
+ * prompt with no expiry and answer non-retryable 400. Do not strip envelope JSON — 1.3.8 did
  * that and later turns of normal sessions collided.
  */
 import { createHash } from 'node:crypto'
-import { ErrorType, ErrorCode, isUsagePolicyErrorMessage, makeError, REFUSAL_GUARD_MESSAGE } from './errors.mjs'
+import { isUsagePolicyErrorMessage, makeRefusalGuardError, REFUSAL_GUARD_MESSAGE } from './errors.mjs'
 import { extractPrompt, normalizeText } from './distill-detect.mjs'
 import { resolveInboundIdentity } from '../identity/identity-rewrite.mjs'
 import { encodeSignature, refusalSignature, refusalUserDocument } from './refusal-similarity.mjs'
@@ -140,12 +140,11 @@ function refusalBlockSuffix(match) {
 /** Original sentence stays; a match only appends why this call was blocked. */
 export function refusalGuardError(requestId, match) {
   const extra = refusalBlockSuffix(match)
-  return makeError({
-    type: ErrorType.PERMISSION,
-    code: ErrorCode.REFUSAL_GUARD,
+  return makeRefusalGuardError({
+    requestId,
+    blockedBy: match?.kind || 'exact',
+    sourceRequestId: match?.row?.source_request_id,
     message: extra ? REFUSAL_GUARD_MESSAGE + extra.message : REFUSAL_GUARD_MESSAGE,
-    status: 503,
-    request_id: requestId,
     details: extra?.details,
   })
 }

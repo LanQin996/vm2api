@@ -269,7 +269,12 @@ test('unsafe jev verdict blocks and bans the device without caching the prompt',
   assert.equal(second.reason, 'refusal_device')
   assert.equal(second.final_state, 'refusal_device')
   assert.equal(second.error.body.error.message, `${REFUSAL_GUARD_MESSAGE} 该设备此前已被封禁（jev:safety）。`)
-  assert.deepEqual(second.error.body.error.details, { reason: 'device', ban_reason: 'jev:safety' })
+  assert.deepEqual(second.error.body.error.details, {
+    reason: 'device',
+    ban_reason: 'jev:safety',
+    blocked_by: 'device',
+    retryable: false,
+  })
 })
 
 test('model failure fails open', async () => {

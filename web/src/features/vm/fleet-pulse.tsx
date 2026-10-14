@@ -166,13 +166,13 @@ export function FleetPulse({
   return (
     <div
       className={cn(
-        'grid gap-px overflow-hidden rounded-xl border bg-border/60 sm:grid-cols-2 xl:grid-cols-12',
+        'grid gap-px overflow-hidden rounded-xl border bg-border/60 sm:grid-cols-2 xl:grid-cols-10',
         className
       )}
     >
       <Cell
         title='状态分区'
-        className='sm:col-span-2 xl:col-span-6'
+        className='sm:col-span-2 xl:col-span-4'
         meta={
           <button
             type='button'
@@ -311,7 +311,7 @@ export function FleetPulse({
 
       <Cell
         title='7D 成败'
-        className='xl:col-span-2'
+        className='sm:col-span-2 xl:col-span-2'
         meta={
           <span className='text-[11px] text-muted-foreground tabular-nums'>
             {weekTotal > 0 ? `${fmtNum(weekTotal)} 次` : ''}

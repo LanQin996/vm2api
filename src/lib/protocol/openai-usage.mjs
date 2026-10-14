@@ -118,3 +118,43 @@ export function openaiAnthropicUsageFromExtract(extracted) {
   if (extracted.cache_write_tokens != null) out.cache_creation_input_tokens = written
   return out
 }
+
+function hasAnthropicCacheNames(usage) {
+  return (
+    usage.cache_read_input_tokens != null ||
+    usage.cache_creation_input_tokens != null ||
+    (usage.cache_creation && typeof usage.cache_creation === 'object')
+  )
+}
+
+/** OpenAI wire shape: no Anthropic cache names, plus prompt/details/cached aliases. */
+export function isOpenaiWireUsage(usage) {
+  if (!usage || typeof usage !== 'object') return false
+  if (hasAnthropicCacheNames(usage)) return false
+  return (
+    usage.prompt_tokens != null ||
+    usage.input_tokens_details != null ||
+    usage.prompt_tokens_details != null ||
+    usage.cached_tokens != null ||
+    usage.cache_write_tokens != null
+  )
+}
+
+/**
+ * Convert OpenAI-inclusive usage to disjoint Anthropic names exactly once.
+ * Already-disjoint objects (Anthropic cache names) are returned unchanged.
+ */
+export function disjointOpenaiUsage(usage) {
+  if (!isOpenaiWireUsage(usage)) return usage
+  const extracted = extractOpenaiUsage(usage)
+  if (!extracted) return usage
+  const converted = openaiAnthropicUsageFromExtract(extracted)
+  const out = { ...usage, ...converted }
+  delete out.input_tokens_details
+  delete out.prompt_tokens_details
+  delete out.prompt_tokens
+  delete out.completion_tokens
+  delete out.cached_tokens
+  delete out.cache_write_tokens
+  return out
+}

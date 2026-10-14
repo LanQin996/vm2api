@@ -182,7 +182,7 @@ test('distill count_tokens returns distill_blocked and never peeks or hops', asy
   assert.equal(cap.calls[0].body.error.code, 'distill_blocked')
 })
 
-test('refusal-cache count_tokens returns 503 and never peeks or hops', async () => {
+test('refusal-cache count_tokens returns a non-retryable 400 and never peeks or hops', async () => {
   const cap = jsonCapture()
   let peeked = false
   let hopped = false
@@ -221,11 +221,12 @@ test('refusal-cache count_tokens returns 503 and never peeks or hops', async () 
   assert.equal(peeked, false)
   assert.equal(hopped, false)
   assert.equal(hits, 1)
-  assert.equal(cap.calls[0].status, 503)
+  assert.equal(cap.calls[0].status, 400)
+  assert.equal(cap.calls[0].body.error.type, 'policy_blocked')
   assert.equal(cap.calls[0].body.error.code, 'refusal_guard')
 })
 
-test('device-banned count_tokens returns 503 and never peeks or hops', async () => {
+test('device-banned count_tokens returns a non-retryable 400 with its source and never peeks or hops', async () => {
   const cap = jsonCapture()
   let peeked = false
   let hopped = false
@@ -266,7 +267,8 @@ test('device-banned count_tokens returns 503 and never peeks or hops', async () 
   assert.equal(peeked, false)
   assert.equal(hopped, false)
   assert.equal(hits, 1)
-  assert.equal(cap.calls[0].status, 503)
+  assert.equal(cap.calls[0].status, 400)
+  assert.equal(cap.calls[0].body.error.type, 'policy_blocked')
   assert.equal(cap.calls[0].body.error.code, 'refusal_guard')
 })
 

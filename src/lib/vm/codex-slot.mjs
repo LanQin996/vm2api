@@ -8,6 +8,7 @@ import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
 import { buildCodexUsageView, extraToCodexSnapshot } from '../protocol/codex-usage.mjs'
 import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
+import { openaiIdentityFromOauthTokens } from '../oauth/openai-jwt.mjs'
 
 export { isCodexVm }
 
@@ -511,10 +512,20 @@ export function parseCodexImportPayload(body = {}) {
   return parseCodexCredentialInput(body, { mode })
 }
 
+export function enrichCodexAccountIdentity(account = {}) {
+  const next = { ...account }
+  const fromTokens = openaiIdentityFromOauthTokens(next)
+  if (!firstString(next.email)) next.email = fromTokens.email || null
+  if (!firstString(next.chatgpt_account_id)) {
+    next.chatgpt_account_id = fromTokens.chatgpt_account_id || null
+  }
+  return next
+}
+
 export function upsertCodexAccount(projectRoot, vmId, patch = {}) {
   const accounts = readCodexAccounts(projectRoot, vmId)
-  const cur = { ...(accounts[0] || {}) }
-  Object.assign(cur, patch)
+  const cur = enrichCodexAccountIdentity({ ...(accounts[0] || {}), ...patch })
+  // A re-imported credential must not keep the previous account's email.
   cur.email = emailFromTokens(cur.id_token, cur.access_token) || cur.email || null
   if (!cur.id) cur.id = cur.email || cur.chatgpt_account_id || 'codex'
   if (!accounts.length) accounts.push(cur)
@@ -577,7 +588,14 @@ export function summarizeCodexSlot(projectRoot, vm = {}) {
     credential_retry_at: replaced ? null : vm.codex?.credential_retry_at || null,
     refresh_error: state === 'invalid' ? vm.codex?.refresh_error || 'oauth_invalid_grant' : null,
     credential_replaced: !!replaced,
-    email: emailFromTokens(first.id_token, first.access_token) || first.email || vm.codex?.email || vm.email || null,
+    email:
+      emailFromTokens(first.id_token, first.access_token) ||
+      first.email ||
+      vm.codex?.email ||
+      vm.email ||
+      first.chatgpt_account_id ||
+      vm.codex?.chatgpt_account_id ||
+      null,
     expires_at: first.expires_at || vm.codex?.expires_at || null,
     chatgpt_account_id: first.chatgpt_account_id || vm.codex?.chatgpt_account_id || null,
     account_count: accounts.length,

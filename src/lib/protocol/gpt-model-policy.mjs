@@ -142,7 +142,12 @@ export function resetGptModelPolicy() {
   return policy
 }
 
-export function syncGptIdsIntoPolicy(ids = []) {
+/**
+ * Replace the GPT catalog with the live Codex list. Existing rows keep their edits;
+ * a GPT id the policy has never seen starts disabled until the admin enables it
+ * (GPT has no worker_only mode).
+ */
+export function syncGptIdsIntoPolicy(ids = [], { displayNameOf = null } = {}) {
   if (!loaded) loadGptModelPolicy()
   const live = []
   const seen = new Set()
@@ -156,15 +161,17 @@ export function syncGptIdsIntoPolicy(ids = []) {
     })
   }
   if (!live.length) {
-    return { ok: true, synced: 0, ids: listGptPolicyModels().map((m) => m.id) }
+    return { ok: true, synced: 0, added: [], ids: listGptPolicyModels().map((m) => m.id) }
   }
   const next = {}
+  const added = []
   for (const row of live) {
     const prev = policy.models[row.id]
+    if (!prev) added.push(row.id)
     next[row.id] = entry(row.id, {
       ...prev,
-      display_name: row.display_name || prev?.display_name || row.id,
-      enabled: prev?.enabled !== false,
+      display_name: row.display_name || prev?.display_name || displayNameOf?.(row.id) || row.id,
+      enabled: prev ? prev.enabled !== false : false,
       source: 'codex',
     })
   }
@@ -179,6 +186,7 @@ export function syncGptIdsIntoPolicy(ids = []) {
   return {
     ok: true,
     synced: live.length,
+    added,
     ids: listGptPolicyModels().map((m) => m.id),
   }
 }

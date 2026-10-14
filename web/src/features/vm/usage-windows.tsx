@@ -5,72 +5,84 @@ import {
   fmtResetClock,
   resetCountdown,
 } from '@/lib/fable-status'
-import { fmtNum, fmtUsd, usedPctOf } from '@/lib/format'
+import { fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { isCodexVm } from '@/lib/vm-kind'
-import { vmWeekOutcome, vmWindowCosts } from '@/lib/vm-usage'
+import { vmCostLedger } from '@/lib/vm-usage'
 import { useNow } from '@/hooks/use-now'
 import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
-import { fableRow, riskFg, UsageMeter } from '@/features/vm/usage-meter'
+import { riskFg, UsageMeter } from '@/features/vm/usage-meter'
+import { vmWindows, type WindowReadout } from '@/features/vm/vm-rack-model'
 
 /**
- * 统一用量窗口：列表行、网格卡片、详情卡共用同一套五列网格。
- * 标签 | 条 | 百分比 | 窗口费用 | 重置倒计时。
- * 行序固定 5h → 7d → Fable：Fable 只在 Max 上出现，缺席时不挪动前两行。
+ * 请求 / 用量窗口 / 成本三块共用的行高。列表里三列并排时，
+ * 5H、7D 与第三行（Fable / 总计）逐行落在同一条基线上。
  */
-const ROW_GRID =
-  'grid grid-cols-[1.75rem_minmax(2.5rem,1fr)_2.5rem_3.25rem_4.25rem] items-center gap-x-1.5'
+export const METRIC_ROW = 'h-5'
+
+const MUTED_NUM = 'text-[color:var(--text-tertiary)]'
+
+const WINDOW_GRID =
+  'grid grid-cols-[2.25rem_minmax(2.5rem,1fr)_2.25rem_3.25rem] items-center gap-x-1'
 
 function WindowRow({
-  label,
-  value,
-  cost,
-  reset,
-  resetTitle,
-  title,
-  note,
+  w,
+  now,
+  hasToken,
   quiet,
 }: {
-  label: string
-  value?: number
-  cost?: number | null
-  reset?: string | null
-  resetTitle?: string | null
-  title?: string
-  /** 无百分比的态（拒 / 满）：用文案替换条与百分比。 */
-  note?: string
-  /** 卡片是分诊面：绿色数字铺满一屏是噪声，颜色只留给越线的档。 */
-  quiet?: boolean
+  w: WindowReadout
+  now: number
+  hasToken: boolean
+  quiet: boolean
 }) {
-  const pct = value ?? 0
-  const risky = pct >= 70
+  // 无凭证槽没有窗口，倒计时无意义；有票才算。
+  const reset = hasToken ? resetCountdown(w.reset, now) : null
+  const clock =
+    hasToken && expiresAtToMs(w.reset)
+      ? `重置于 ${fmtResetClock(w.reset)}`
+      : undefined
+  const pct = w.pct
   return (
-    <div className={ROW_GRID} title={title}>
-      <span className='text-xs font-medium text-muted-foreground'>{label}</span>
-      {note ? (
-        <span className='col-span-2 truncate text-xs font-medium text-[color:var(--status-warn)]'>
-          {note}
+    <div className={cn(WINDOW_GRID, METRIC_ROW)}>
+      <span className='text-xs font-medium text-muted-foreground'>
+        {w.label}
+      </span>
+      {w.note ? (
+        <span
+          className='col-span-2 truncate text-xs font-medium text-[color:var(--status-warn)]'
+          title={w.note}
+        >
+          {w.note}
         </span>
       ) : (
         <>
-          <UsageMeter value={pct} size='sm' ticks={false} />
+          {pct == null ? (
+            <div
+              className='h-[5px] w-full rounded-full track-recessed'
+              aria-hidden='true'
+            />
+          ) : (
+            <UsageMeter value={pct} size='sm' ticks={false} />
+          )}
           <span
             className={cn(
               'text-right font-mono text-xs font-medium tabular-nums',
-              (!quiet || risky) && riskFg(pct)
+              pct == null
+                ? MUTED_NUM
+                : // 分诊面上绿色数字铺满一屏是噪声，颜色只留给越过 70% 的档。
+                  (!quiet || pct >= 70) && riskFg(pct)
             )}
+            title={pct == null ? '未探测' : undefined}
           >
-            {pct.toFixed(0)}%
+            {pct == null ? '—' : `${pct.toFixed(0)}%`}
           </span>
         </>
       )}
-      <span className='text-right font-mono text-[11px] text-foreground/70 tabular-nums'>
-        {cost != null && cost > 0 ? fmtUsd(cost, 2) : ''}
-      </span>
       <span
-        className='text-right font-mono text-[11px] text-muted-foreground tabular-nums'
-        title={resetTitle || undefined}
+        className='truncate text-right font-mono text-[11px] text-muted-foreground tabular-nums'
+        title={clock}
       >
         {reset ?? ''}
       </span>
@@ -78,81 +90,143 @@ function WindowRow({
   )
 }
 
+/** GPT 槽：查询 / 重置券；Claude 完整 OAuth：原生限额查询 / 重置。 */
+export function VmQuotaActions({ vm, now }: { vm: Vm; now: number }) {
+  return isCodexVm(vm) ? (
+    <OpenaiQuotaActions vm={vm} compact />
+  ) : (
+    <ClaudeResetActions vm={vm} compact now={now} />
+  )
+}
+
+/**
+ * 额度窗口：标签 | 占用条 | 百分比 | 重置倒计时。只回答「还能用多少」，
+ * 费用与 token 一律在 `VmCostLedger`。未探测画「—」，不画 0% 冒充还很空。
+ */
 export function VmUsageWindows({
   vm,
-  accounts,
+  now,
   quiet = false,
   quotaActions = false,
   className,
 }: {
   vm: Vm
-  accounts?: UsageAccountRow[]
+  /** 调用方持有时钟：机架与列表整页共用一个，不在每行各起计时器。 */
+  now: number
   quiet?: boolean
-  /** GPT 槽在窗口下方追加「查询 / 重置券」；Claude 完整 OAuth 追加原生限额重置。 */
   quotaActions?: boolean
   className?: string
 }) {
-  const now = useNow()
   const hasToken = Boolean(vm.has_token)
-  const codex = isCodexVm(vm)
-  const fable = codex ? null : fableRow(vm)
-  const costs = vmWindowCosts(vm, accounts)
-  const week = vmWeekOutcome(vm, accounts)
-  // 无凭证槽没有窗口，倒计时无意义；有票才算。
-  const cd = (v: unknown) => (hasToken ? resetCountdown(v, now) : null)
-  const clock = (v: unknown) =>
-    hasToken && expiresAtToMs(v) ? `重置于 ${fmtResetClock(v)}` : null
-  const fiveReq = Number(vm.window_5h_requests) || 0
-  const fiveTok = Number(vm.window_5h_tokens) || 0
-  const fiveTitle =
-    fiveReq > 0 || fiveTok > 0
-      ? `5h 窗口 ${fmtNum(fiveReq)} req / ${fmtNum(fiveTok)} tok`
-      : undefined
-  const weekTitle =
-    week.req > 0 || week.tok > 0
-      ? `7d 窗口 ${fmtNum(week.req)} req / ${fmtNum(week.tok)} tok`
-      : undefined
   return (
-    <div className={cn('space-y-1', className)}>
-      <WindowRow
-        label='5h'
-        value={usedPctOf(vm, '5h')}
-        cost={costs.h5}
-        reset={cd(vm.reset_5h)}
-        resetTitle={clock(vm.reset_5h)}
-        title={fiveTitle}
-        quiet={quiet}
-      />
-      <WindowRow
-        label='7d'
-        value={usedPctOf(vm, '7d')}
-        cost={costs.d7}
-        reset={cd(vm.reset_7d)}
-        resetTitle={clock(vm.reset_7d)}
-        title={weekTitle}
-        quiet={quiet}
-      />
-      {fable?.kind === 'bar' ? (
+    <div className={cn('grid min-w-0 gap-1', className)}>
+      {vmWindows(vm).map((w) => (
         <WindowRow
-          label='Fable'
-          value={fable.pct}
-          reset={cd(vm.reset_7d_oi)}
-          resetTitle={clock(vm.reset_7d_oi)}
+          key={w.key}
+          w={w}
+          now={now}
+          hasToken={hasToken}
           quiet={quiet}
         />
-      ) : fable?.kind === 'note' ? (
-        <WindowRow label='Fable' note={fable.text} />
-      ) : null}
-      {quotaActions && codex ? (
-        <div className='pt-0.5'>
-          <OpenaiQuotaActions vm={vm} compact />
-        </div>
-      ) : null}
-      {quotaActions && !codex ? (
-        <div className='pt-0.5'>
-          <ClaudeResetActions vm={vm} compact now={now} />
-        </div>
-      ) : null}
+      ))}
+      {quotaActions ? <VmQuotaActions vm={vm} now={now} /> : null}
+    </div>
+  )
+}
+
+// 数值列保持完整；金额与 token 靠右成组，不随容器宽度分散。
+const LEDGER_GRID =
+  'grid grid-cols-[2.25rem_minmax(max-content,1fr)_max-content] items-center gap-x-2 gap-y-1'
+
+/**
+ * 成本账：5H / 7D / 总计 × 费用 · token。整页每台槽位的费用与 token
+ * 只在这里出现一次，官方价口径。
+ */
+export function VmCostLedger({
+  vm,
+  accounts,
+  className,
+}: {
+  vm: Vm
+  accounts?: UsageAccountRow[]
+  className?: string
+}) {
+  return (
+    <div className={cn(LEDGER_GRID, 'min-w-0', className)}>
+      {vmCostLedger(vm, accounts).map((r) => {
+        const total = r.key === 'total'
+        return (
+          <div
+            key={r.key}
+            className={cn(
+              'col-span-3 grid grid-cols-subgrid items-center',
+              METRIC_ROW,
+              total && 'shadow-[inset_0_1px_0_var(--hairline)]'
+            )}
+          >
+            <span
+              className={cn(
+                'text-xs font-medium',
+                total ? 'text-foreground' : 'text-muted-foreground'
+              )}
+            >
+              {r.label}
+            </span>
+            <span
+              className={cn(
+                'text-right font-mono text-xs whitespace-nowrap tabular-nums',
+                !r.cost
+                  ? MUTED_NUM
+                  : total
+                    ? 'font-semibold text-foreground'
+                    : 'text-foreground/80'
+              )}
+            >
+              {fmtUsd(r.cost, 2)}
+            </span>
+            <span
+              className={cn(
+                'text-right font-mono text-xs whitespace-nowrap tabular-nums',
+                r.tokens ? 'text-muted-foreground' : MUTED_NUM
+              )}
+            >
+              {fmtNum(r.tokens)}
+              <span className={MUTED_NUM}> tok</span>
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const PANEL_HEAD =
+  'mb-1.5 flex items-baseline justify-between gap-2 text-xs font-medium text-muted-foreground'
+
+/** 弹窗里的用量块：左额度窗口，右成本账，行与行对齐，和列表同一套组件。 */
+export function VmUsagePanel({
+  vm,
+  accounts,
+}: {
+  vm: Vm
+  accounts?: UsageAccountRow[]
+}) {
+  const now = useNow()
+  return (
+    <div className='grid gap-x-5 gap-y-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]'>
+      <div className='min-w-0'>
+        <h3 className={PANEL_HEAD}>用量窗口</h3>
+        <VmUsageWindows vm={vm} now={now} quotaActions />
+      </div>
+      <div className='min-w-0 sm:border-s sm:border-[color:var(--hairline)] sm:ps-5'>
+        <h3 className={PANEL_HEAD}>
+          成本
+          <span className='text-[11px] font-normal text-[color:var(--text-tertiary)]'>
+            官方价
+          </span>
+        </h3>
+        <VmCostLedger vm={vm} accounts={accounts} />
+      </div>
     </div>
   )
 }

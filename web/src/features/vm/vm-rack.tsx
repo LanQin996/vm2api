@@ -102,19 +102,14 @@ function RackHeader({
             </dd>
           </div>
         ) : null}
-        {(
-          [
-            ['5h', t.h5Cost, t.h5Tokens],
-            ['7d', t.d7Cost, t.d7Tokens],
-          ] as const
-        ).map(([k, cost, tok]) => (
-          <div key={k} className='grid min-w-16 gap-0.5'>
-            <dt className='text-[11.5px] text-muted-foreground'>{k}</dt>
+        {t.ledger.map((r) => (
+          <div key={r.key} className='grid min-w-16 gap-0.5'>
+            <dt className='text-[11.5px] text-muted-foreground'>{r.label}</dt>
             <dd className='m-0 text-[15px] font-[620] tracking-[-0.015em] tabular-nums'>
-              {fmtUsd(cost, cost >= 100 ? 0 : 2)}
+              {fmtUsd(r.cost, r.cost >= 100 ? 0 : 2)}
             </dd>
             <dd className='m-0 font-mono text-[11px] text-[color:var(--text-tertiary)] tabular-nums'>
-              {fmtNum(tok)}
+              {fmtNum(r.tokens)} tok
             </dd>
           </div>
         ))}

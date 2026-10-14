@@ -23,12 +23,7 @@ import {
   seatTitle,
   vmRunning,
 } from '@/lib/vm-status'
-import {
-  fmtHitPct,
-  vmTodayStats,
-  vmTotalCost,
-  vmWeekOutcome,
-} from '@/lib/vm-usage'
+import { fmtHitPct, vmTodayStats, vmWeekOutcome } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -53,7 +48,7 @@ import {
   SchedulableSwitch,
   vmSchedulableProps,
 } from '@/features/vm/schedulable-switch'
-import { VmUsageWindows } from '@/features/vm/usage-windows'
+import { VmUsagePanel } from '@/features/vm/usage-windows'
 import { refreshBlockedReason } from '@/features/vm/vm-action-menu'
 import { useVmActions } from '@/features/vm/vm-actions-context'
 import { VmSchedulingBlock } from '@/features/vm/vm-scheduling'
@@ -118,9 +113,9 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
       </div>
       <p className='text-xs text-muted-foreground'>{restrictionCopy(vm)}</p>
 
-      <Section title='用量窗口'>
-        <VmUsageWindows vm={vm} accounts={accounts} quotaActions />
-      </Section>
+      <section className='min-w-0 rounded-lg border px-3 py-2.5'>
+        <VmUsagePanel vm={vm} accounts={accounts} />
+      </section>
 
       <VmSchedulingBlock vm={vm} />
 
@@ -140,10 +135,10 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
             {fmtHitPct(today.hit)}
           </div>
         </Section>
-        <Section title='累计 / 7d 结果'>
+        <Section title='7D 请求'>
           <div className='flex items-baseline justify-between'>
             <span className='text-lg leading-tight font-semibold tabular-nums'>
-              {fmtUsd(vmTotalCost(vm, accounts), 2)}
+              {fmtNum(week.known ? week.success + week.fail : week.req)}
             </span>
             <span className='font-mono text-xs tabular-nums'>
               <span className='text-[color:var(--status-ok)]'>
@@ -156,7 +151,7 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
             </span>
           </div>
           <div className='mt-1 text-[11px] text-muted-foreground'>
-            7d 成功 / 失败 · 官方价累计
+            7D 窗口 · 成功 / 失败
           </div>
         </Section>
       </div>

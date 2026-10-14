@@ -242,7 +242,7 @@ test('rewritten vm-test inbound stays official Claude Code, not third-party', ()
   assert.equal(isOfficialClaudeCodeTraffic(headers, inbound), true)
   assert.equal(classifyClient(headers, inbound), 'claude_code_official')
   assert.equal(inbound.system.length, 4)
-  assert.equal(inbound.system[1].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(inbound.system[0].text, CRS_OFFICIAL_SYSTEM)
   const out = prepareOutboundAttempt({
     canonicalBody: inbound,
     inbound,

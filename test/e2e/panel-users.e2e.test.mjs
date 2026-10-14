@@ -29,6 +29,77 @@ async function panel(gw, method, path, { cookie, body } = {}) {
   return { status: res.status, json, text }
 }
 
+for (const prefix of ['VM2API', 'KIN']) {
+  test(`${prefix} default admin is listed and can rotate its password across restarts`, async () => {
+    const env = {
+      VM2API_ADMIN_USER: '',
+      VM2API_ADMIN_PASSWORD: '',
+      [`${prefix}_ADMIN_USER`]: 'admin',
+      [`${prefix}_ADMIN_PASSWORD`]: '123456',
+    }
+    let gw = await startGateway({ env })
+    try {
+      const list = await api(gw, 'GET', '/api/panel/users')
+      assert.equal(list.status, 200, list.text)
+      const self = list.json.data.items.find((user) => user.username === 'admin')
+      assert.ok(self, JSON.stringify(list.json))
+      assert.equal(self.role, 'admin')
+      assert.equal(self.password_hash, undefined)
+      assert.doesNotMatch(gw.stderr(), /bootstrap failed/)
+
+      const admin = await login(gw, 'admin', '123456')
+      const otherSession = await login(gw, 'admin', '123456')
+      assert.equal(admin.status, 200)
+      assert.equal(otherSession.status, 200)
+      const before = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: admin.cookie })
+      assert.equal(before.status, 200)
+      assert.equal(before.json.data.steps.find((step) => step.id === 'admin_password').done, false)
+
+      const shortCreate = await panel(gw, 'POST', '/api/panel/users', {
+        cookie: admin.cookie,
+        body: { username: 'reader', password: '123456', role: 'user' },
+      })
+      assert.equal(shortCreate.status, 400)
+      assert.equal(shortCreate.json.error.code, 'invalid_password')
+      const shortChange = await panel(gw, 'PATCH', `/api/panel/users/${self.id}`, {
+        cookie: admin.cookie,
+        body: { password: '123456' },
+      })
+      assert.equal(shortChange.status, 400)
+      assert.equal(shortChange.json.error.code, 'invalid_password')
+
+      const changed = await panel(gw, 'PATCH', `/api/panel/users/${self.id}`, {
+        cookie: admin.cookie,
+        body: { password: 'changed-admin-pass' },
+      })
+      assert.equal(changed.status, 200, JSON.stringify(changed.json))
+      assert.equal((await panel(gw, 'GET', '/api/panel/me', { cookie: admin.cookie })).status, 200)
+      assert.equal((await panel(gw, 'GET', '/api/panel/me', { cookie: otherSession.cookie })).status, 401)
+      assert.equal((await login(gw, 'admin', '123456')).status, 401)
+      assert.equal((await login(gw, 'admin', 'changed-admin-pass')).status, 200)
+      const after = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: admin.cookie })
+      assert.equal(after.status, 200)
+      assert.equal(after.json.data.steps.find((step) => step.id === 'admin_password').done, true)
+
+      const project = gw.project
+      await gw.stop()
+      gw = await startGateway({ project, env })
+      assert.equal((await login(gw, 'admin', '123456')).status, 401)
+      const relogin = await login(gw, 'admin', 'changed-admin-pass')
+      assert.equal(relogin.status, 200)
+      const restarted = await panel(gw, 'GET', '/api/panel/onboarding', { cookie: relogin.cookie })
+      assert.equal(restarted.status, 200)
+      assert.equal(restarted.json.data.steps.find((step) => step.id === 'admin_password').done, true)
+      const users = await panel(gw, 'GET', '/api/panel/users', { cookie: relogin.cookie })
+      assert.equal(users.status, 200)
+      assert.equal(users.json.data.items.length, 1)
+      assert.equal(users.json.data.items[0].id, self.id)
+    } finally {
+      await gw.stop()
+    }
+  })
+}
+
 test('admin can create users and change passwords', async () => {
   const gw = await startGateway()
   try {

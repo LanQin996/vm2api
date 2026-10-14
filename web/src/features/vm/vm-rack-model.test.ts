@@ -4,8 +4,7 @@ import {
   bladeState,
   buildRacks,
   rackTotals,
-  resetShort,
-  vmReadout,
+  vmWindows,
   zoneCounts,
 } from './vm-rack-model'
 
@@ -131,6 +130,8 @@ describe('rackTotals', () => {
         window_5h_tokens: 100,
         window_7d_cost: 10,
         window_7d_tokens: 900,
+        total_cost: 40,
+        total_tokens: 5000,
       }),
       vm({
         id: 'b',
@@ -138,16 +139,15 @@ describe('rackTotals', () => {
         seats_max: null,
         seats_used: 5,
         window_7d_cost: 2,
+        total_cost: 3,
       }),
     ])
-    expect(t).toMatchObject({
-      seatsUsed: 2,
-      seatsMax: 4,
-      h5Cost: 1.5,
-      h5Tokens: 100,
-      d7Cost: 12,
-      d7Tokens: 900,
-    })
+    expect(t).toMatchObject({ seatsUsed: 2, seatsMax: 4 })
+    expect(t.ledger.map((r) => [r.key, r.cost, r.tokens])).toEqual([
+      ['5h', 1.5, 100],
+      ['7d', 12, 900],
+      ['total', 43, 5000],
+    ])
     expect(t.groups.pool).toBe(2)
   })
 
@@ -157,43 +157,34 @@ describe('rackTotals', () => {
       [row],
       [{ account_id: 'u-1', vm_id: 'a', window_5h_tokens: 70 }]
     )
-    expect(t.h5Tokens).toBe(70)
+    expect(t.ledger[0].tokens).toBe(70)
   })
 })
 
-describe('vmReadout', () => {
-  it('gives Fable a column only on Max, without cost or tokens', () => {
-    const max = vmReadout(
+describe('vmWindows', () => {
+  it('adds Fable only on Max, after 5H and 7D', () => {
+    const max = vmWindows(
       vm({
         usage_has_fable: true,
         utilization_7d_oi: 0.3,
         reset_7d_oi: '2099-01-01T00:00:00Z',
       })
     )
-    expect(max.windows.map((w) => w.key)).toEqual(['5h', '7d', 'fable'])
-    expect(max.windows[2]).toMatchObject({ cost: null, tokens: null })
-    expect(
-      vmReadout(vm({ usage_has_fable: false })).windows.map((w) => w.key)
-    ).toEqual(['5h', '7d'])
+    expect(max.map((w) => w.key)).toEqual(['5h', '7d', 'fable'])
+    expect(max[2].pct).toBe(30)
+    expect(vmWindows(vm({ usage_has_fable: false })).map((w) => w.key)).toEqual(
+      ['5h', '7d']
+    )
   })
 
-  it('reports an unprobed window as null, not 0%', () => {
-    const r = vmReadout(vm({ utilization_5h: undefined }))
-    expect(r.windows[0].pct).toBeNull()
-    expect(r.windows[1].pct).toBe(40)
-  })
-
-  it('computes the 7d share of lifetime spend, null when nothing was spent', () => {
-    expect(
-      vmReadout(vm({ total_cost: 200, window_7d_cost: 50, total_tokens: 9 }))
-        .weekShare
-    ).toBe(25)
-    expect(
-      vmReadout(vm({ total_cost: 200, window_7d_cost: 50 })).totalTokens
-    ).toBe(0)
-    expect(
-      vmReadout(vm({ total_cost: 0, window_7d_cost: 0 })).weekShare
-    ).toBeNull()
+  it('reports an unprobed or tokenless window as null, not 0%', () => {
+    const r = vmWindows(vm({ utilization_5h: undefined }))
+    expect(r[0].pct).toBeNull()
+    expect(r[1].pct).toBe(40)
+    expect(vmWindows(vm({ has_token: false })).map((w) => w.pct)).toEqual([
+      null,
+      null,
+    ])
   })
 })
 
@@ -208,20 +199,5 @@ describe('bladeState', () => {
       bladeState(vm({ utilization_5h: undefined, utilization_7d: undefined }))
     ).toBe('unprobed')
     expect(bladeState(vm({ utilization_5h: undefined }))).toBe('live')
-  })
-})
-
-describe('resetShort', () => {
-  const now = Date.parse('2026-10-14T00:00:00Z')
-  const at = (min: number) => new Date(now + min * 60_000).toISOString()
-  it('keeps one unit and switches to days only past 48h', () => {
-    expect(resetShort(at(38), now)).toBe('38m')
-    expect(resetShort(at(5 * 60 + 10), now)).toBe('5h')
-    expect(resetShort(at(47 * 60), now)).toBe('47h')
-    expect(resetShort(at(70 * 60), now)).toBe('3d')
-  })
-  it('distinguishes a passed reset from a missing one', () => {
-    expect(resetShort(at(-1), now)).toBe('到点')
-    expect(resetShort(null, now)).toBeNull()
   })
 })

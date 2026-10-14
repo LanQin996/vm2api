@@ -3,6 +3,7 @@
  * Copy and URLs stay in the panel; this module only returns ids / done flags.
  */
 import { normalizePanelRole } from './panel-acl.mjs'
+import { verifyPassword } from './panel-users.mjs'
 
 export const ONBOARDING_STATE_KEY = 'onboarding_state'
 export const MASTER_ONBOARDING_USER = '__master__'
@@ -42,9 +43,10 @@ export function isDefaultEnvAdminPassword(password) {
   return String(password ?? '') === DEFAULT_ADMIN_PASSWORD
 }
 
-/** Done unless env still holds the install default and that admin was never seeded. */
-export function adminPasswordDone({ envPassword, envAdminExists } = {}) {
-  return !(isDefaultEnvAdminPassword(envPassword) && !envAdminExists)
+export function adminPasswordDone({ envPassword, envAdmin } = {}) {
+  return envAdmin
+    ? !verifyPassword(DEFAULT_ADMIN_PASSWORD, envAdmin.password_hash)
+    : !isDefaultEnvAdminPassword(envPassword)
 }
 
 export function vmStepFacts(vms = []) {

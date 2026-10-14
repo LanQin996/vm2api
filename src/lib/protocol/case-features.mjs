@@ -17,7 +17,8 @@ export const TEST14_FEATURES = Object.freeze({
   },
   official_outbound: {
     system_block_count: 4,
-    system_kinds: OFFICIAL_SYSTEM_KINDS,
+    // rewrite + parkBillingAfterCacheBoundary: identity/agent cache prefix, billing after last breakpoint
+    system_kinds: Object.freeze(['identity', 'agent_prompt', 'billing', 'environment']),
     keep_caller_tools: true,
     keep_tool_choice: true,
     keep_user_text: true,

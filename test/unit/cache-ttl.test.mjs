@@ -210,7 +210,7 @@ test('stripIllegalCacheControlFields drops ephemeral.scope', () => {
   assert.deepEqual(out.messages[0].content[0].cache_control, { type: 'ephemeral', ttl: '5m' })
 })
 
-test('unclassified cache_creation without ttl bills the default 5m rate', () => {
+test('unclassified cache_creation without ttl bills the 5m rate', () => {
   const asDefault = calculateCost({ cache_creation_tokens: 1_000_000 }, 'claude-sonnet-5')
   const as5m = calculateCost({ cache_creation_tokens: 1_000_000, cache_ttl: '5m' }, 'claude-sonnet-5')
   const as1h = calculateCost({ cache_creation_tokens: 1_000_000, cache_ttl: '1h' }, 'claude-sonnet-5')

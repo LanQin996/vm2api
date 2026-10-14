@@ -38,6 +38,42 @@ test('bootstrap seeds env admin once', async () => {
   assert.equal(await store.authenticate('admin', 'otherpass'), null)
 })
 
+test('bootstrap imports legacy env passwords without relaxing user password validation', async () => {
+  const { store } = tmpStore()
+  for (const [username, password] of [
+    ['admin', '123456'],
+    ['legacy', 'short'],
+  ]) {
+    const admin = store.bootstrapFromEnv({ username, password })
+    assert.equal(admin.role, 'admin')
+    assert.equal(admin.enabled, true)
+    assert.equal(admin.password_hash, undefined)
+    assert.ok(store.list().some((user) => user.id === admin.id))
+    assert.ok(await store.authenticate(username, password))
+    assert.notEqual(store.getById(admin.id).password_hash, password)
+    assert.throws(() => store.update(admin.id, { password: 'short' }), /密码至少 8 位/)
+
+    store.update(admin.id, { password: 'changed-admin-pass' })
+    const again = store.bootstrapFromEnv({ username, password })
+    assert.equal(again.id, admin.id)
+    assert.equal(await store.authenticate(username, password), null)
+    assert.ok(await store.authenticate(username, 'changed-admin-pass'))
+  }
+  assert.throws(() => store.create({ username: 'reader', password: '123456' }), /密码至少 8 位/)
+})
+
+test('bootstrap preserves disabled admins and validates usernames', async () => {
+  const { store } = tmpStore()
+  store.create({ username: 'owner', password: 'owner-pass', role: 'admin' })
+  const admin = store.create({ username: 'admin', password: 'admin-pass', role: 'admin', enabled: false })
+  const imported = store.bootstrapFromEnv({ username: 'admin', password: '123456' })
+  assert.equal(imported.id, admin.id)
+  assert.equal(imported.enabled, false)
+  assert.equal(await store.authenticate('admin', '123456'), null)
+  assert.equal(store.bootstrapFromEnv({ username: 'empty', password: '' }), null)
+  assert.throws(() => store.bootstrapFromEnv({ username: '1bad', password: '123456' }), /用户名/)
+})
+
 test('create / authenticate / change password / roles', async () => {
   const { store } = tmpStore()
   store.bootstrapFromEnv({ username: 'admin', password: 'adminpass' })

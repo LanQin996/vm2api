@@ -293,6 +293,88 @@ test('logs the session id actually sent upstream, not the caller one', async () 
   }
 })
 
+async function runManagedKeyHop(root, result) {
+  const routingFile = path.join(root, 'routing.json')
+  fs.writeFileSync(routingFile, JSON.stringify({ compatibility: {} }))
+  const vm = { id: 'vm-01', claude: { mode: 'oauth' } }
+  const selected = {
+    vmId: vm.id,
+    accountId: 'account-1',
+    vm,
+    exec: { vmId: vm.id, vm, homeDir: path.join(root, 'home'), oauth: { account_uuid: 'account-1' } },
+  }
+  const charges = []
+  const logged = []
+  const response = { ...fakeResponse(), on: (event, fn) => event === 'finish' && (response.finish = fn) }
+  const handler = createHandleProtocol({
+    json: (_res, status, body) => {
+      response.status = status
+      return body
+    },
+    writeSSEHeaders() {},
+    readBody: async () => ({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'hello' }] }),
+    requireAuth: () => true,
+    cfg: {
+      rewrite: { enabled: false },
+      intercept: { rules: [] },
+      distill: { enabled: false },
+      limits: { max_body_bytes: 1024 * 1024, upstream_timeout_ms: 2000, stream_idle_timeout_ms: 2000 },
+      paths: { data: root, project: root },
+    },
+    requestLog: { start: () => ({ request_id: 'key-billing', mode: 'normal' }), finish: (_c, row) => logged.push(row) },
+    stickyRouter: { extractPoolKey: () => null, collectPoolKeys: () => [] },
+    accountQuota: { ingestHeaders() {} },
+    apiKeyStore: {
+      acquire: () => ({ ok: true }),
+      release() {},
+      recordUsage: (key, usage, opts) => charges.push({ key, usage, opts }),
+    },
+    apiScheduler: {},
+    apiEndpointStore: {},
+    stats: { errors: 0, requests: 0, by_route: {}, passthrough: 0, rewrite: 0, convert: 0 },
+    routingConfigPath: routingFile,
+    routingConfig: { compatibility: {}, failover: {} },
+    failoverRunner: {
+      async run(opts) {
+        await opts.applyAttempt(opts.canonicalBody, selected)
+        return result
+      },
+    },
+    groupsRepo: { rateMultiplier: () => 2 },
+  })
+  const req = {
+    method: 'POST',
+    url: '/v1/messages',
+    headers: { authorization: 'Bearer sk-vm-x', 'user-agent': 'claude-cli/2.1.241 (external, cli)' },
+    apiKeyKind: 'managed',
+    apiKeyRecord: { id: 'key-1', group_id: 1 },
+    once() {},
+    off() {},
+  }
+  await handler.handleProtocol(req, response, 'anthropic.messages', '/v1/messages')
+  response.finish?.()
+  return { charges, logged }
+}
+
+test('a managed key is charged exactly once for a hop billed inline', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-key-inline-'))
+  try {
+    const usage = { input_tokens: 1000, output_tokens: 200, cache_read_input_tokens: 5000 }
+    const { charges, logged } = await runManagedKeyHop(root, {
+      ok: false,
+      status: 503,
+      accountId: 'account-1',
+      usage,
+      body: { error: { type: 'server_error', code: 'x', message: 'stop' } },
+    })
+    assert.equal(charges.length, 1)
+    assert.equal(charges[0].opts.rateMultiplier, 2)
+    assert.equal(charges[0].opts.officialCost, logged[0].total_cost)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('OpenAI chat carrying claude-opus-4-8 uses the Claude pool', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-opus-platform-'))
   const routingFile = path.join(root, 'routing.json')

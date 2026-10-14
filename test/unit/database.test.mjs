@@ -169,6 +169,130 @@ test('migrations are idempotent across reopen', () => {
   assert.equal(rows.length, new Set(rows.map((r) => r.version)).size)
 })
 
+test('migration 037 normalizes OpenAI input including NULL route fields; SUM(prompt) holds', () => {
+  const migSrc = path.resolve('src/lib/db/migrations')
+  const oldDir = path.join(tmp, 'pre-037')
+  fs.mkdirSync(oldDir, { recursive: true })
+  for (const f of fs.readdirSync(migSrc)) {
+    if (f < '037') fs.copyFileSync(path.join(migSrc, f), path.join(oldDir, f))
+  }
+  const dbPath = path.join(tmp, 'bill037.db')
+  const db = new DatabaseSync(dbPath)
+  applyMigrations(db, { migrationsDir: oldDir })
+
+  const cacheModel = `LOWER(TRIM(COALESCE(
+    NULLIF(NULLIF(pricing_model, ''), 'unpriced'), NULLIF(upstream_model, ''),
+    NULLIF(model, ''), requested_model, ''
+  )))`
+  const openaiIds = [
+    'gpt-6-astra',
+    'gpt-6.1-sol',
+    'gpt-6-sol',
+    'gpt-6-luna',
+    'gpt-5.6-sol',
+    'gpt-5.6-terra',
+    'gpt-5.6-luna',
+    'gpt-5.6',
+    'gpt-5.5-pro',
+    'gpt-5.5',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+    'gpt-5.4-pro',
+    'gpt-5.4',
+    'gpt-5.3-codex',
+    'gpt-5.2-pro',
+    'gpt-5.2',
+    'gpt-5.1',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    'gpt-5-pro',
+    'gpt-5',
+    'gpt-4.1-mini',
+    'gpt-4.1-nano',
+    'gpt-4.1',
+    'gpt-4o-2024-05-13',
+    'gpt-4o-mini',
+    'gpt-4o',
+    'o1-pro',
+    'o1',
+    'o3-pro',
+    'o3-mini',
+    'o3',
+    'o4-mini',
+    'gpt-4-turbo',
+    'gpt-4',
+    'gpt-3.5-turbo-instruct',
+    'gpt-3.5-turbo-1106',
+    'gpt-3.5-turbo',
+    'gpt-5.1-codex-mini',
+    'gpt-5.3-chat-latest',
+    'gpt-5.6-cyber',
+    'gpt-5.5-cyber',
+    'chat-latest',
+    'gpt-5-codex',
+    'gpt-5.1-codex',
+    'gpt-5.1-codex-max',
+    'gpt-5-chat-latest',
+    'gpt-5.1-chat-latest',
+    'gpt-5.2-codex',
+    'gpt-5.2-chat-latest',
+  ]
+    .map((id) => `'${id}'`)
+    .join(', ')
+  const oldPrompt = `CASE
+    WHEN via = 'api-kernel' AND protocol = 'anthropic.messages' AND stream = 0
+    THEN IFNULL(input_tokens, 0) + IFNULL(cache_read_tokens, 0) + IFNULL(cache_creation_tokens, 0)
+    WHEN via LIKE 'codex-%'
+      OR (${cacheModel} LIKE 'gpt%' AND ${cacheModel} NOT LIKE 'gpt-image%')
+      OR ${cacheModel} LIKE 'codex-%'
+      OR ${cacheModel} IN (${openaiIds})
+    THEN IFNULL(input_tokens, 0)
+    ELSE IFNULL(input_tokens, 0) + IFNULL(cache_read_tokens, 0) + IFNULL(cache_creation_tokens, 0)
+  END`
+  const newPrompt = 'IFNULL(input_tokens, 0) + IFNULL(cache_read_tokens, 0) + IFNULL(cache_creation_tokens, 0)'
+
+  const ins = db.prepare(`
+    INSERT INTO usage_logs (
+      id, request_id, created_at, model, protocol, stream, via,
+      input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens, upstream_model
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const at = '2026-09-01T00:00:00.000Z'
+  ins.run('n-via', 'r-via', at, 'gpt-5.4', 'anthropic.messages', 0, null, 100, 80, 0, 2, null)
+  ins.run('n-proto', 'r-proto', at, 'gpt-5.4', null, 0, 'go-worker-pool', 100, 80, 0, 2, null)
+  ins.run('n-stream', 'r-stream', at, 'gpt-5.4', 'anthropic.messages', null, 'go-worker-pool', 100, 80, 0, 2, null)
+  ins.run('n-all', 'r-all', at, 'gpt-5.4', null, null, null, 100, 80, 0, 2, null)
+  ins.run('keep-api', 'r-api', at, 'gpt-5.4', 'anthropic.messages', 0, 'api-kernel', 20, 80, 0, 2, 'gpt-5.4')
+  ins.run('keep-claude', 'r-claude', at, 'claude-sonnet-5', 'anthropic.messages', 0, null, 20, 80, 0, 2, null)
+  ins.run('codex', 'r-codex', at, 'gpt-5.4', 'openai.responses', 1, 'codex-kernel', 100000, 80000, 0, 2000, null)
+
+  const before = db.prepare(`SELECT SUM(${oldPrompt}) AS n FROM usage_logs`).get().n
+  applyMigrations(db, { migrationsDir: migSrc })
+  const after = db.prepare(`SELECT SUM(${newPrompt}) AS n FROM usage_logs`).get().n
+  assert.equal(after, before)
+
+  const cols = db
+    .prepare('PRAGMA table_info(usage_logs)')
+    .all()
+    .map((r) => r.name)
+  for (const c of ['web_search_requests', 'web_search_cost', 'price_source', 'price_version']) {
+    assert.ok(cols.includes(c), `missing ${c}`)
+  }
+
+  const get = (id) => db.prepare('SELECT input_tokens, cache_read_tokens FROM usage_logs WHERE id = ?').get(id)
+  assert.equal(get('n-via').input_tokens, 20)
+  assert.equal(get('n-proto').input_tokens, 20)
+  assert.equal(get('n-stream').input_tokens, 20)
+  assert.equal(get('n-all').input_tokens, 20)
+  assert.equal(get('keep-api').input_tokens, 20)
+  assert.equal(get('keep-claude').input_tokens, 20)
+  assert.equal(get('codex').input_tokens, 20000)
+  // Earlier prunes were never recorded; existing rows only vouch for history from the oldest one.
+  const pruned = db.prepare("SELECT value FROM settings WHERE key = 'usage_logs_pruned_through'").get()
+  assert.equal(JSON.parse(pruned.value), at)
+  db.close()
+})
+
 test('checksum mismatch on applied migration throws', () => {
   const migDir = path.join(tmp, 'migs')
   fs.mkdirSync(migDir, { recursive: true })

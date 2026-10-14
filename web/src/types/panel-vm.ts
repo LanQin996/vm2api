@@ -1,3 +1,5 @@
+import type { WindowEstimate } from './panel-pricing'
+
 /**
  * 出站认证头方案。gateway 规范化后只有这两个值。
  *
@@ -346,7 +348,7 @@ export type Vm = {
   today_cache_read_tokens?: number
   today_cache_creation_tokens?: number
   total_cost?: number
-  /** 累计 token（输入 + 输出，不含缓存），与 total_cost 同源。 */
+  /** 累计 token（含缓存），与 total_cost 同源。 */
   total_tokens?: number
   expires_at?: string
   refreshed_at?: string
@@ -413,6 +415,10 @@ export type Vm = {
   window_7d_success?: number
   window_7d_errors?: number
   window_7d_tokens?: number
+  window_fable_cost?: number
+  estimate_5h?: WindowEstimate
+  estimate_7d?: WindowEstimate
+  estimate_fable?: WindowEstimate | null
   [key: string]: unknown
 }
 

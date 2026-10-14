@@ -33,6 +33,7 @@ import { createCliNodeGuard } from './lib/vm/cli-node-guard.mjs'
 import { ensureTelemetrySidecar } from './lib/vm/slot-process-status.mjs'
 
 import { createUsageProbeMonitor, normalizeUsageProbeConfig } from './lib/oauth/usage-probe-monitor.mjs'
+import { createCatalogMonitor } from './lib/admin/catalog-monitor.mjs'
 import { normalizeOfficialCcConfig } from './lib/oauth/official-cc-bootstrap.mjs'
 import { invalidateLiveCredentialCache } from './lib/admin/panel-live-credentials.mjs'
 import { normalizeHealthProbeConfig, createHealthProbeMonitor, HEALTH_REAL_HEADER } from './lib/admin/health-probe.mjs'
@@ -165,6 +166,7 @@ let credentialRefreshMonitor = null
 let kernelWatchdog = null
 let cliNodeGuard = null
 let usageProbeMonitor = null
+let catalogMonitor = null
 let notifyMonitor = null
 
 let routingConfig = {}
@@ -490,6 +492,11 @@ usageProbeMonitor = createUsageProbeMonitor({
     } catch {}
   },
   probeOne: (vm) => panel.buildProbeOne({ cfg, accountQuota, id: vm.id, routingConfig }),
+})
+catalogMonitor = createCatalogMonitor({
+  projectRoot: cfg.paths.project,
+  codexCatalogVersion: () => routingConfig.codex?.catalog_client_version || 'auto',
+  log: (event) => console.log(JSON.stringify(event)),
 })
 notifyMonitor = createNotifyMonitor({
   config: routingConfig.notify,
@@ -1165,6 +1172,9 @@ function shutdown(signal) {
   try {
     usageProbeMonitor?.stop?.()
   } catch {}
+  try {
+    catalogMonitor?.stop?.()
+  } catch {}
 
   try {
     notifyMonitor?.stop?.()
@@ -1214,6 +1224,14 @@ server.listen(cfg.port, cfg.host, () => {
     usageProbeMonitor?.start?.({ immediate: true })
   } catch (e) {
     console.warn('[usage-probe] start failed', e?.message || e)
+  }
+  // The KIN_CRS_MOCK harness promises no outbound network; catalogs stay on builtin data there.
+  if (process.env.KIN_CRS_MOCK !== '1') {
+    try {
+      catalogMonitor?.start?.()
+    } catch (e) {
+      console.warn('[catalog-sync] start failed', e?.message || e)
+    }
   }
   try {
     notifyMonitor?.start?.({ immediate: true })

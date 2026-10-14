@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { PolicyPrice } from '@/types/panel-pricing'
 import { BadgeDollarSign, Gauge, SlidersHorizontal } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -33,11 +34,18 @@ import {
   passContext1mMode,
   thinkingPolicyLabel,
 } from './policy'
+import {
+  fmtBaseRates,
+  fmtPerM,
+  priceSourceLabel,
+  priceSourceVariant,
+} from './price-display'
 
 type Props = {
   model: ModelEntry
   live: boolean
   pol: ModelPolicy
+  pricing?: PolicyPrice | null
   open: boolean
   showBeta?: boolean
   onToggleOpen: () => void
@@ -51,6 +59,7 @@ export function ModelRow({
   model,
   live,
   pol,
+  pricing,
   open,
   showBeta = true,
   onToggleOpen,
@@ -77,7 +86,8 @@ export function ModelRow({
       ? params.thinking_fallback_budget
       : defs.thinking_fallback_budget || 4096
   const displayName = model.display_name || model.id
-  const billing = billingInfo(model)
+  const price = pricing?.effective ?? null
+  const priceSource = pricing?.source ?? null
 
   return (
     <Dialog
@@ -121,6 +131,17 @@ export function ModelRow({
                 <p className='mt-1 truncate font-mono text-[11px] text-muted-foreground'>
                   {model.id}
                 </p>
+                <div className='mt-1.5 flex flex-wrap items-center gap-1.5'>
+                  <span className='font-mono text-xs tabular-nums'>
+                    {fmtBaseRates(price)}
+                  </span>
+                  <span className='text-[10px] text-muted-foreground'>
+                    每 1M
+                  </span>
+                  <Badge variant={priceSourceVariant(priceSource)}>
+                    {priceSourceLabel(priceSource)}
+                  </Badge>
+                </div>
               </div>
             </div>
 
@@ -345,11 +366,19 @@ export function ModelRow({
               icon={<BadgeDollarSign className='size-4' />}
               compact
             >
-              <Fact label='标准' value={billing.source} />
-              <Fact label='计价模型' value={billing.key} mono />
-              <p className='text-xs leading-relaxed text-muted-foreground'>
-                {billing.note}
-              </p>
+              <Fact label='来源' value={priceSourceLabel(priceSource)} />
+              <Fact
+                label='input / output / cache read'
+                value={`${fmtBaseRates(price)} / 1M`}
+                mono
+              />
+              {price ? (
+                <Fact
+                  label='cache 5m / 1h'
+                  value={`${fmtPerM(price.cache_5m)} / ${fmtPerM(price.cache_1h)}`}
+                  mono
+                />
+              ) : null}
             </Panel>
 
             <Panel title='能力' icon={<Gauge className='size-4' />} compact>
@@ -481,31 +510,4 @@ function formatK(value: number): string {
   if (value >= 1_000_000) return `${Math.floor(value / 1_000_000)}M`
   if (value >= 1000) return `${Math.floor(value / 1000)}K`
   return String(value)
-}
-
-function billingInfo(model: ModelEntry): {
-  source: string
-  key: string
-  note: string
-} {
-  const id = model.id.toLowerCase()
-  if (/^(gpt-|codex-)/.test(id)) {
-    return {
-      source: 'OpenAI official standard',
-      key: model.family || 'openai',
-      note: '计费按 OpenAI 官方价表和请求 service_tier 归档；未知模型保持未计价，不猜价。',
-    }
-  }
-  if (id.includes('haiku-5-5')) {
-    return {
-      source: 'Anthropic official standard',
-      key: 'haiku-5.5',
-      note: 'Haiku 5.5 官方长上下文阈值是 100K；本策略把可见上下文与默认输出上限都收敛到 100K。',
-    }
-  }
-  return {
-    source: 'Anthropic official standard',
-    key: model.family || 'anthropic',
-    note: '价格由服务端官方价表计算；模型页只保存模型、参数、beta 与别名覆写。',
-  }
 }

@@ -47,6 +47,26 @@ test('writeSSEHeaders uses optional tcpNodelay getter', () => {
   assert.equal(nodelay, null)
 })
 
+test('json marks non-retryable policy errors for clients', () => {
+  const { json } = createRespond({ rewrite: { enabled: false } })
+  let status = null
+  let headers = null
+  let body = null
+  const res = {
+    writeHead(nextStatus, nextHeaders) {
+      status = nextStatus
+      headers = nextHeaders
+    },
+    end(nextBody) {
+      body = JSON.parse(nextBody)
+    },
+  }
+  json(res, 400, { error: { code: 'refusal_guard', details: { retryable: false } } })
+  assert.equal(status, 400)
+  assert.equal(headers['x-should-retry'], 'false')
+  assert.deepEqual(body.error.details, { retryable: false })
+})
+
 test('default max body fallback is 128MB', () => {
   const src = fs.readFileSync(new URL('../../src/lib/core/config.mjs', import.meta.url), 'utf8')
   assert.match(src, /KIN_MAX_BODY \|\| 128 \* 1024 \* 1024/)

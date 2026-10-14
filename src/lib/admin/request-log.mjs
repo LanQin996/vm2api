@@ -22,7 +22,7 @@ import { resolveStoreDb } from '../db/database.mjs'
 import { UsageLogsRepo } from '../db/repos/usage-logs-repo.mjs'
 import { classifyRequestError, resolveMutedErrorClasses } from './error-class.mjs'
 import { costColumnsFromUsage, normalizeUsage } from './pricing.mjs'
-import { normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
+import { disjointOpenaiUsage } from '../protocol/openai-usage.mjs'
 import { REASONING_EFFORTS, sessionIdForLog } from '../protocol/log-fields.mjs'
 
 /** Persist the token a client actually sent — only for failed ingress auth. */
@@ -104,10 +104,10 @@ function summarizeBody(body) {
 }
 
 /**
- * Cache-creation TTL breakdown, normalized like Sub2API:
- * prefer usage.cache_creation.ephemeral_5m/1h; when the breakdown is absent
- * but cache_creation_input_tokens > 0, attribute everything to the resolved TTL
- * (default 1h).
+ * Cache-creation TTL breakdown.
+ * Prefer usage.cache_creation.ephemeral_5m/1h; when the split is absent but
+ * cache_creation_input_tokens > 0, bill 1h only on an explicit cache_ttl === '1h',
+ * else 5m. DEFAULT_CACHE_TTL is not a billing fallback.
  */
 function cacheCreationBreakdown(usage) {
   if (!usage || typeof usage !== 'object') {
@@ -118,13 +118,56 @@ function cacheCreationBreakdown(usage) {
   let hour = Number(nested?.ephemeral_1h_input_tokens) || 0
   const total = Number(usage.cache_creation_input_tokens ?? usage.cache_creation_tokens) || 0
   if (five === 0 && hour === 0 && total > 0) {
-    if (normalizeCacheTtl(usage.cache_ttl) === '1h') hour = total
+    if (usage.cache_ttl === '1h') hour = total
     else five = total
   }
   if (five === 0 && hour === 0) {
     return { cache_creation_5m_tokens: null, cache_creation_1h_tokens: null }
   }
   return { cache_creation_5m_tokens: five, cache_creation_1h_tokens: hour }
+}
+
+function webSearchRequestsOf(usage) {
+  const n = Number(usage?.server_tool_use?.web_search_requests ?? usage?.web_search_requests)
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0
+}
+
+const PRICED_COLUMN_KEYS = [
+  'input_cost',
+  'output_cost',
+  'cache_read_cost',
+  'cache_creation_cost',
+  'web_search_cost',
+  'total_cost',
+  'pricing_model',
+  'price_source',
+  'price_version',
+  'service_tier',
+  'speed',
+  'long_context',
+]
+
+function costColumnsForLog(usage, model, extra = {}) {
+  if (extra.pricing_model != null) {
+    const out = {}
+    for (const key of PRICED_COLUMN_KEYS) out[key] = extra[key] ?? null
+    return out
+  }
+  const priced = costColumnsFromUsage(usage, model)
+  return {
+    input_cost: priced.input_cost ?? null,
+    output_cost: priced.output_cost ?? null,
+    cache_read_cost: priced.cache_read_cost ?? null,
+    cache_creation_cost: priced.cache_creation_cost ?? null,
+    web_search_cost: priced.web_search_cost ?? null,
+    total_cost: priced.total_cost ?? null,
+    pricing_model: priced.pricing_model ?? null,
+    price_source: priced.price_source ?? null,
+    price_version: priced.price_version ?? null,
+    service_tier: priced.service_tier ?? null,
+    speed: priced.speed ?? null,
+    long_context: priced.long_context ?? null,
+  }
 }
 
 /** Tri-state model mismatch: null = upstream did not declare a model. */
@@ -459,7 +502,27 @@ export class RequestLogStore {
   finish(ctx, extra = {}) {
     if (!ctx || ctx.mode === 'off') return null
     const duration_ms = Math.max(0, Date.now() - (ctx.t0 || Date.now()))
-    const usage = normalizeUsage(extra.usage || {})
+    const usage = normalizeUsage(disjointOpenaiUsage(extra.usage || {}) || {})
+    const breakdown = cacheCreationBreakdown(usage)
+    const webSearch = extra.web_search_requests ?? webSearchRequestsOf(usage)
+    const billedUsage = {
+      ...usage,
+      input_tokens: extra.input_tokens ?? usage.input_tokens,
+      output_tokens: extra.output_tokens ?? usage.output_tokens,
+      cache_read_tokens: extra.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cache_read_tokens,
+      cache_creation_tokens:
+        extra.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens,
+      cache_creation_5m_tokens:
+        extra.cache_creation_5m_tokens ?? usage.cache_creation_5m_tokens ?? breakdown.cache_creation_5m_tokens,
+      cache_creation_1h_tokens:
+        extra.cache_creation_1h_tokens ?? usage.cache_creation_1h_tokens ?? breakdown.cache_creation_1h_tokens,
+      cache_creation: usage.cache_creation,
+      web_search_requests: webSearch,
+      cache_ttl: usage.cache_ttl,
+      service_tier: extra.service_tier ?? usage.service_tier,
+      speed: extra.speed ?? usage.speed,
+      requested_speed: extra.requested_speed ?? usage.requested_speed,
+    }
     const summary = {
       id: 'log_' + crypto.randomBytes(6).toString('hex'),
       request_id: ctx.request_id,
@@ -489,7 +552,8 @@ export class RequestLogStore {
       cache_read_tokens: extra.cache_read_tokens ?? usage.cache_read_tokens ?? usage.cache_read_input_tokens ?? null,
       cache_creation_tokens:
         extra.cache_creation_tokens ?? usage.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? null,
-      ...cacheCreationBreakdown(usage),
+      ...breakdown,
+      web_search_requests: webSearch,
       requested_model: extra.requested_model || extra.model || null,
       upstream_model: extra.upstream_model || null,
       model_mismatch: modelMismatch(extra.requested_model || extra.model, extra.upstream_model),
@@ -508,23 +572,11 @@ export class RequestLogStore {
       vm_owner_user_id: this.repo.vmOwnerOf(extra.vm_id),
       group_id: extra.group_id ?? 1,
       rate_multiplier: Number.isFinite(Number(extra.rate_multiplier)) ? Number(extra.rate_multiplier) : 1,
-      ...costColumnsFromUsage(
-        {
-          ...usage,
-          input_tokens: extra.input_tokens ?? usage.input_tokens,
-          output_tokens: extra.output_tokens ?? usage.output_tokens,
-          cache_read_tokens: extra.cache_read_tokens ?? usage.cache_read_input_tokens ?? usage.cache_read_tokens,
-          cache_creation_tokens:
-            extra.cache_creation_tokens ?? usage.cache_creation_input_tokens ?? usage.cache_creation_tokens,
-          cache_creation_5m_tokens: extra.cache_creation_5m_tokens ?? usage.cache_creation_5m_tokens,
-          cache_creation: usage.cache_creation,
-        },
-        extra.upstream_model || extra.model || extra.requested_model,
-      ),
+      ...costColumnsForLog(billedUsage, extra.upstream_model || extra.model || extra.requested_model, extra),
     }
     // sub2api actual_cost: official cost × group rate multiplier (0 is a valid rate)
     if (summary.total_cost != null) {
-      summary.actual_cost = summary.total_cost * summary.rate_multiplier
+      summary.actual_cost = extra.actual_cost ?? summary.total_cost * summary.rate_multiplier
     }
     const classified = classifyRequestError(summary)
     if (classified?.error_class) summary.error_class = classified.error_class

@@ -27,6 +27,7 @@ import { claudeCodeInboundBody, claudeCodeInboundHeaders } from '../protocol/cla
 import { credentialModeFromOauth, credentialModeOfVm } from '../oauth/credential-mode.mjs'
 import { isModelEnabled, getModelParams, getCapabilities, listPolicyModels } from '../protocol/model-policy.mjs'
 import { listGptPolicyModels, isGptModelEnabled, syncGptIdsIntoPolicy } from '../protocol/gpt-model-policy.mjs'
+import { modelsDevMeta } from './price-catalog.mjs'
 import { listOfficialModels, validateOfficialModel } from '../protocol/models.mjs'
 import {
   fetchChatgptModelCatalog,
@@ -272,12 +273,13 @@ export async function syncCodexCatalog({
     }
   }
   const models = [...merged.values()]
-  syncGptIdsIntoPolicy(models)
+  const { added } = syncGptIdsIntoPolicy(models, { displayNameOf: (id) => modelsDevMeta('openai', id)?.name })
   return {
     ok: true,
     vm_id: usedVm,
     catalog_version: catalogVersion.version,
     ids: models.map((row) => row.id),
+    added,
     synced: models.length,
     source: 'chatgpt',
   }

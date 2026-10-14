@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { createDatabase } from '../../src/lib/db/database.mjs'
+import { hashPassword } from '../../src/lib/admin/panel-users.mjs'
 import { SettingsRepo } from '../../src/lib/db/repos/settings-repo.mjs'
 import { UsageLogsRepo } from '../../src/lib/db/repos/usage-logs-repo.mjs'
 import { filterVmsForPanel } from '../../src/lib/admin/resource-owner.mjs'
@@ -33,16 +34,21 @@ function payload(role, facts = {}, extra = {}) {
   return buildOnboardingPayload({ user: extra.user || role, role, facts, ...extra })
 }
 
-test('default password is undone only when env is 123456 and admin is absent', () => {
-  assert.equal(adminPasswordDone({ envPassword: DEFAULT_ADMIN_PASSWORD, envAdminExists: false }), false)
-  assert.equal(adminPasswordDone({ envPassword: '123456', envAdminExists: true }), true)
-  assert.equal(adminPasswordDone({ envPassword: 'custom-pass', envAdminExists: false }), true)
-  const undone = payload('admin', { envPassword: '123456', envAdminExists: false })
-  assert.equal(undone.steps.find((s) => s.id === 'admin_password').done, false)
-  const seeded = payload('admin', { envPassword: '123456', envAdminExists: true })
-  assert.equal(seeded.steps.find((s) => s.id === 'admin_password').done, true)
-  const custom = payload('admin', { envPassword: 'not-default', envAdminExists: false })
-  assert.equal(custom.steps.find((s) => s.id === 'admin_password').done, true)
+test('default password remains pending until the effective admin password changes', () => {
+  const defaultAdmin = { password_hash: hashPassword(DEFAULT_ADMIN_PASSWORD) }
+  const changedAdmin = { password_hash: hashPassword('changed-admin-pass') }
+  const cases = [
+    [{ envPassword: DEFAULT_ADMIN_PASSWORD, envAdmin: null }, false],
+    [{ envPassword: DEFAULT_ADMIN_PASSWORD, envAdmin: defaultAdmin }, false],
+    [{ envPassword: DEFAULT_ADMIN_PASSWORD, envAdmin: changedAdmin }, true],
+    [{ envPassword: 'custom-pass', envAdmin: null }, true],
+    [{ envPassword: 'custom-pass', envAdmin: defaultAdmin }, false],
+    [{ envPassword: 'custom-pass', envAdmin: changedAdmin }, true],
+  ]
+  for (const [facts, done] of cases) {
+    assert.equal(adminPasswordDone(facts), done)
+    assert.equal(payload('admin', facts).steps.find((s) => s.id === 'admin_password').done, done)
+  }
 })
 
 test('step sets follow role: admin 6, user 5, super schedulable+first_request', () => {
@@ -83,7 +89,7 @@ test('guide pops until skip or finish, even when setup steps are already done', 
     guide_used: false,
     facts: {
       envPassword: 'custom',
-      envAdminExists: true,
+      envAdmin: { password_hash: hashPassword('custom-pass') },
       proxyCount: 1,
       vmWithTokenCount: 1,
       schedulableCount: 1,
@@ -111,7 +117,7 @@ test('PUT complete / dismiss / reset round-trip through settings; invalid action
     user: 'admin',
     role: 'admin',
     ...completed,
-    facts: { envPassword: '123456', envAdminExists: false },
+    facts: { envPassword: '123456', envAdmin: null },
   })
   assert.equal(afterComplete.needs_welcome, false)
 

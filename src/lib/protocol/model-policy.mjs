@@ -978,9 +978,15 @@ export function listPolicyModels() {
     .sort((a, b) => (a.sort ?? 100) - (b.sort ?? 100) || a.id.localeCompare(b.id))
 }
 
-export function syncWorkerModelsIntoPolicy(workerIds = []) {
+/**
+ * Merge upstream catalog ids. Existing entries keep every admin edit. A new id is
+ * public only under worker_only; other modes add it disabled for the admin to enable.
+ * `displayNameOf(id)` may supply a display name (models.dev) for new entries.
+ */
+export function syncWorkerModelsIntoPolicy(workerIds = [], { displayNameOf = null } = {}) {
   if (!loaded) loadModelPolicy()
-  let changed = false
+  const added = []
+  const enabled = policy.catalog_mode === 'worker_only'
   for (const workerId of workerIds || []) {
     const id = workerId === FABLE_51_LEGACY_ID ? FABLE_51_ID : workerId === OPUS_55_LEGACY_ID ? OPUS_55_ID : workerId
     if (!id || !isCatalogModelId(id)) continue
@@ -990,7 +996,7 @@ export function syncWorkerModelsIntoPolicy(workerIds = []) {
     const caps = heuristicCapabilities(id)
     policy.models[id] = entry({
       id,
-      display_name: id,
+      display_name: displayNameOf?.(id) || id,
       family,
       capabilities: caps,
       betas: family === 'codex' ? { required: [], drop: [CONTEXT_1M], pass_context_1m: false } : undefined,
@@ -1007,17 +1013,18 @@ export function syncWorkerModelsIntoPolicy(workerIds = []) {
               on_enabled: 'passthrough',
             },
     })
+    policy.models[id].enabled = enabled
     // pass_context_1m left unset → inherit defaults.context_1m_whitelist
-    changed = true
+    added.push(id)
   }
-  if (changed) {
+  if (added.length) {
     policy.updated_at = new Date().toISOString()
     policy.source = 'worker_merge'
     try {
       new SettingsRepo().set(SETTINGS_KEY, policy)
     } catch {}
   }
-  return policy
+  return { policy, added }
 }
 
 /** Last-resort fill when the model has no policy default. Probe / short tests use this. */

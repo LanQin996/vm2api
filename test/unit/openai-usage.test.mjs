@@ -89,4 +89,6 @@ test('normalizeUsage reads top-level cached_tokens and cache_write_tokens', () =
   })
   assert.equal(n.cache_read_tokens, 25)
   assert.equal(n.cache_creation_tokens, 5)
+  assert.equal(n.input_tokens, 70)
+  assert.equal(n.cache_read_input_tokens, 25)
 })

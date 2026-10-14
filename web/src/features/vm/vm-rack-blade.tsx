@@ -6,37 +6,36 @@ import {
 } from 'react'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
-import { Clock, Download, Link2, RefreshCw } from 'lucide-react'
+import { Download, Link2, RefreshCw } from 'lucide-react'
 import { credEndpointLabel, credEndpointOf } from '@/lib/cred-type'
-import { resetCountdown } from '@/lib/fable-status'
 import { fmtAgo, fmtNum, fmtUsd } from '@/lib/format'
 import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
 import {
   claudeTier,
   credentialStatus,
   poolStatus,
   restrictionCopy,
+  seatTitle,
   vmFailedAt,
 } from '@/lib/vm-status'
-import { SeatCells } from '@/components/scheduler-viz'
+import { vmTotalCost, vmTotalTokens } from '@/lib/vm-usage'
 import { StatusMark } from '@/components/status-mark'
 import { ProxyChip } from '@/features/proxies/proxy-chip'
-import { ClaudeResetActions } from '@/features/vm/claude-reset-actions'
 import { runtimeTypeLabel, runtimeTypeOf } from '@/features/vm/machine-spec'
-import { OpenaiQuotaActions } from '@/features/vm/openai-quota-actions'
 import {
   SchedulableSwitch,
   vmSchedulableProps,
 } from '@/features/vm/schedulable-switch'
-import { RISK_SOLID, riskFg, riskLevel } from '@/features/vm/usage-meter'
+import {
+  VmCostLedger,
+  VmQuotaActions,
+  VmUsageWindows,
+} from '@/features/vm/usage-windows'
 import { VmActionMenu } from '@/features/vm/vm-action-menu'
 import { useVmActions } from '@/features/vm/vm-actions-context'
 import {
   bladeState,
-  resetShort,
-  vmReadout,
   zoneOf,
   type BladeState,
 } from '@/features/vm/vm-rack-model'
@@ -119,6 +118,10 @@ export function BladeControls({
   )
 }
 
+/**
+ * 席位容量：一条按「已用 / 设置上限」缩放的定宽条，取代逐格画席位。
+ * 上限可设到 20，逐格画会把底栏撑出卡片；容量条宽度与上限无关。
+ */
 export function VmSeats({
   vm,
   compact = false,
@@ -129,24 +132,47 @@ export function VmSeats({
   if (vm.seats_max == null) return null
   const used = Number(vm.seats_used) || 0
   const max = Number(vm.seats_max) || 0
+  const grace = Math.min(used, Number(vm.seats_grace) || 0)
   const queued = Number(vm.queue_depth) || 0
+  const share = (n: number) => (max > 0 ? Math.min(100, (n / max) * 100) : 0)
+  const active = share(used - grace)
   return (
     <span
       className='inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap'
-      title={`席位 ${used}/${max}${queued ? ` · 排队 ${queued}` : ''}`}
+      title={seatTitle(vm)}
     >
-      <SeatCells
-        used={used}
-        grace={Number(vm.seats_grace) || 0}
-        max={max}
-        size='sm'
-        className='min-w-0 flex-nowrap overflow-hidden'
-      />
-      <span className='shrink-0 tabular-nums'>
-        {used}/{max}
+      {compact ? null : <span>席位</span>}
+      <span
+        aria-hidden='true'
+        className={cn(
+          'relative h-1.5 shrink-0 overflow-hidden rounded-full track-recessed',
+          compact ? 'w-7' : 'w-12'
+        )}
+      >
+        <i
+          className='absolute inset-y-0 left-0 bg-primary motion-safe:transition-[width] motion-safe:duration-300'
+          style={{ width: `${active}%` }}
+        />
+        <i
+          className='absolute inset-y-0 bg-primary/35'
+          style={{ left: `${active}%`, width: `${share(grace)}%` }}
+        />
+      </span>
+      <span className='tabular-nums'>
+        <b
+          className={cn(
+            'font-semibold',
+            max > 0 && used >= max
+              ? 'text-[color:var(--status-caution)]'
+              : 'text-foreground'
+          )}
+        >
+          {used}
+        </b>
+        /{max}
       </span>
       {queued ? (
-        <span className='shrink-0 font-medium text-[color:var(--status-warn)] tabular-nums'>
+        <span className='font-medium text-[color:var(--status-warn)] tabular-nums'>
           {compact ? `+${queued}` : `排队 ${queued}`}
         </span>
       ) : null}
@@ -237,11 +263,11 @@ function CalloutAction({
 }
 
 function lifeLine(vm: Vm, accounts?: UsageAccountRow[]) {
-  const r = vmReadout(vm, accounts)
-  if (!r.totalCost) return null
+  const cost = vmTotalCost(vm, accounts)
+  if (!cost) return null
   return (
     <span className='font-mono text-[11.5px] text-muted-foreground tabular-nums'>
-      累计 {fmtUsd(r.totalCost, 2)} · {fmtNum(r.totalTokens)} tok
+      总计 {fmtUsd(cost, 2)} · {fmtNum(vmTotalTokens(vm, accounts))} tok
     </span>
   )
 }
@@ -318,177 +344,43 @@ export function BladeCallout({
   )
 }
 
-function Rail({ pct, width }: { pct: number | null; width: number }) {
-  return (
-    <span
-      className='relative h-full justify-self-center overflow-hidden rounded-[4px] bg-[color:var(--track)]'
-      style={{ width }}
-    >
-      {pct == null ? null : (
-        <>
-          <i
-            className='absolute inset-x-0 bottom-0 rounded-[3px]'
-            style={{
-              height: `${Math.max(pct, 2)}%`,
-              backgroundColor: RISK_SOLID[riskLevel(pct)],
-            }}
-          />
-          {/* 70% 风险线：越过它开始变色。 */}
-          <i className='absolute -inset-x-0.5 bottom-[70%] h-px bg-[color:color-mix(in_oklch,var(--foreground)_28%,transparent)]' />
-        </>
-      )}
-    </span>
-  )
-}
-
 /**
- * 读数表。窗口列 = 百分比 / 竖柱 / 窗口名（+ 重置）/ 费用 / token，
- * 累计是同一张表的最后一列，费用与 token 和窗口同行对齐。
+ * 读数：额度窗口与成本账，和列表、弹窗同一套组件。卡够宽时左右并排，
+ * 5H / 7D 逐行对齐；窄卡上下叠放。重置 / 查询按钮放在读数下方，不挤底栏。
  */
-function UsageMatrix({
+function BladeUsage({
   vm,
   accounts,
-  size,
   now,
 }: {
   vm: Vm
   accounts?: UsageAccountRow[]
-  size: RackSize
   now: number
 }) {
-  const r = vmReadout(vm, accounts)
-  const n = r.windows.length
-  const large = size === 'l'
-  const at = (row: number | string, col: number): CSSProperties => ({
-    gridRow: row,
-    gridColumn: col,
-  })
-  const muted = 'text-[color:var(--text-tertiary)]'
-  const cell = (v: number | null, fmt: (x: number) => string) =>
-    v == null ? <span className={muted}>—</span> : fmt(v)
-  const L = n + 2
   return (
-    <div
-      className='grid items-center gap-x-2 gap-y-1'
-      style={{
-        gridTemplateColumns: `2.4rem repeat(${n}, minmax(38px, 1fr)) minmax(92px, 1.25fr)`,
-        gridTemplateRows: `auto ${large ? 92 : 56}px auto auto auto`,
-      }}
-    >
-      <span style={at(4, 1)} className='text-[11px] text-muted-foreground'>
-        费用
-      </span>
-      <span style={at(5, 1)} className='text-[11px] text-muted-foreground'>
-        token
-      </span>
-      {r.windows.map((w, i) => {
-        const c = i + 2
-        const reset = w.reset ? resetCountdown(w.reset, now) : null
-        const short = resetShort(w.reset, now)
-        const level = w.pct == null ? 'ok' : riskLevel(w.pct)
-        return (
-          <div key={w.key} className='contents'>
-            <span
-              style={at(1, c)}
-              title={w.note ?? undefined}
-              className={cn(
-                'truncate text-center font-mono font-semibold tracking-[-0.02em] tabular-nums',
-                large ? 'text-[12.5px]' : 'text-[11.5px]',
-                w.pct == null ? muted : level !== 'ok' && riskFg(w.pct)
-              )}
-            >
-              {w.pct == null ? (w.note ?? '—') : `${Math.round(w.pct)}%`}
-            </span>
-            <span style={at(2, c)} className='grid h-full'>
-              <Rail pct={w.pct} width={large ? 14 : 10} />
-            </span>
-            <span
-              style={at(3, c)}
-              title={reset ? `${reset} 后重置` : undefined}
-              className='inline-flex items-center justify-center gap-1 text-[11px] font-medium whitespace-nowrap text-muted-foreground'
-            >
-              {w.label}
-              {large && short ? (
-                <span className='inline-flex items-center gap-0.5 font-mono text-[10.5px] font-normal text-[color:var(--text-tertiary)]'>
-                  <Clock className='size-2.5' aria-hidden='true' />
-                  {short}
-                </span>
-              ) : null}
-            </span>
-            <span
-              style={at(4, c)}
-              className='text-center font-mono text-xs whitespace-nowrap tabular-nums'
-            >
-              {cell(w.cost, (x) => fmtUsd(x, 2))}
-            </span>
-            <span
-              style={at(5, c)}
-              className='text-center font-mono text-xs whitespace-nowrap text-muted-foreground tabular-nums'
-            >
-              {cell(w.tokens, fmtNum)}
-            </span>
-          </div>
-        )
-      })}
-      <span
-        aria-hidden='true'
-        style={at('1 / 6', L)}
-        className='ms-0.5 self-stretch border-l border-[color:color-mix(in_oklch,var(--tc,var(--border))_55%,transparent)]'
-      />
-      {r.weekShare != null ? (
-        <span
-          style={at('1 / 3', L)}
-          className='grid w-full content-end justify-items-end gap-1.5 self-end ps-3'
-        >
-          {large ? (
-            <span className='text-[10.5px] text-[color:var(--text-tertiary)]'>
-              近 7d 占累计
-            </span>
-          ) : null}
-          <span className='font-mono text-[13px] font-semibold text-muted-foreground tabular-nums'>
-            {r.weekShare < 1 && r.weekShare > 0
-              ? '<1'
-              : Math.round(r.weekShare)}
-            %
-          </span>
-          <span className='relative h-1 w-full overflow-hidden rounded-full bg-[color:var(--track)]'>
-            <i
-              className='absolute inset-y-0 right-0 rounded-full bg-[color:var(--tc,var(--muted-foreground))]'
-              style={{ width: `${Math.max(r.weekShare, 2)}%` }}
-            />
-          </span>
-        </span>
-      ) : null}
-      <span
-        style={at(3, L)}
-        className='justify-self-end ps-3 text-[11px] font-semibold tracking-[0.02em] text-muted-foreground'
-      >
-        累计
-      </span>
-      <span
-        style={at(4, L)}
-        className={cn(
-          'justify-self-end ps-3 leading-[1.1] font-[640] tracking-[-0.02em] whitespace-nowrap text-[color:var(--tf,var(--foreground))] tabular-nums',
-          large ? 'text-[17px]' : 'text-sm'
-        )}
-      >
-        {fmtUsd(r.totalCost, 2)}
-      </span>
-      <span
-        style={at(5, L)}
-        className='justify-self-end ps-3 font-mono text-xs text-muted-foreground tabular-nums'
-      >
-        {fmtNum(r.totalTokens)}
-      </span>
+    <div className='@container grid min-w-0 content-start gap-1.5'>
+      <div className='grid min-w-0 gap-x-3 gap-y-2 @min-[24rem]:grid-cols-[minmax(0,1fr)_auto]'>
+        <VmUsageWindows vm={vm} now={now} quiet />
+        <VmCostLedger
+          vm={vm}
+          accounts={accounts}
+          className='border-t border-[color:var(--hairline)] pt-2 @min-[24rem]:border-s @min-[24rem]:border-t-0 @min-[24rem]:ps-3 @min-[24rem]:pt-0'
+        />
+      </div>
+      <QuotaRow vm={vm} now={now} />
     </div>
   )
 }
 
-function QuotaActions({ vm, now }: { vm: Vm; now: number }) {
-  return isCodexVm(vm) ? (
-    <OpenaiQuotaActions vm={vm} compact />
-  ) : (
-    <ClaudeResetActions vm={vm} compact now={now} />
+function QuotaRow({ vm, now }: { vm: Vm; now: number }) {
+  return (
+    <div
+      className='-ms-1.5'
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <VmQuotaActions vm={vm} now={now} />
+    </div>
   )
 }
 
@@ -564,19 +456,17 @@ export const VmBlade = memo(function VmBlade({
       </div>
       <SpecLine vm={vm} />
       {state === 'live' ? (
-        <UsageMatrix vm={vm} accounts={accounts} size={size} now={now} />
+        <BladeUsage vm={vm} accounts={accounts} now={now} />
+      ) : state === 'unprobed' ? (
+        <div className='grid min-w-0 content-start gap-1.5'>
+          <BladeCallout vm={vm} accounts={accounts} state={state} />
+          <QuotaRow vm={vm} now={now} />
+        </div>
       ) : (
         <BladeCallout vm={vm} accounts={accounts} state={state} />
       )}
-      <div className='hairline-t flex min-h-9 min-w-0 items-center gap-1.5 pt-1.5 text-[11.5px] text-muted-foreground'>
-        {vm.seats_max != null ? (
-          <span className='me-0.5 flex min-w-0 border-e border-[color:var(--hairline)] pe-2'>
-            <VmSeats vm={vm} />
-          </span>
-        ) : null}
-        {state === 'live' || state === 'unprobed' ? (
-          <QuotaActions vm={vm} now={now} />
-        ) : null}
+      <div className='hairline-t flex min-h-9 min-w-0 items-center gap-2 pt-1.5 text-[11.5px] text-muted-foreground'>
+        <VmSeats vm={vm} />
         <BladeControls vm={vm} />
       </div>
     </article>

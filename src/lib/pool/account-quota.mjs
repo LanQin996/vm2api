@@ -36,6 +36,7 @@ import {
   usageErrorText,
 } from '../oauth/crs-usage-probe.mjs'
 import { normalizeUsage } from '../admin/pricing.mjs'
+import { disjointOpenaiUsage } from '../protocol/openai-usage.mjs'
 import { isTestProbeSource } from './schedule-eligibility.mjs'
 import {
   estimateRequestRisk,
@@ -228,7 +229,7 @@ export class AccountQuota {
     acc.unified.updated_at = new Date().toISOString()
     if (sampled) acc.unified.headers.sampled_at = new Date().toISOString()
 
-    const usage = normalizeUsage(usageBody || {})
+    const usage = normalizeUsage(disjointOpenaiUsage(usageBody || {}) || {})
     if (
       countRequest &&
       (usage.input_tokens != null ||

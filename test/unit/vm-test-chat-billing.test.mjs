@@ -189,10 +189,11 @@ test('health probe mode uses the full official Claude Code prompt', () => {
     rewrite: true,
   })
   assert.equal(inbound.system.length, 4)
-  assert.equal(inbound.system[1].text, CRS_OFFICIAL_SYSTEM)
-  assert.equal(inbound.system[2].text, CRS_OFFICIAL_AGENT_PROMPT)
+  assert.equal(inbound.system[0].text, CRS_OFFICIAL_SYSTEM)
+  assert.equal(inbound.system[1].text, CRS_OFFICIAL_AGENT_PROMPT)
+  assert.deepEqual(inbound.system[1].cache_control, { type: 'ephemeral', ttl: '1h' })
+  assert.match(inbound.system[2].text, /# Environment/)
   assert.deepEqual(inbound.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
-  assert.match(inbound.system[3].text, /# Environment/)
   assert.equal(isOfficialClaudeCodeTraffic(headers, inbound), true)
 })
 

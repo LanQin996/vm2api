@@ -4,6 +4,7 @@ import type { Vm } from '@/types/panel-vm'
 import { resetCountdown } from '@/lib/fable-status'
 import { fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { vmCostLedger } from '@/lib/vm-usage'
 import { RISK_SOLID, riskFg, riskLevel } from '@/features/vm/usage-meter'
 import {
   BLADE_STATE_CLASS,
@@ -15,7 +16,7 @@ import {
 } from '@/features/vm/vm-rack-blade'
 import {
   bladeState,
-  vmReadout,
+  vmWindows,
   zoneOf,
   type WindowReadout,
 } from '@/features/vm/vm-rack-model'
@@ -24,8 +25,6 @@ function MiniColumn({ w, now }: { w: WindowReadout; now: number }) {
   const reset = w.reset ? resetCountdown(w.reset, now) : null
   const tip = [
     `${w.label} ${w.pct == null ? w.note || '未探测' : `${Math.round(w.pct)}%`}`,
-    w.cost != null && fmtUsd(w.cost, 2),
-    w.tokens != null && `${fmtNum(w.tokens)} tok`,
     reset && `${reset} 后重置`,
   ]
     .filter(Boolean)
@@ -66,7 +65,7 @@ const NOTE: Record<string, string> = {
   unprobed: '额度未探测',
 }
 
-/** 小档单元：一屏看全队。窗口费用 / token / 重置在竖柱的悬停提示里。 */
+/** 小档单元：一屏看全队。重置在竖柱悬停提示里，5H / 7D / 总计成本在总计的提示里。 */
 export const VmUnit = memo(function VmUnit({
   vm,
   accounts,
@@ -78,7 +77,8 @@ export const VmUnit = memo(function VmUnit({
 }) {
   const open = useOpenOnKey(vm)
   const state = bladeState(vm)
-  const r = vmReadout(vm, accounts)
+  const ledger = vmCostLedger(vm, accounts)
+  const total = ledger[ledger.length - 1]
   const email = String(vm.email || '')
   return (
     <article
@@ -111,7 +111,7 @@ export const VmUnit = memo(function VmUnit({
       </span>
       {state === 'live' ? (
         <span className='flex items-end gap-1.5'>
-          {r.windows.map((w) => (
+          {vmWindows(vm).map((w) => (
             <MiniColumn key={w.key} w={w} now={now} />
           ))}
         </span>
@@ -126,16 +126,20 @@ export const VmUnit = memo(function VmUnit({
           {NOTE[state]}
         </span>
       )}
-      {r.totalCost ? (
+      {total.cost ? (
         <span
           className='grid gap-px self-end border-l border-[color:color-mix(in_oklch,var(--tc,var(--border))_55%,transparent)] ps-2 text-right'
-          title={`累计 ${fmtUsd(r.totalCost, 2)} · ${fmtNum(r.totalTokens)} tok`}
+          title={ledger
+            .map(
+              (r) => `${r.label} ${fmtUsd(r.cost, 2)} · ${fmtNum(r.tokens)} tok`
+            )
+            .join('\n')}
         >
           <b className='text-[13px] font-[640] tracking-[-0.015em] text-[color:var(--tf,var(--foreground))] tabular-nums'>
-            {fmtUsd(r.totalCost, 0)}
+            {fmtUsd(total.cost, 0)}
           </b>
           <span className='font-mono text-[10.5px] text-muted-foreground tabular-nums'>
-            {fmtNum(r.totalTokens)}
+            {fmtNum(total.tokens)}
           </span>
         </span>
       ) : null}

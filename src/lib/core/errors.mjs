@@ -16,6 +16,7 @@
 export const ErrorType = {
   AUTH: 'authentication_error',
   PERMISSION: 'permission_error',
+  POLICY: 'policy_blocked',
   INVALID_REQUEST: 'invalid_request_error',
   NOT_FOUND: 'not_found_error',
   RATE_LIMIT: 'rate_limit_error',
@@ -148,6 +149,39 @@ export function isUsagePolicyErrorMessage(message = '') {
 
 export const REFUSAL_GUARD_MESSAGE =
   "Request blocked by the refusal guard. Anthropic's API previously refused this pattern."
+
+const REFUSAL_GUARD_MESSAGES = Object.freeze({
+  exact: REFUSAL_GUARD_MESSAGE,
+  similar: `${REFUSAL_GUARD_MESSAGE} 当前提示词与曾被拒答的内容相似。`,
+  device: `${REFUSAL_GUARD_MESSAGE} 该设备此前已被封禁。`,
+  upstream: 'Anthropic refused this request under its usage policy. Do not retry this request.',
+})
+
+/** Policy refusals are request rejections, not login failures or transient service failures. */
+export function makeRefusalGuardError({
+  requestId,
+  blockedBy = 'upstream',
+  sourceRequestId,
+  details = {},
+  message,
+} = {}) {
+  const kind = Object.hasOwn(REFUSAL_GUARD_MESSAGES, blockedBy) ? blockedBy : 'upstream'
+  const safeDetails = { ...details, blocked_by: kind, retryable: false }
+  delete safeDetails.source_request_id
+  const sourceId = typeof sourceRequestId === 'string' ? sourceRequestId.trim() : ''
+  if (kind === 'device' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sourceId)) {
+    safeDetails.source_request_id = sourceId
+  }
+  return makeError({
+    // Claude Code treats 403 as login failure; use a non-retryable policy contract instead.
+    type: ErrorType.POLICY,
+    code: ErrorCode.REFUSAL_GUARD,
+    message: message || REFUSAL_GUARD_MESSAGES[kind],
+    status: 400,
+    request_id: requestId,
+    details: safeDetails,
+  })
+}
 
 /**
  * `overloaded` (real capacity, 529), `rate_limited` (every account in an
@@ -452,17 +486,40 @@ export function mapUpstreamError(status, body, headers = {}) {
   }
   const request_id =
     body?.error?.request_id || body?.request_id || headers['request-id'] || headers['x-request-id'] || null
-  if (isUsagePolicyErrorMessage(msg)) {
+  if (inboundCode === ErrorCode.REFUSAL_GUARD) {
+    const prior = body?.error?.details || {}
+    return makeRefusalGuardError({
+      requestId: request_id,
+      blockedBy: prior.blocked_by,
+      sourceRequestId: prior.source_request_id,
+      details: Object.fromEntries(
+        ['reason', 'score', 'ban_reason'].filter((key) => Object.hasOwn(prior, key)).map((key) => [key, prior[key]]),
+      ),
+    })
+  }
+  // Authentication failures must remain credential errors even if an upstream
+  // body happens to quote the Usage Policy wording.
+  if (status === 401 || upType === 'authentication_error') {
     return makeError({
-      type: ErrorType.PERMISSION,
-      code: ErrorCode.REFUSAL_GUARD,
-      message: REFUSAL_GUARD_MESSAGE,
-      status: 503,
+      type: ErrorType.UPSTREAM,
+      code: ErrorCode.UPSTREAM_AUTH,
+      message: String(msg),
+      status: status === 403 ? 403 : 401,
+      details: {
+        upstream_type: upType,
+        upstream_status: status,
+        ...(body?.error?.upstream_code ? { upstream_code: body.error.upstream_code } : {}),
+      },
+      request_id,
+    })
+  }
+  if (isUsagePolicyErrorMessage(msg)) {
+    return makeRefusalGuardError({
+      requestId: request_id,
       details: {
         upstream_type: upType,
         upstream_status: status,
       },
-      request_id,
     })
   }
   if (inboundCode === ErrorCode.CONTENT_FILTER_REFUSAL) {

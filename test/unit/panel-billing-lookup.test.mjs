@@ -79,6 +79,7 @@ test('VM list carries lifetime tokens from the same billing row as total_cost', 
             cache_read_tokens: 90000,
             window_5h_tokens: 40,
             window_7d_tokens: 900,
+            today: { input_tokens: 200, output_tokens: 300, cache_read_tokens: 9000, cache_creation_tokens: 500 },
           },
         ],
       }),
@@ -86,9 +87,11 @@ test('VM list carries lifetime tokens from the same billing row as total_cost', 
   })
   const byId = Object.fromEntries(listed.data.items.map((vm) => [vm.id, vm]))
   assert.equal(byId['vm-07'].total_cost, 12.5)
-  assert.equal(byId['vm-07'].total_tokens, 1500)
+  assert.equal(byId['vm-07'].total_tokens, 91500)
   assert.equal(byId['vm-07'].window_5h_tokens, 40)
   assert.equal(byId['vm-07'].window_7d_tokens, 900)
+  // Claude input excludes cache; 今日 must count the cache buckets too (input + output alone was 500).
+  assert.equal(byId['vm-07'].today_tokens, 10000)
   assert.equal(byId['vm-08'].total_tokens, 0)
 })
 

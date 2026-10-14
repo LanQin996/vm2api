@@ -39,6 +39,8 @@ import { sanitizeInboundBody, defaultSeedPolicy } from './seed-policy.mjs'
 import { fingerprintRequest } from './client-fingerprint.mjs'
 import { validateOfficialModel } from './models.mjs'
 import { handleCodexProtocol, handleCodexSearch } from './handle-codex.mjs'
+import { disjointOpenaiUsage } from './openai-usage.mjs'
+import { costColumnsFromUsage } from '../admin/pricing.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { normalizeCodexRouting } from './codex-route.mjs'
 import { hasClaudeCode1mSuffix } from './context-1m.mjs'
@@ -171,6 +173,27 @@ export function createHandleProtocol(deps) {
     typeof deps.getFailoverRunner === 'function' ? deps.getFailoverRunner() : deps.failoverRunner
   function responseClosed(res) {
     return !!(res?.destroyed || res?.writableEnded || res?.closed)
+  }
+
+  function usageForLog(usage, { cacheTtl = null, requestedSpeed = null } = {}) {
+    let next = usage
+    if (next && cacheTtl) next = applyCacheTtlToUsage(next, cacheTtl)
+    if (next && requestedSpeed) next = { ...next, requested_speed: requestedSpeed }
+    return disjointOpenaiUsage(next)
+  }
+
+  function attachPricing(logBag, { managedKey = null, rateMultiplier = 1, bill = false } = {}) {
+    const model = logBag.upstream_model || logBag.model
+    const priced = costColumnsFromUsage(logBag.usage || {}, model)
+    Object.assign(logBag, priced)
+    if (!bill || !managedKey) return
+    try {
+      apiKeyStore.recordUsage(managedKey, logBag.usage || {}, {
+        model,
+        rateMultiplier,
+        officialCost: priced.total_cost,
+      })
+    } catch {}
   }
 
   function finishClientCancel(res, result, logBag) {
@@ -923,6 +946,28 @@ export function createHandleProtocol(deps) {
           standing: standingUsageFromRoutingFile(routingConfigPath),
         })
 
+    if (
+      inferenceBackend === 'api' &&
+      !requestContext &&
+      officialTraffic &&
+      !officialCcPassthroughFromRouting(getRouting() || {})
+    ) {
+      ctx.body = applyCrsUnofficialPersona(ctx.body, {
+        officialClient: false,
+        forceConfigured: true,
+        routingFile: routingConfigPath,
+        headers: req.headers,
+        sessionId: outboundSessionId,
+        model: ctx.body?.model,
+        cliVersion: OFFICIAL_CLI_VERSION,
+      })
+      personaHideTokens = personaHideForUnofficial(personaIn, ctx.body, {
+        officialClient: false,
+        mode: personaMode,
+        hides: personaHidesUsageFromRoutingFile(routingConfigPath),
+        standing: standingUsageFromRoutingFile(routingConfigPath),
+      })
+    }
     if (inferenceBackend === 'api') {
       const managedKey = req.apiKeyRecord || null
       if (managedKey) {
@@ -995,21 +1040,18 @@ export function createHandleProtocol(deps) {
       logBag.account_id = result?.accountId || null
       logBag.final_account_id = result?.accountId || null
       logBag.upstream_status = result?.status ?? null
-      logBag.usage = result?.body?.usage || result?.usage || null
+      logBag.usage = usageForLog(result?.body?.usage || result?.usage || null, { cacheTtl })
       logBag.upstream_model = result?.model || null
       // API transport still stamps the first data: line; subtract t0 for queue wait only.
       logBag.first_token_ms = Number.isFinite(result?.firstTokenAt)
         ? Math.max(0, result.firstTokenAt - logCtx.t0)
         : (result?.ttftMs ?? null)
       logBag.final_state = result?.terminalState || null
-      if (result?.ok && managedKey) {
-        try {
-          apiKeyStore.recordUsage(managedKey, logBag.usage || {}, {
-            model: logBag.upstream_model || logBag.model,
-            rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey.group_id ?? 1),
-          })
-        } catch {}
-      }
+      attachPricing(logBag, {
+        managedKey,
+        rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey?.group_id ?? 1),
+        bill: !!(result?.ok && managedKey),
+      })
       if (clientStream) {
         if (isClientCancelledResult(result)) return finishClientCancel(res, result, logBag)
         if (!res.headersSent) {
@@ -1418,10 +1460,10 @@ export function createHandleProtocol(deps) {
     logBag.attempt_count = result?.attemptCount ?? 0
     logBag.final_state = result?.finalState || result?.terminalState || null
     logBag.upstream_status = result?.status ?? null
-    logBag.usage = result?.body?.usage || result?.usage || null
-    if (logBag.usage && cacheTtl) logBag.usage = applyCacheTtlToUsage(logBag.usage, cacheTtl)
-    // Fast mode bills 2x; upstream usage.speed wins, the request speed is only a fallback.
-    if (logBag.usage && wantsFastMode(ctx.body)) logBag.usage = { ...logBag.usage, requested_speed: 'fast' }
+    logBag.usage = usageForLog(result?.body?.usage || result?.usage || null, {
+      cacheTtl,
+      requestedSpeed: wantsFastMode(ctx.body) ? 'fast' : null,
+    })
     logBag.upstream_model = result?.body?.model || result?.model || null
     // Kernel stream firstTokenAt is generated content; include admission/setup via t0.
     logBag.first_token_ms = Number.isFinite(result?.firstTokenAt)
@@ -1466,14 +1508,11 @@ export function createHandleProtocol(deps) {
           if (vm) pool.syncQuotaSchedule(vm)
         }
       } catch {}
-      if (managedKey) {
-        try {
-          apiKeyStore.recordUsage(managedKey, logBag.usage || {}, {
-            model: logBag.upstream_model || logBag.model,
-            rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey.group_id ?? 1),
-          })
-        } catch {}
-      }
+      attachPricing(logBag, {
+        managedKey,
+        rateMultiplier: deps.groupsRepo.rateMultiplier(managedKey?.group_id ?? 1),
+        bill: !!managedKey,
+      })
     }
 
     if (clientStream) {

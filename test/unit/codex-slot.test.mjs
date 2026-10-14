@@ -4,6 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  enrichCodexAccountIdentity,
   parseCodexCredentialInput,
   parseCodexImportPayload,
   parseCodexPasswordLine,
@@ -13,6 +14,7 @@ import {
   writeCodexAccounts,
   persistCodexCredentialState,
   codexCredentialVersion,
+  summarizeCodexSlot,
 } from '../../src/lib/vm/codex-slot.mjs'
 import { getVm, listVms } from '../../src/lib/vm/vm-registry.mjs'
 import { isCodexSlotReady } from '../../src/lib/pool/codex-slot-pool.mjs'
@@ -140,6 +142,47 @@ test('parseCodexCredentialInput rejects OPENAI_API_KEY-only client config', () =
   const parsed = parseCodexCredentialInput({ OPENAI_API_KEY: 'sk-proj-not-oauth' })
   assert.equal(parsed.ok, false)
   assert.equal(parsed.error, 'not_oauth_account')
+})
+
+test('enrichCodexAccountIdentity extracts email from OAuth id_token', () => {
+  const idToken = jwt({ email: 'gpt-user@example.com', sub: 'sub-1' })
+  const accessToken = jwt({
+    'https://api.openai.com/auth': { chatgpt_account_id: 'chatgpt-acc-9' },
+  })
+  const enriched = enrichCodexAccountIdentity({
+    access_token: accessToken,
+    refresh_token: 'rt',
+    id_token: idToken,
+  })
+  assert.equal(enriched.email, 'gpt-user@example.com')
+  assert.equal(enriched.chatgpt_account_id, 'chatgpt-acc-9')
+})
+
+test('upsertCodexAccount persists identity for panel summarizeCodexSlot', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-oauth-id-'))
+  const vmId = 'vm-codex-oauth'
+  fs.mkdirSync(path.join(root, 'vms', vmId), { recursive: true })
+  const idToken = jwt({ email: 'panel@example.com' })
+  upsertCodexAccount(root, vmId, {
+    access_token: jwt({ 'https://api.openai.com/auth': { chatgpt_account_id: 'acc-panel' } }),
+    refresh_token: 'rt',
+    id_token: idToken,
+  })
+  const summary = summarizeCodexSlot(root, {
+    id: vmId,
+    platform: 'openai',
+    family: 'codex',
+    codex: { has_access: true },
+  })
+  assert.equal(summary.email, 'panel@example.com')
+  assert.equal(summary.chatgpt_account_id, 'acc-panel')
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('enrichCodexAccountIdentity does not crash on invalid jwt', () => {
+  const enriched = enrichCodexAccountIdentity({ access_token: 'bad-token', id_token: 'also-bad' })
+  assert.equal(enriched.email, null)
+  assert.equal(enriched.chatgpt_account_id, null)
 })
 
 test('upsertCodexAccount writes credential file', () => {

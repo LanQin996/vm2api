@@ -485,20 +485,22 @@ export class ApiKeyStore {
     else this.inflight.set(id, n)
   }
 
-  recordUsage(recOrId, usage = {}, { model = null, rateMultiplier = 1 } = {}) {
+  recordUsage(recOrId, usage = {}, { model = null, rateMultiplier = 1, officialCost } = {}) {
     const id = typeof recOrId === 'string' ? recOrId : recOrId?.id
     if (!this.repo.getById(id)) return null
-    let cost = Number(usage.cost ?? usage.actual_cost) || 0
-    if (!cost && model) {
+    const normalized = normalizeUsage(usage)
+    let billed = officialCost
+    if (billed == null) billed = usage.total_cost
+    if (billed == null && model) {
       try {
-        const c = calculateCost(normalizeUsage(usage), model)
-        if (c?.known) cost = c.total_cost
+        const c = calculateCost(normalized, model)
+        if (c?.known) billed = c.total_cost
       } catch {}
     }
+    if (billed == null) billed = Number(usage.cost ?? usage.actual_cost) || 0
     // key quota/windows track actual (group-rated) spend, sub2api-style
     const rate = Number.isFinite(Number(rateMultiplier)) ? Number(rateMultiplier) : 1
-    cost *= rate
-    const normalized = normalizeUsage(usage)
+    const cost = billed * rate
     const rec = this.repo.recordUsage(id, {
       tokens_in: Number(normalized.input_tokens) || Number(normalized.tokens_in) || 0,
       tokens_out: Number(normalized.output_tokens) || Number(normalized.tokens_out) || 0,

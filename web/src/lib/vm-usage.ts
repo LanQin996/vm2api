@@ -1,7 +1,8 @@
 import type { BillingAccountRow } from '@/types/panel-overview'
+import type { WindowEstimate } from '@/types/panel-pricing'
 import type { UsageAccountRow } from '@/types/panel-usage'
 import type { Vm } from '@/types/panel-vm'
-import { isCodexVm } from '@/lib/vm-kind'
+import { fmtNum, fmtUsd } from '@/lib/format'
 
 function num(v: unknown): number {
   const n = Number(v)
@@ -115,7 +116,8 @@ export function vmTodayView(vm: Vm, accounts?: UsageAccountRow[]): Vm {
       today_output_tokens: dashOut,
       today_cache_read_tokens: dashRead,
       today_cache_creation_tokens: dashWrite,
-      today_tokens: num(vm.today_tokens) || dashInn + dashOut,
+      today_tokens:
+        num(vm.today_tokens) || dashInn + dashOut + dashRead + dashWrite,
     }
   }
 
@@ -126,21 +128,26 @@ export function vmTodayView(vm: Vm, accounts?: UsageAccountRow[]): Vm {
     today_output_tokens: dashOut || accOut,
     today_cache_read_tokens: Math.max(dashRead, accRead),
     today_cache_creation_tokens: Math.max(dashWrite, accWrite),
-    today_tokens: (dashInn || accInn) + (dashOut || accOut),
+    today_tokens:
+      num(vm.today_tokens) ||
+      num(acc?.today_tokens) ||
+      (dashInn || accInn) +
+        (dashOut || accOut) +
+        Math.max(dashRead, accRead) +
+        Math.max(dashWrite, accWrite),
     today_cost: Math.max(dashCost, accCost),
     cache_hit_rate: vm.cache_hit_rate ?? null,
   }
 }
 
-/** `null` means no prompt tokens at all — distinct from a real 0% hit rate. */
+/** `null` means no prompt tokens at all — distinct from a real 0% hit rate.
+ *  Input is disjoint (excludes cache) on every platform. */
 export function cacheHitPct(
   input: unknown,
   read: unknown,
-  write: unknown,
-  scheme: 'anthropic' | 'openai' = 'anthropic'
+  write: unknown
 ): number | null {
-  const prompt =
-    scheme === 'openai' ? num(input) : num(input) + num(read) + num(write)
+  const prompt = num(input) + num(read) + num(write)
   if (!prompt) return null
   return Math.min(100, (num(read) / prompt) * 100)
 }
@@ -156,8 +163,7 @@ export function vmCacheHitPct(
   return cacheHitPct(
     row.today_input_tokens,
     row.today_cache_read_tokens,
-    row.today_cache_creation_tokens,
-    isCodexVm(vm) ? 'openai' : 'anthropic'
+    row.today_cache_creation_tokens
   )
 }
 
@@ -174,7 +180,12 @@ export function vmTodayStats(vm: Vm, accounts?: UsageAccountRow[]) {
     row,
     today: num(row.today_cost),
     req: num(row.today_requests),
-    tok: num(row.today_tokens) || inn + out,
+    tok:
+      num(row.today_tokens) ||
+      inn +
+        out +
+        num(row.today_cache_read_tokens) +
+        num(row.today_cache_creation_tokens),
     inn,
     out,
     read: num(row.today_cache_read_tokens),
@@ -224,7 +235,7 @@ export function vmWindowCosts(
   }
 }
 
-/** 5h / 7d 窗口 token（输入 + 输出，不含缓存）。取值顺序同 `vmWindowCosts`。 */
+/** 5h / 7d 窗口 token（含缓存）。取值顺序同 `vmWindowCosts`。 */
 export function vmWindowTokens(
   vm: Vm,
   accounts?: UsageAccountRow[]
@@ -254,4 +265,87 @@ export function vmTotalTokens(vm: Vm, accounts?: UsageAccountRow[]): number {
     num(vm.total_tokens),
     num(usageAccountForVm(vm, accounts)?.total_tokens)
   )
+}
+
+export type VmLedgerRow = {
+  key: '5h' | '7d' | 'total'
+  label: string
+  cost: number
+  tokens: number
+}
+
+/** 一台槽位的费用与 token 只走这一份：5H / 7D 窗口 + 账号总计。 */
+export function vmCostLedger(
+  vm: Vm,
+  accounts?: UsageAccountRow[]
+): VmLedgerRow[] {
+  const cost = vmWindowCosts(vm, accounts)
+  const tok = vmWindowTokens(vm, accounts)
+  return [
+    { key: '5h', label: '5H', cost: cost.h5, tokens: tok.h5 },
+    { key: '7d', label: '7D', cost: cost.d7, tokens: tok.d7 },
+    {
+      key: 'total',
+      label: '总计',
+      cost: vmTotalCost(vm, accounts),
+      tokens: vmTotalTokens(vm, accounts),
+    },
+  ]
+}
+
+export const ESTIMATE_STATUS_ZH: Record<WindowEstimate['status'], string> = {
+  ok: '估算有效',
+  no_data: '无用量读数',
+  no_reset: '无重置时间',
+  log_gap: '日志未覆盖窗口',
+  low_usage: '用量<5%',
+  unpriced: '窗口内有未定价请求',
+}
+
+const ESTIMATE_CAVEAT = '按官方价估算；账号在网关外使用会偏低'
+
+export function estimateTooltip(
+  est: WindowEstimate | null | undefined
+): string {
+  const bits = [est ? ESTIMATE_STATUS_ZH[est.status] : '暂无估算']
+  if (est?.total_tokens != null && Number.isFinite(est.total_tokens)) {
+    bits.push(`约 ${fmtNum(est.total_tokens)} tok`)
+  }
+  bits.push(ESTIMATE_CAVEAT)
+  return bits.join('\n')
+}
+
+export function formatWindowSpend(
+  spent: number,
+  est: WindowEstimate | null | undefined
+): { costText: string; remainText: string; tooltip: string } {
+  const tooltip = estimateTooltip(est)
+  const spentUsd = fmtUsd(est?.spent_usd ?? spent, 2)
+  if (!est) {
+    return {
+      costText: spent > 0 ? fmtUsd(spent, 2) : '',
+      remainText: '',
+      tooltip,
+    }
+  }
+  if (est.status !== 'ok') {
+    return {
+      costText: `${spentUsd} / —`,
+      remainText: '—',
+      tooltip,
+    }
+  }
+  const total =
+    est.total_usd == null || !Number.isFinite(est.total_usd)
+      ? '—'
+      : fmtUsd(est.total_usd, 2)
+  const remain =
+    est.remaining_usd == null || !Number.isFinite(est.remaining_usd)
+      ? '—'
+      : `余 ${fmtUsd(est.remaining_usd, 2)}`
+  return {
+    costText: `${spentUsd} / ≈${total}`,
+    remainText: remain,
+    tooltip,
+  }
 }

@@ -104,7 +104,7 @@ test('summary persists protocol usage detail (cache/model/ttft/stop_reason)', ()
   assert.equal(sum.first_token_ms, 42)
   assert.equal(sum.stop_reason, 'end_turn')
   // Sonnet 5 official: $2/$10/cache 5m $2.50/1h $4/read $0.20 per MTok
-  assert.equal(sum.pricing_model, 'sonnet-5')
+  assert.equal(sum.pricing_model, 'claude-sonnet-5')
   assert.ok(Math.abs(sum.total_cost - 0.0000926) < 1e-12)
   const row = store.queryNormal({ limit: 1 }).items[0]
   assert.equal(row.cache_creation_5m_tokens, 4)
@@ -135,9 +135,9 @@ test('backfillMissingCosts restores actual cost with the stored group multiplier
   assert.deepEqual(
     rows.map((row) => ({ ...row })),
     [
-      { id: 'log_old_bill_default', total_cost: 5, actual_cost: 5, pricing_model: 'opus-5' },
-      { id: 'log_old_bill_double', total_cost: 5, actual_cost: 10, pricing_model: 'opus-5' },
-      { id: 'log_old_bill_free', total_cost: 5, actual_cost: 0, pricing_model: 'opus-5' },
+      { id: 'log_old_bill_default', total_cost: 5, actual_cost: 5, pricing_model: 'claude-opus-5' },
+      { id: 'log_old_bill_double', total_cost: 5, actual_cost: 10, pricing_model: 'claude-opus-5' },
+      { id: 'log_old_bill_free', total_cost: 5, actual_cost: 0, pricing_model: 'claude-opus-5' },
     ],
   )
   assert.equal(store.repo.backfillMissingCosts(), 0)
@@ -186,7 +186,7 @@ test('backfill reprices with the stored service tier and speed', () => {
       .map((r) => [r.id, [r.total_cost, r.pricing_model]]),
   )
   assert.deepEqual(got.log_bf_flex, [0.25, 'gpt-5.5'])
-  assert.deepEqual(got.log_bf_fast, [10, 'opus-4.5'])
+  assert.deepEqual(got.log_bf_fast, [10, 'claude-opus-4-8'])
   assert.deepEqual(got.log_bf_weird, [null, 'unpriced'])
   assert.equal(store.repo.backfillMissingCosts(), 0)
 })
@@ -417,6 +417,7 @@ test('finish writes OpenAI Responses cache read and cache write', () => {
       input_tokens_details: { cached_tokens: 80, cache_write_tokens: 10 },
     },
   })
+  assert.equal(sum.input_tokens, 10)
   assert.equal(sum.cache_read_tokens, 80)
   assert.equal(sum.cache_creation_tokens, 10)
 })
@@ -434,6 +435,7 @@ test('finish prices OpenAI usage with top-level cached_tokens', () => {
     upstream_model: 'gpt-5.5',
     usage: { input_tokens: 1_000_000, output_tokens: 0, cached_tokens: 200_000 },
   })
+  assert.equal(sum.input_tokens, 800_000)
   assert.equal(sum.cache_read_tokens, 200_000)
 })
 
@@ -454,26 +456,93 @@ test('finish prices OpenAI-shaped usage from third-party clients', () => {
       prompt_tokens_details: { cached_tokens: 1_000_000 },
     },
   })
-  assert.equal(sum.input_tokens, 1_000_000)
+  assert.equal(sum.input_tokens, 0)
   assert.equal(sum.cache_read_tokens, 1_000_000)
-  assert.equal(sum.total_cost, 2.2)
 })
 
-test('cache breakdown falls back to the default 1h bucket', () => {
+test('cache breakdown without a split bills 5m unless cache_ttl is explicitly 1h', () => {
   const store = tmpStore('normal')
-  const ctx = store.start(
-    { method: 'POST', headers: {}, socket: {} },
-    { protocol: 'anthropic.messages', pathName: '/v1/messages' },
+  const five = store.finish(
+    store.start(
+      { method: 'POST', headers: {}, socket: {} },
+      { protocol: 'anthropic.messages', pathName: '/v1/messages' },
+    ),
+    {
+      status: 200,
+      model: 'claude-sonnet-5',
+      upstream_model: 'claude-sonnet-5',
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 9 },
+    },
   )
-  const sum = store.finish(ctx, {
-    status: 200,
-    model: 'claude-sonnet-5',
-    upstream_model: 'claude-sonnet-5',
-    usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 9 },
-  })
-  assert.equal(sum.cache_creation_5m_tokens, 0)
-  assert.equal(sum.cache_creation_1h_tokens, 9)
-  assert.equal(sum.model_mismatch, 0)
+  assert.equal(five.cache_creation_5m_tokens, 9)
+  assert.equal(five.cache_creation_1h_tokens, 0)
+  assert.equal(five.model_mismatch, 0)
+  const hour = store.finish(
+    store.start(
+      { method: 'POST', headers: {}, socket: {} },
+      { protocol: 'anthropic.messages', pathName: '/v1/messages' },
+    ),
+    {
+      status: 200,
+      model: 'claude-sonnet-5',
+      upstream_model: 'claude-sonnet-5',
+      usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 9, cache_ttl: '1h' },
+    },
+  )
+  assert.equal(hour.cache_creation_5m_tokens, 0)
+  assert.equal(hour.cache_creation_1h_tokens, 9)
+})
+
+test('finish persists web_search_requests from server_tool_use', () => {
+  const store = tmpStore('normal')
+  const sum = store.finish(
+    store.start(
+      { method: 'POST', headers: {}, socket: {} },
+      { protocol: 'anthropic.messages', pathName: '/v1/messages' },
+    ),
+    {
+      status: 200,
+      model: 'claude-sonnet-5',
+      upstream_model: 'claude-sonnet-5',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 2,
+        server_tool_use: { web_search_requests: 3 },
+      },
+    },
+  )
+  assert.equal(sum.web_search_requests, 3)
+  const row = store.db.prepare('SELECT web_search_requests FROM usage_logs WHERE id = ?').get(sum.id)
+  assert.equal(row.web_search_requests, 3)
+})
+
+test('repriceRange rewrites total_cost and fills unpriced rows while actual_cost stays put', () => {
+  const store = tmpStore('normal')
+  const now = new Date().toISOString()
+  store.db
+    .prepare(`
+    INSERT INTO usage_logs (
+      id, request_id, created_at, model, upstream_model, status,
+      input_tokens, output_tokens, total_cost, actual_cost, pricing_model, rate_multiplier
+    ) VALUES
+      ('log_rp_old', 'rid_rp_old', ?, 'claude-opus-5', 'claude-opus-5', 200, 1000000, 0, 1, 9, 'opus-5', 1),
+      ('log_rp_null', 'rid_rp_null', ?, 'claude-opus-5', 'claude-opus-5', 200, 1000000, 0, NULL, 4, NULL, 2)
+  `)
+    .run(now, now)
+  const out = store.repo.repriceRange({ since: now, until: now })
+  assert.equal(out.rows, 2)
+  assert.ok(out.changed >= 1)
+  const rows = Object.fromEntries(
+    store.db
+      .prepare("SELECT id, total_cost, actual_cost, pricing_model FROM usage_logs WHERE id LIKE 'log_rp_%'")
+      .all()
+      .map((r) => [r.id, r]),
+  )
+  assert.equal(rows.log_rp_old.actual_cost, 9)
+  assert.notEqual(rows.log_rp_old.total_cost, 1)
+  assert.equal(rows.log_rp_null.actual_cost, 4)
+  assert.equal(rows.log_rp_null.pricing_model, 'claude-opus-5')
+  assert.equal(rows.log_rp_null.total_cost, 5)
 })
 
 test('finish records washed Responses path over inbound chat path', () => {

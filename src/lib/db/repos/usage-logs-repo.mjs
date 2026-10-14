@@ -11,7 +11,7 @@
 import { getDb } from '../database.mjs'
 import { collectErrors, enrichLogRow, excludeErrorClassSql, ingressAuthSql } from '../../admin/error-class.mjs'
 import {
-  calculateCost,
+  costColumnsFromUsage,
   emptyCostBucket,
   shanghaiDayStartIso,
   sumCostBuckets as sumCostColumns,
@@ -26,8 +26,13 @@ import {
   SLA_SUCCESS_PRED,
   ownerPred,
   PROMPT_TOKENS_SQL,
+  TOTAL_TOKENS_SQL,
+  totalTokens,
 } from './usage-log-preds.mjs'
 import { collapseBlockKeywords, foldInterceptRows } from '../../protocol/intercept-stats.mjs'
+
+/** settings key: ISO instant before which usage_logs rows may have been pruned. Monotonic. */
+const PRUNED_THROUGH_KEY = 'usage_logs_pruned_through'
 
 // Preserve per-row prompt denominators when aligning account quota windows.
 // Do not re-apply a single Anthropic formula on the mixed SUM (homepage/usage
@@ -81,8 +86,12 @@ const SUMMARY_COLUMNS = [
   'output_cost',
   'cache_read_cost',
   'cache_creation_cost',
+  'web_search_requests',
+  'web_search_cost',
   'total_cost',
   'pricing_model',
+  'price_source',
+  'price_version',
   'user_id',
   'group_id',
   'actual_cost',
@@ -109,7 +118,8 @@ function toRow(rec) {
       c === 'cache_read_tokens' ||
       c === 'cache_creation_tokens' ||
       c === 'cache_creation_5m_tokens' ||
-      c === 'cache_creation_1h_tokens'
+      c === 'cache_creation_1h_tokens' ||
+      c === 'web_search_requests'
     )
       return Number(rec[c]) || 0
     return rec[c] ?? null
@@ -166,30 +176,43 @@ function groupCostEvents(rows = []) {
   return map
 }
 
+function isFableRow(row) {
+  const upstream = String(row?.upstream_model ?? '').trim()
+  const model = String(row?.model ?? '').trim()
+  return (upstream || model).toLowerCase().includes('fable')
+}
+
+function unpricedWithTokens(row) {
+  return row?.pricing_model === UNPRICED_MODEL && totalTokens(row) > 0
+}
+
 function bucketEventsSince(rows = [], sinceMs) {
   const since = Number(sinceMs)
   const picked = rows.filter((row) => {
     const at = Date.parse(row.created_at)
     return Number.isFinite(at) && (!Number.isFinite(since) || at >= since)
   })
-  if (!picked.length) return emptyCostBucket()
-  return sumCostBuckets(
-    picked.map((row) => ({
-      requests: 1,
-      success: Number(row.success || 0),
-      errors: Number(row.errors || 0),
-      input_tokens: Number(row.input_tokens || 0),
-      output_tokens: Number(row.output_tokens || 0),
-      cache_read_tokens: Number(row.cache_read_tokens || 0),
-      cache_creation_tokens: Number(row.cache_creation_tokens || 0),
-      prompt_tokens: Number(row.prompt_tokens || 0),
-      input_cost: Number(row.input_cost || 0),
-      output_cost: Number(row.output_cost || 0),
-      cache_read_cost: Number(row.cache_read_cost || 0),
-      cache_creation_cost: Number(row.cache_creation_cost || 0),
-      total_cost: Number(row.total_cost || 0),
-    })),
-  )
+  if (!picked.length) return { ...emptyCostBucket(), unpriced: 0 }
+  return {
+    ...sumCostBuckets(
+      picked.map((row) => ({
+        requests: 1,
+        success: Number(row.success || 0),
+        errors: Number(row.errors || 0),
+        input_tokens: Number(row.input_tokens || 0),
+        output_tokens: Number(row.output_tokens || 0),
+        cache_read_tokens: Number(row.cache_read_tokens || 0),
+        cache_creation_tokens: Number(row.cache_creation_tokens || 0),
+        prompt_tokens: Number(row.prompt_tokens || 0),
+        input_cost: Number(row.input_cost || 0),
+        output_cost: Number(row.output_cost || 0),
+        cache_read_cost: Number(row.cache_read_cost || 0),
+        cache_creation_cost: Number(row.cache_creation_cost || 0),
+        total_cost: Number(row.total_cost || 0),
+      })),
+    ),
+    unpriced: picked.filter(unpricedWithTokens).length,
+  }
 }
 
 function filterCond({ since = null, until = null, vmId = null, accountId = null, apiKeyId = null } = {}) {
@@ -515,53 +538,96 @@ export class UsageLogsRepo {
     return { ...row, ...cacheHitStats(row) }
   }
 
-  /**
-   * Fill official cost on rows that predate the billing columns, re-pricing with the
-   * stored service_tier / speed. Rows the pricer cannot price are marked 'unpriced'
-   * (cost stays NULL) so they are never guessed at standard rates. Idempotent.
-   */
-  backfillMissingCosts({ limit = 4000 } = {}) {
-    const rows = this.db
-      .prepare(`
-      SELECT id, model, upstream_model, requested_model,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-             cache_creation_5m_tokens, cache_creation_1h_tokens, rate_multiplier,
-             service_tier, speed
-      FROM usage_logs
-      WHERE total_cost IS NULL AND pricing_model IS NULL
-      LIMIT ?
-    `)
-      .all(Math.max(1, Math.min(20000, Number(limit) || 4000)))
-    if (!rows.length) return 0
-    const upd = this.db.prepare(`
+  _usageForPrice(row) {
+    return {
+      input_tokens: row.input_tokens,
+      output_tokens: row.output_tokens,
+      cache_read_tokens: row.cache_read_tokens,
+      cache_creation_tokens: row.cache_creation_tokens,
+      cache_creation_5m_tokens: row.cache_creation_5m_tokens,
+      cache_creation_1h_tokens: row.cache_creation_1h_tokens,
+      web_search_requests: row.web_search_requests,
+      service_tier: row.service_tier,
+      speed: row.speed,
+    }
+  }
+
+  _repriceRows(rows, { writeActualCost = false } = {}) {
+    if (!rows.length) return { rows: 0, changed: 0, still_unpriced: 0, delta_usd: 0 }
+    const upd = writeActualCost
+      ? this.db.prepare(`
       UPDATE usage_logs
          SET input_cost = ?, output_cost = ?, cache_read_cost = ?,
-             cache_creation_cost = ?, total_cost = ?, actual_cost = ?, pricing_model = ?,
+             cache_creation_cost = ?, web_search_cost = ?, total_cost = ?,
+             actual_cost = ?, pricing_model = ?, price_source = ?, price_version = ?,
              long_context = ?
        WHERE id = ?
     `)
+      : this.db.prepare(`
+      UPDATE usage_logs
+         SET input_cost = ?, output_cost = ?, cache_read_cost = ?,
+             cache_creation_cost = ?, web_search_cost = ?, total_cost = ?,
+             pricing_model = ?, price_source = ?, price_version = ?, long_context = ?
+       WHERE id = ?
+    `)
+    let changed = 0
+    let still_unpriced = 0
+    let delta_usd = 0
     this.db.exec('BEGIN')
     try {
       for (const r of rows) {
         const model = r.upstream_model || r.model || r.requested_model
-        const c = calculateCost(r, model)
-        if (!c.known) {
-          upd.run(null, null, null, null, null, null, UNPRICED_MODEL, null, r.id)
-          continue
+        const priced = costColumnsFromUsage(this._usageForPrice(r), model)
+        const same =
+          (r.input_cost ?? null) === (priced.input_cost ?? null) &&
+          (r.output_cost ?? null) === (priced.output_cost ?? null) &&
+          (r.cache_read_cost ?? null) === (priced.cache_read_cost ?? null) &&
+          (r.cache_creation_cost ?? null) === (priced.cache_creation_cost ?? null) &&
+          (r.web_search_cost ?? null) === (priced.web_search_cost ?? null) &&
+          (r.total_cost ?? null) === (priced.total_cost ?? null) &&
+          (r.pricing_model ?? null) === (priced.pricing_model ?? null) &&
+          (r.price_source ?? null) === (priced.price_source ?? null) &&
+          (r.price_version ?? null) === (priced.price_version ?? null) &&
+          (r.long_context ?? null) === (priced.long_context ?? null)
+        if (priced.pricing_model === UNPRICED_MODEL || priced.total_cost == null) still_unpriced += 1
+        if (!same) {
+          changed += 1
+          delta_usd +=
+            (Number(priced.total_cost) || 0) - (Number.isFinite(Number(r.total_cost)) ? Number(r.total_cost) : 0)
         }
-        const parsedRate = r.rate_multiplier == null ? 1 : Number(r.rate_multiplier)
-        const rate = Number.isFinite(parsedRate) ? parsedRate : 1
-        upd.run(
-          c.input_cost,
-          c.output_cost,
-          c.cache_read_cost,
-          c.cache_creation_cost,
-          c.total_cost,
-          c.total_cost * rate,
-          c.pricing_key,
-          c.long_context ? 1 : 0,
-          r.id,
-        )
+        if (writeActualCost) {
+          const parsedRate = r.rate_multiplier == null ? 1 : Number(r.rate_multiplier)
+          const rate = Number.isFinite(parsedRate) ? parsedRate : 1
+          const actual = priced.total_cost == null ? null : priced.total_cost * rate
+          upd.run(
+            priced.input_cost ?? null,
+            priced.output_cost ?? null,
+            priced.cache_read_cost ?? null,
+            priced.cache_creation_cost ?? null,
+            priced.web_search_cost ?? null,
+            priced.total_cost ?? null,
+            actual,
+            priced.pricing_model ?? UNPRICED_MODEL,
+            priced.price_source ?? null,
+            priced.price_version ?? null,
+            priced.long_context ?? null,
+            r.id,
+          )
+        } else {
+          upd.run(
+            priced.input_cost ?? null,
+            priced.output_cost ?? null,
+            priced.cache_read_cost ?? null,
+            priced.cache_creation_cost ?? null,
+            priced.web_search_cost ?? null,
+            priced.total_cost ?? null,
+            priced.pricing_model ?? UNPRICED_MODEL,
+            priced.price_source ?? null,
+            priced.price_version ?? null,
+            priced.long_context ?? null,
+            r.id,
+          )
+        }
       }
       this.db.exec('COMMIT')
     } catch (e) {
@@ -570,7 +636,87 @@ export class UsageLogsRepo {
       } catch {}
       throw e
     }
-    return rows.length
+    return { rows: rows.length, changed, still_unpriced, delta_usd }
+  }
+
+  /**
+   * Fill official cost on rows that predate the billing columns, re-pricing with the
+   * stored service_tier / speed. Rows the pricer cannot price are marked 'unpriced'
+   * (cost stays NULL) so they are never guessed at standard rates. Idempotent.
+   * Only `pricing_model IS NULL` rows; those set actual_cost = total_cost × rate_multiplier.
+   */
+  backfillMissingCosts({ limit = 4000 } = {}) {
+    const rows = this.db
+      .prepare(`
+      SELECT id, model, upstream_model, requested_model,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+             cache_creation_5m_tokens, cache_creation_1h_tokens, web_search_requests,
+             rate_multiplier, service_tier, speed,
+             input_cost, output_cost, cache_read_cost, cache_creation_cost, web_search_cost,
+             total_cost, pricing_model, price_source, price_version, long_context
+      FROM usage_logs
+      WHERE pricing_model IS NULL
+      LIMIT ?
+    `)
+      .all(Math.max(1, Math.min(20000, Number(limit) || 4000)))
+    return this._repriceRows(rows, { writeActualCost: true }).rows
+  }
+
+  /** Rewrite cost columns in [since, until]; never actual_cost / rate_multiplier. */
+  repriceRange({ since, until } = {}) {
+    const { cond, params } = timeCond(since, until)
+    const where = cond ? `${cond} AND rowid > ?` : 'WHERE rowid > ?'
+    // Keyset pages keep a month-long range from loading every row at once.
+    const page = this.db.prepare(`
+      SELECT rowid AS _rowid, id, model, upstream_model, requested_model,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+             cache_creation_5m_tokens, cache_creation_1h_tokens, web_search_requests,
+             rate_multiplier, service_tier, speed,
+             input_cost, output_cost, cache_read_cost, cache_creation_cost, web_search_cost,
+             total_cost, pricing_model, price_source, price_version, long_context
+      FROM usage_logs ${where}
+      ORDER BY rowid
+      LIMIT 2000
+    `)
+    const out = { rows: 0, changed: 0, still_unpriced: 0, delta_usd: 0 }
+    let after = 0
+    for (;;) {
+      const rows = page.all(...params, after)
+      if (!rows.length) break
+      const part = this._repriceRows(rows, { writeActualCost: false })
+      out.rows += part.rows
+      out.changed += part.changed
+      out.still_unpriced += part.still_unpriced
+      out.delta_usd += part.delta_usd
+      after = rows.at(-1)._rowid
+    }
+    out.delta_usd = Math.round(out.delta_usd * 1e8) / 1e8
+    return out
+  }
+
+  unpricedModels({ since } = {}) {
+    const where = [`pricing_model = '${UNPRICED_MODEL}'`]
+    const params = []
+    if (since) {
+      where.push('created_at >= ?')
+      params.push(new Date(since).toISOString())
+    }
+    return this.db
+      .prepare(`
+      SELECT COALESCE(NULLIF(upstream_model, ''), NULLIF(model, ''), NULLIF(requested_model, ''), '') AS model,
+             COUNT(*) AS requests,
+             MAX(created_at) AS last_seen
+      FROM usage_logs
+      WHERE ${where.join(' AND ')}
+      GROUP BY 1
+      ORDER BY requests DESC, last_seen DESC
+    `)
+      .all(...params)
+      .map((r) => ({
+        model: r.model,
+        requests: Number(r.requests || 0),
+        last_seen: r.last_seen || null,
+      }))
   }
 
   _costSelect(cond, params) {
@@ -587,7 +733,8 @@ export class UsageLogsRepo {
         COALESCE(SUM(output_cost), 0) AS output_cost,
         COALESCE(SUM(cache_read_cost), 0) AS cache_read_cost,
         COALESCE(SUM(cache_creation_cost), 0) AS cache_creation_cost,
-        COALESCE(SUM(total_cost), 0) AS total_cost
+        COALESCE(SUM(total_cost), 0) AS total_cost,
+        COALESCE(SUM(CASE WHEN pricing_model = '${UNPRICED_MODEL}' AND (${TOTAL_TOKENS_SQL}) > 0 THEN 1 ELSE 0 END), 0) AS unpriced
       FROM usage_logs ${cond}
     `)
       .get(...params)
@@ -603,6 +750,7 @@ export class UsageLogsRepo {
       cache_read_cost: Number(row?.cache_read_cost || 0),
       cache_creation_cost: Number(row?.cache_creation_cost || 0),
       total_cost: Number(row?.total_cost || 0),
+      unpriced: Number(row?.unpriced || 0),
     }
     return { ...out, ...cacheHitStats(out) }
   }
@@ -626,7 +774,8 @@ export class UsageLogsRepo {
         COALESCE(SUM(output_cost), 0) AS output_cost,
         COALESCE(SUM(cache_read_cost), 0) AS cache_read_cost,
         COALESCE(SUM(cache_creation_cost), 0) AS cache_creation_cost,
-        COALESCE(SUM(total_cost), 0) AS total_cost
+        COALESCE(SUM(total_cost), 0) AS total_cost,
+        COALESCE(SUM(CASE WHEN pricing_model = '${UNPRICED_MODEL}' AND (${TOTAL_TOKENS_SQL}) > 0 THEN 1 ELSE 0 END), 0) AS unpriced
       FROM usage_logs ${cond}
       GROUP BY 1, vm_id
       ORDER BY total_cost DESC
@@ -648,6 +797,7 @@ export class UsageLogsRepo {
       cache_read_cost: Number(r.cache_read_cost || 0),
       cache_creation_cost: Number(r.cache_creation_cost || 0),
       total_cost: Number(r.total_cost || 0),
+      unpriced: Number(r.unpriced || 0),
     }))
   }
 
@@ -774,7 +924,7 @@ export class UsageLogsRepo {
         .prepare(`
       SELECT ${expr} AS name,
              COUNT(*) AS requests,
-             COALESCE(SUM(input_tokens), 0) + COALESCE(SUM(output_tokens), 0) AS tokens,
+             COALESCE(SUM(${TOTAL_TOKENS_SQL}), 0) AS tokens,
              COALESCE(SUM(total_cost), 0) AS total_cost
       FROM usage_logs ${cond}
       GROUP BY name ORDER BY requests DESC, total_cost DESC LIMIT ${limit}
@@ -875,7 +1025,22 @@ export class UsageLogsRepo {
     const keyOf = (a) => a.account_id + '\0' + (a.vm_id || '')
     const todayById = new Map(accountsToday.map((a) => [keyOf(a), a]))
     const aligned = Array.isArray(accountWindows) && accountWindows.length > 0
-    const events = aligned ? this._costEventsSince(sevenDStart) : null
+    let eventsSince = sevenDStart
+    if (aligned) {
+      let earliest = Date.parse(sevenDStart)
+      for (const win of accountWindows) {
+        for (const [reset, dur] of [
+          [win.reset_5h, WINDOW_5H_MS],
+          [win.reset_7d, WINDOW_7D_MS],
+          [win.reset_7d_oi, WINDOW_7D_MS],
+        ]) {
+          const start = extraWindowSince(reset, dur, now)
+          if (start != null && start < earliest) earliest = start
+        }
+      }
+      eventsSince = new Date(earliest).toISOString()
+    }
+    const events = aligned ? this._costEventsSince(eventsSince) : null
     const fiveById = aligned ? null : new Map(this.costByAccount({ since: fiveHStart }).map((a) => [keyOf(a), a]))
     const sevenById = aligned ? null : new Map(this.costByAccount({ since: sevenDStart }).map((a) => [keyOf(a), a]))
     const eventsByKey = aligned ? groupCostEvents(events) : null
@@ -890,6 +1055,18 @@ export class UsageLogsRepo {
       const w7 = aligned
         ? bucketEventsSince(eventsByKey.get(keyOf(a)) || [], since7)
         : sevenById.get(keyOf(a)) || emptyCostBucket()
+      let window_fable = null
+      if (aligned && win?.reset_7d_oi) {
+        const sinceFable = extraWindowSince(win.reset_7d_oi, WINDOW_7D_MS, now) ?? Date.parse(sevenDStart)
+        const fable = bucketEventsSince((eventsByKey.get(keyOf(a)) || []).filter(isFableRow), sinceFable)
+        window_fable = {
+          cost: Number(fable.total_cost || 0),
+          tokens: totalTokens(fable),
+          requests: Number(fable.requests || 0),
+          unpriced: Number(fable.unpriced || 0),
+          start: new Date(sinceFable).toISOString(),
+        }
+      }
       return {
         ...a,
         today: { ...t },
@@ -906,7 +1083,8 @@ export class UsageLogsRepo {
         today_cache_cost: Number(t.cache_read_cost || 0) + Number(t.cache_creation_cost || 0),
         window_5h_cost: Number(w.total_cost || 0),
         window_5h_requests: Number(w.requests || 0),
-        window_5h_tokens: Number(w.input_tokens || 0) + Number(w.output_tokens || 0),
+        window_5h_tokens: totalTokens(w),
+        window_5h_unpriced: Number(w.unpriced || 0),
         window_5h_input_tokens: Number(w.input_tokens || 0),
         window_5h_output_tokens: Number(w.output_tokens || 0),
         window_5h_cache_read_tokens: Number(w.cache_read_tokens || 0),
@@ -919,8 +1097,10 @@ export class UsageLogsRepo {
         window_7d_requests: Number(w7.requests || 0),
         window_7d_success: Number(w7.success || 0),
         window_7d_errors: Number(w7.errors || 0),
-        window_7d_tokens: Number(w7.input_tokens || 0) + Number(w7.output_tokens || 0),
+        window_7d_tokens: totalTokens(w7),
+        window_7d_unpriced: Number(w7.unpriced || 0),
         window_7d_start: aligned ? new Date(since7).toISOString() : sevenDStart,
+        window_fable,
       }
     })
     const window5h = aligned
@@ -935,10 +1115,12 @@ export class UsageLogsRepo {
           ...cacheHitStats(sumCostBuckets(accounts.map((a) => a.window_7d))),
         }
       : this._costSelect('WHERE created_at >= ?', [sevenDStart])
+    const coverage = this.logCoverageStart()
     return {
       source: 'anthropic-official',
       currency: 'USD',
       today_start: todayStart,
+      log_coverage_start: coverage,
       window_5h_start: aligned
         ? accounts.reduce((min, a) => (!min || a.window_5h_start < min ? a.window_5h_start : min), fiveHStart)
         : fiveHStart,
@@ -953,6 +1135,30 @@ export class UsageLogsRepo {
     }
   }
 
+  /**
+   * Earliest instant whose traffic is still fully in usage_logs: the later of the DB's
+   * creation (first migration) and the recorded prune boundary. Neither the oldest
+   * surviving row (a quiet hour looks like a gap) nor the current retain_days (raising
+   * it does not bring deleted rows back) can stand in for that boundary.
+   */
+  logCoverageStart() {
+    const created = Date.parse(
+      this.db.prepare("SELECT MIN(applied_at) AS t FROM schema_migrations WHERE version = '001'").get()?.t || '',
+    )
+    const pruned = Date.parse(this._prunedThrough() || '')
+    const start = Math.max(Number.isFinite(created) ? created : -Infinity, Number.isFinite(pruned) ? pruned : -Infinity)
+    return Number.isFinite(start) ? new Date(start).toISOString() : null
+  }
+
+  _prunedThrough() {
+    const row = this.db.prepare(`SELECT value FROM settings WHERE key = '${PRUNED_THROUGH_KEY}'`).get()
+    try {
+      return row ? JSON.parse(row.value) : null
+    } catch {
+      return null
+    }
+  }
+
   _costEventsSince(since) {
     return this.db
       .prepare(
@@ -961,6 +1167,9 @@ export class UsageLogsRepo {
         COALESCE(NULLIF(final_account_id, ''), NULLIF(account_id, ''), vm_id, '—') AS account_id,
         vm_id,
         created_at,
+        model,
+        upstream_model,
+        pricing_model,
         CASE WHEN ${SLA_SUCCESS_PRED} THEN 1 ELSE 0 END AS success,
         CASE WHEN ${SLA_ERROR_PRED} THEN 1 ELSE 0 END AS errors,
         COALESCE(input_tokens, 0) AS input_tokens,
@@ -1004,7 +1213,7 @@ export class UsageLogsRepo {
       SELECT COUNT(*) AS requests,
              SUM(CASE WHEN ${SUCCESS_PRED} THEN 1 ELSE 0 END) AS ok,
              SUM(CASE WHEN ${ERROR_PRED} THEN 1 ELSE 0 END) AS fail,
-             COALESCE(SUM(input_tokens), 0) AS tokens_in,
+             COALESCE(SUM(${PROMPT_TOKENS_SQL}), 0) AS tokens_in,
              COALESCE(SUM(output_tokens), 0) AS tokens_out,
              COALESCE(SUM(COALESCE(actual_cost, total_cost, 0)), 0) AS cost_usd,
              COALESCE(SUM(COALESCE(total_cost, 0)), 0) AS official_cost_usd
@@ -1017,7 +1226,7 @@ export class UsageLogsRepo {
              COUNT(*) AS requests,
              SUM(CASE WHEN ${SUCCESS_PRED} THEN 1 ELSE 0 END) AS ok,
              SUM(CASE WHEN ${ERROR_PRED} THEN 1 ELSE 0 END) AS fail,
-             COALESCE(SUM(input_tokens), 0) AS tokens_in,
+             COALESCE(SUM(${PROMPT_TOKENS_SQL}), 0) AS tokens_in,
              COALESCE(SUM(output_tokens), 0) AS tokens_out,
              COALESCE(SUM(COALESCE(actual_cost, total_cost, 0)), 0) AS cost_usd,
              COALESCE(SUM(COALESCE(total_cost, 0)), 0) AS official_cost_usd
@@ -1100,7 +1309,7 @@ export class UsageLogsRepo {
       cache_creation_tokens: cacheWrite,
       prompt_tokens: Number(counts?.prompt_tokens || 0),
     })
-    const tokens = inputTokens + outputTokens
+    const tokens = inputTokens + outputTokens + cacheRead + cacheWrite
 
     const startMs = since ? Date.parse(since) : null
     const endMs = until ? Date.parse(until) : Date.now()
@@ -1111,7 +1320,7 @@ export class UsageLogsRepo {
       .prepare(`
       SELECT strftime('%Y-%m-%dT%H:%M', created_at) AS minute,
              COUNT(*) AS requests,
-             COALESCE(SUM(COALESCE(input_tokens,0) + COALESCE(output_tokens,0)), 0) AS tokens
+             COALESCE(SUM(${TOTAL_TOKENS_SQL}), 0) AS tokens
       FROM usage_logs ${where}
       GROUP BY minute
     `)
@@ -1292,7 +1501,7 @@ export class UsageLogsRepo {
    */
   cleanup(opts = {}) {
     const cfg = this._cleanupOpts(opts)
-    const usage_logs = this._deleteOldUsage.run(cfg.usageCutoff).changes
+    const usage_logs = this._pruneUsage(cfg.usageCutoff)
     const debug_by_age = this._deleteOldDebug.run(cfg.debugCutoff).changes
     const debug_by_size = this.trimDebugToMaxBytes(cfg.maxBytes)
     if (usage_logs + debug_by_age + debug_by_size > 0) {
@@ -1308,6 +1517,32 @@ export class UsageLogsRepo {
       request_log_debug: debug_by_age + debug_by_size,
       debug_by_age,
       debug_by_size,
+    }
+  }
+
+  /** Delete summaries before `cutoff` and advance the prune boundary in one transaction. */
+  _pruneUsage(cutoff) {
+    this.db.exec('BEGIN')
+    try {
+      const deleted = this._deleteOldUsage.run(cutoff).changes
+      if (deleted > 0) {
+        const prev = this._prunedThrough()
+        if (!prev || prev < cutoff) {
+          this.db
+            .prepare(`
+              INSERT INTO settings (key, value, updated_at) VALUES ('${PRUNED_THROUGH_KEY}', ?, ?)
+              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            `)
+            .run(JSON.stringify(cutoff), new Date().toISOString())
+        }
+      }
+      this.db.exec('COMMIT')
+      return deleted
+    } catch (e) {
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {}
+      throw e
     }
   }
 

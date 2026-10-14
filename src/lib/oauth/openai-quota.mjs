@@ -17,6 +17,7 @@ import {
 } from '../vm/codex-slot.mjs'
 import { buildCodexUsageView, extraToCodexSnapshot, normalizeCodexLimits } from '../protocol/codex-usage.mjs'
 import { CODEX_OAUTH_ORIGINATOR, makeProxyFetch, refreshCodexAccessToken } from '../protocol/codex-models.mjs'
+import { openaiIdentityFromJwt } from './openai-jwt.mjs'
 
 export const CHATGPT_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage'
 export const CHATGPT_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits'
@@ -46,12 +47,7 @@ function firstString(...values) {
 }
 
 function accountIdFromToken(accessToken) {
-  try {
-    const payload = JSON.parse(Buffer.from(String(accessToken).split('.')[1], 'base64url'))
-    return firstString(payload?.['https://api.openai.com/auth']?.chatgpt_account_id)
-  } catch {
-    return ''
-  }
+  return firstString(openaiIdentityFromJwt(accessToken).chatgpt_account_id)
 }
 
 export function buildOpenaiQuotaHeaders({ accessToken, accountId, fedRamp = false } = {}) {

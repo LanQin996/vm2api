@@ -74,6 +74,7 @@ import { normalizeHealthProbeConfig } from './health-probe.mjs'
 import { normalizeUsageProbeConfig } from '../oauth/usage-probe-monitor.mjs'
 import { publicNotifyConfig, summarizePoolAvailability } from './notify.mjs'
 import { cacheHitStats } from './cache-metrics.mjs'
+import { estimateWindow, usedRatioOf } from './window-estimate.mjs'
 import { shanghaiDayStartIso } from './pricing.mjs'
 import {
   AGENT_STANDING_MAX,
@@ -694,7 +695,7 @@ export async function buildVmDetail({
   })()
   const cost = lookupBilling(indexBillingAccounts(billing), acc || summary)
   const gpt = isCodexVm(vm)
-  applyCostFields(summary, cost, { scheme: gpt ? 'openai' : 'anthropic' })
+  applyCostFields(summary, cost, { coveredSince: billing?.log_coverage_start })
   const detail = buildAccountBilling(cost, billing, {
     vmId: summary.id,
     accountId: acc?.account_id || summary.account_uuid,
@@ -1198,15 +1199,18 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
     }
   })()
   const costByKey = indexBillingAccounts(billing)
+  const listedById = new Map(listed.map((vm) => [vm.id, vm]))
   const accounts = liveAccounts(snap.accounts, listed).map((a) => {
     const cost = lookupBilling(costByKey, a)
     const vm = a.vm_id ? getVm(cfg?.paths?.project, a.vm_id) : null
+    const quota = quotaFromAccount(a, accountQuota?.config)
+    const codexVm = vm && isCodexVm(vm) ? listedById.get(vm.id) || vm : null
     return {
       account_id: a.account_id,
       vm_id: a.vm_id,
       email: a.email || vm?.email || vm?.codex?.email || vm?.claude?.email || null,
       credential_mode: vm && vmHasClaudeCredential(vm) ? credentialModeOfVm(vm) : null,
-      ...quotaFromAccount(a, accountQuota?.config),
+      ...quota,
       inflight: a.inflight,
       max_concurrency: a.max_concurrency,
       rpm: a.rpm || 0,
@@ -1218,7 +1222,7 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
       cache_creation_tokens: a.cache_creation_tokens || 0,
       today_cost: cost?.today_cost || 0,
       total_cost: cost?.total_cost || 0,
-      total_tokens: Number(cost?.input_tokens || 0) + Number(cost?.output_tokens || 0),
+      total_tokens: tokenTotal(cost),
       window_5h_cost: cost?.window_5h_cost || 0,
       window_5h_requests: cost?.window_5h_requests || 0,
       window_5h_tokens: cost?.window_5h_tokens || 0,
@@ -1237,8 +1241,13 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
         input_tokens: cost?.today_input_tokens || cost?.today?.input_tokens || 0,
         cache_read_tokens: cost?.today_cache_read_tokens || cost?.today?.cache_read_tokens || 0,
         cache_creation_tokens: cost?.today_cache_creation_tokens || cost?.today?.cache_creation_tokens || 0,
-        scheme: isCodexVm(vm) ? 'openai' : 'anthropic',
       }).cache_hit_rate,
+      ...windowEstimates(
+        codexVm ? { ...quota, ...(codexVm.codex_usage?.quota || {}) } : quota,
+        cost,
+        billing?.log_coverage_start,
+        !!codexVm,
+      ),
       near_limit:
         accountQuota?.nearLimit?.(a) ??
         isNearLimit(
@@ -2118,6 +2127,7 @@ function attachBillingMeta(billing, accounts = []) {
     currency: billing.currency || 'USD',
     today_start: billing.today_start,
     window_5h_start: billing.window_5h_start,
+    log_coverage_start: billing.log_coverage_start ?? null,
     today: billing.today,
     window_5h: billing.window_5h,
     total: billing.total,
@@ -2142,28 +2152,28 @@ function accountWindowsForBilling(accountQuota, vms = []) {
     const q = quotaFromAccount(acc)
     const key = `${acc.account_id || ''}\0${acc.vm_id || ''}`
     seen.add(key)
-    windows.push({
-      account_id: acc.account_id,
-      vm_id: acc.vm_id,
-      reset_5h: q.reset_5h,
-      reset_7d: q.reset_7d,
-      scheme: isCodexVm(vm) ? 'openai' : 'anthropic',
-    })
+    windows.push(billingWindowOf(acc.account_id, acc.vm_id, vm, q))
   }
   for (const vm of listed) {
     const key = `${vm.account_uuid || vm.id}\0${vm.id}`
     if (seen.has(key) || seen.has(`${vm.account_uuid || ''}\0${vm.id}`)) continue
     const acc = findAccount(accountQuota, vm)
-    const q = quotaFromAccount(acc)
-    windows.push({
-      account_id: acc?.account_id || vm.account_uuid || vm.id,
-      vm_id: vm.id,
-      reset_5h: q.reset_5h || vm.reset_5h || null,
-      reset_7d: q.reset_7d || vm.reset_7d || null,
-      scheme: isCodexVm(vm) ? 'openai' : 'anthropic',
-    })
+    windows.push(billingWindowOf(acc?.account_id || vm.account_uuid || vm.id, vm.id, vm, quotaFromAccount(acc)))
   }
   return windows
+}
+
+// Codex resets live on the slot's codex_usage view, not the Claude-shaped account quota.
+function billingWindowOf(accountId, vmId, vm, q) {
+  const codex = isCodexVm(vm)
+  const codexQuota = codex ? vm.codex_usage?.quota || {} : {}
+  return {
+    account_id: accountId,
+    vm_id: vmId,
+    reset_5h: (codex ? codexQuota.reset_5h : q.reset_5h) || vm.reset_5h || null,
+    reset_7d: (codex ? codexQuota.reset_7d : q.reset_7d) || vm.reset_7d || null,
+    reset_7d_oi: codex ? null : q.reset_7d_oi || vm.reset_7d_oi || null,
+  }
 }
 
 function panelBillingStats(requestLog, accountQuota, vms) {
@@ -2175,7 +2185,7 @@ function stampVmBilling(vms, billing) {
   if (!billing) return null
   const index = indexBillingAccounts(billing)
   for (const vm of vms || []) {
-    applyCostFields(vm, lookupBilling(index, vm), { scheme: isCodexVm(vm) ? 'openai' : 'anthropic' })
+    applyCostFields(vm, lookupBilling(index, vm), { coveredSince: billing.log_coverage_start })
   }
   return billing
 }
@@ -2201,7 +2211,16 @@ function periodView(row) {
   }
 }
 
-function applyCostFields(target, cost, { scheme } = {}) {
+function tokenTotal(row) {
+  return (
+    Number(row?.input_tokens || 0) +
+    Number(row?.output_tokens || 0) +
+    Number(row?.cache_read_tokens || 0) +
+    Number(row?.cache_creation_tokens || 0)
+  )
+}
+
+function applyCostFields(target, cost, { coveredSince = null } = {}) {
   if (!target) return
   const today = cost?.today && typeof cost.today === 'object' ? cost.today : null
   const todayInput = Number(cost?.today_input_tokens ?? (today?.input_tokens || 0))
@@ -2210,10 +2229,9 @@ function applyCostFields(target, cost, { scheme } = {}) {
   const todayOut = Number(cost?.today_output_tokens ?? (today?.output_tokens || 0))
   target.today_cost = cost?.today_cost ?? today?.total_cost ?? 0
   target.total_cost = cost?.total_cost || 0
-  // 与 total_cost 同源（计费日志累计行），口径同 window_*_tokens：输入 + 输出，不含缓存。
-  target.total_tokens = Number(cost?.input_tokens || 0) + Number(cost?.output_tokens || 0)
+  target.total_tokens = tokenTotal(cost)
   target.today_requests = cost?.today_requests ?? today?.requests ?? 0
-  target.today_tokens = todayInput + todayOut
+  target.today_tokens = todayInput + todayOut + todayRead + todayWrite
   target.today_input_tokens = todayInput
   target.today_cache_read_tokens = todayRead
   target.today_cache_creation_tokens = todayWrite
@@ -2221,7 +2239,6 @@ function applyCostFields(target, cost, { scheme } = {}) {
     input_tokens: todayInput,
     cache_read_tokens: todayRead,
     cache_creation_tokens: todayWrite,
-    scheme: scheme || (isCodexVm(target) ? 'openai' : 'anthropic'),
   }).cache_hit_rate
   target.window_5h_cost = cost?.window_5h_cost || 0
   target.window_5h_requests = cost?.window_5h_requests || 0
@@ -2231,6 +2248,45 @@ function applyCostFields(target, cost, { scheme } = {}) {
   target.window_7d_success = cost?.window_7d_success || 0
   target.window_7d_errors = cost?.window_7d_errors || 0
   target.window_7d_tokens = cost?.window_7d_tokens || 0
+  Object.assign(target, windowEstimates(target, cost, coveredSince, isCodexVm(target)))
+}
+
+/** Window capacity from official spend ÷ used% on the same aligned window. */
+function windowEstimates(quota, cost, coveredSince, codex) {
+  const fable = cost?.window_fable || null
+  const hasFableWindow = !codex && (quota?.utilization_7d_oi != null || !!quota?.reset_7d_oi)
+  return {
+    window_fable_cost: Number(fable?.cost || 0),
+    estimate_5h: estimateWindow({
+      spentUsd: cost?.window_5h_cost,
+      tokens: cost?.window_5h_tokens,
+      usedRatio: usedRatioOf(quota?.utilization_5h),
+      reset: quota?.reset_5h,
+      windowStart: cost?.window_5h_start,
+      coveredSince,
+      unpricedRequests: cost?.window_5h_unpriced,
+    }),
+    estimate_7d: estimateWindow({
+      spentUsd: cost?.window_7d_cost,
+      tokens: cost?.window_7d_tokens,
+      usedRatio: usedRatioOf(quota?.utilization_7d),
+      reset: quota?.reset_7d,
+      windowStart: cost?.window_7d_start,
+      coveredSince,
+      unpricedRequests: cost?.window_7d_unpriced,
+    }),
+    estimate_fable: hasFableWindow
+      ? estimateWindow({
+          spentUsd: fable?.cost,
+          tokens: fable?.tokens,
+          usedRatio: usedRatioOf(quota?.utilization_7d_oi),
+          reset: quota?.reset_7d_oi,
+          windowStart: fable?.start,
+          coveredSince,
+          unpricedRequests: fable?.unpriced,
+        })
+      : null,
+  }
 }
 
 function buildAccountBilling(cost, billing, { vmId, accountId, requestLog } = {}) {

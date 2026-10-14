@@ -12,7 +12,13 @@
 import { getDb } from '../database.mjs'
 import { DEFAULT_MUTED_ERROR_CLASSES, enrichLogRow, excludeErrorClassSql } from '../../admin/error-class.mjs'
 import { reportTimezone, zonedDayStartMs } from '../../core/timezone.mjs'
-import { ERROR_PRED, PROMPT_TOKENS_SQL, SUCCESS_PRED, ownerPred } from './usage-log-preds.mjs'
+import {
+  ERROR_PRED,
+  PROMPT_TOKENS_SQL,
+  SUCCESS_PRED,
+  ownerPred,
+  totalTokens as rowTotalTokens,
+} from './usage-log-preds.mjs'
 
 const LIST_LIMIT_DEFAULT = 50
 const LIST_LIMIT_MAX = 100
@@ -181,7 +187,7 @@ export function toUsageLogRow(row, names, chain = []) {
     cacheCreation5mInputTokens: num(row.cache_creation_5m_tokens),
     cacheCreation1hInputTokens: num(row.cache_creation_1h_tokens),
     cacheTtlApplied: cacheTtlApplied(row),
-    totalTokens: inputTokens + outputTokens + cacheCreation + cacheRead,
+    totalTokens: rowTotalTokens(row),
     costUsd: nullableNum(row.total_cost),
     actualCostUsd: nullableNum(row.actual_cost),
     groupCostMultiplier: nullableNum(row.rate_multiplier),
@@ -768,7 +774,7 @@ function toSummary(row) {
     errorRequests: num(row.errors),
     totalCost: num(row.cost),
     totalActualCost: num(row.actual_cost),
-    totalTokens: input + output + cacheCreation + cacheRead,
+    totalTokens: rowTotalTokens(row),
     totalInputTokens: input,
     totalOutputTokens: output,
     totalCacheCreationTokens: cacheCreation,

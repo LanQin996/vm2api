@@ -4,6 +4,7 @@ import type { Vm } from '@/types/panel-vm'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { fmtUsd } from '@/lib/format'
+import { formatWindowSpend } from '@/lib/vm-usage'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { dashboardQueryOptions } from '@/features/overview/queries'
@@ -91,7 +92,7 @@ export function OpenaiQuotaPanel({
       <Meter
         label='5 小时已用'
         value={u5}
-        hint={quotaHint(vm.status_5h, cost5)}
+        hint={quotaHint(vm.status_5h, cost5, vm.estimate_5h)}
       />
       <div className='text-[11px] text-muted-foreground'>
         5h 重置 <ResetAt value={vm.reset_5h} now={now} />
@@ -99,7 +100,7 @@ export function OpenaiQuotaPanel({
       <Meter
         label='7 天已用'
         value={u7}
-        hint={quotaHint(vm.status_7d, cost7)}
+        hint={quotaHint(vm.status_7d, cost7, vm.estimate_7d)}
       />
       <div className='text-[11px] text-muted-foreground'>
         7d 重置 <ResetAt value={vm.reset_7d} now={now} />
@@ -143,10 +144,17 @@ export function OpenaiQuotaPanel({
   )
 }
 
-function quotaHint(status: unknown, cost: number): string {
+function quotaHint(
+  status: unknown,
+  cost: number,
+  est: Vm['estimate_5h']
+): string {
   const bits: string[] = []
   const text = String(status || '').trim()
   if (text) bits.push(text)
-  bits.push(`合计 ${fmtUsd(cost, 2)}`)
+  const spend = formatWindowSpend(cost, est)
+  if (spend.costText) bits.push(spend.costText)
+  if (spend.remainText) bits.push(spend.remainText)
+  if (!spend.costText) bits.push(`合计 ${fmtUsd(cost, 2)}`)
   return bits.join(' · ')
 }

@@ -49,10 +49,10 @@ import {
 const SORT_CHIPS = [
   ['status', '状态'],
   ['name', '名称'],
-  ['remain', '5h 剩余'],
+  ['remain', '5H 剩余'],
   ['today', '今日花费'],
-  ['cost7', '7d 费用'],
-  ['total', '累计费用'],
+  ['cost7', '7D 费用'],
+  ['total', '总计费用'],
   ['cache', '缓存命中'],
 ] as const
 

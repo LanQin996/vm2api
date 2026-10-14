@@ -286,8 +286,7 @@ function fmtCache(
   const pct = cacheHitPct(
     today.input_tokens,
     today.cache_read_tokens,
-    today.cache_creation_tokens,
-    'anthropic'
+    today.cache_creation_tokens
   )
   if (pct == null) return '—'
   return `${pct.toFixed(pct >= 10 ? 1 : 2)}%`

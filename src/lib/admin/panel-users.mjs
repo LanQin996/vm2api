@@ -177,7 +177,20 @@ export class PanelUserStore {
     if (!name || !password) return null
     const existing = this.repo.getByUsername(name)
     if (existing) return publicUserView(existing)
-    return publicUserView(this.create({ username: name, password, role: 'admin' }))
+    // Import the already accepted env credential; new passwords still go through assertPassword.
+    return publicUserView(
+      this.repo.insert({
+        id: crypto.randomUUID(),
+        username: assertUsername(name),
+        password_hash: hashPassword(password),
+        role: 'admin',
+        enabled: true,
+        vm_create_quota: 0,
+        created_at: nowIso(),
+        updated_at: nowIso(),
+        last_login_at: null,
+      }),
+    )
   }
 
   async authenticate(username, password) {

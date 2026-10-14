@@ -136,23 +136,38 @@ test('timed refusal expires and no longer blocks', () => {
     db.close()
   }
 })
-test('guard error is HTTP 503 refusal_guard not distill_blocked', () => {
+test('guard error is a non-retryable HTTP 400 request rejection, not a login error', () => {
   const err = refusalGuardError('abc')
-  assert.equal(err.status, 503)
+  assert.equal(err.status, 400)
   assert.equal(err.body.error.code, 'refusal_guard')
-  assert.equal(err.body.error.type, 'permission_error')
+  assert.equal(err.body.error.type, 'policy_blocked')
   assert.equal(err.body.error.message, REFUSAL_GUARD_MESSAGE)
-  assert.equal(err.body.error.details, undefined)
+  assert.deepEqual(err.body.error.details, { blocked_by: 'exact', retryable: false })
 
-  const device = refusalGuardError('abc', { kind: 'device', row: { reason: 'jev:safety' } })
+  const deviceSourceRequestId = '36e239bf-7e70-4a79-80fd-c8a717ff464b'
+  const device = refusalGuardError('abc', {
+    kind: 'device',
+    row: { reason: 'jev:safety', source_request_id: deviceSourceRequestId },
+  })
   assert.equal(device.body.error.message, `${REFUSAL_GUARD_MESSAGE} 该设备此前已被封禁（jev:safety）。`)
-  assert.deepEqual(device.body.error.details, { reason: 'device', ban_reason: 'jev:safety' })
+  assert.deepEqual(device.body.error.details, {
+    reason: 'device',
+    ban_reason: 'jev:safety',
+    blocked_by: 'device',
+    retryable: false,
+    source_request_id: deviceSourceRequestId,
+  })
   const exact = refusalGuardError('abc', { kind: 'exact' })
   assert.equal(exact.body.error.message, `${REFUSAL_GUARD_MESSAGE} 当前提示词与曾被拒答的内容完全一致。`)
-  assert.deepEqual(exact.body.error.details, { reason: 'exact' })
+  assert.deepEqual(exact.body.error.details, { reason: 'exact', blocked_by: 'exact', retryable: false })
   const similar = refusalGuardError('abc', { kind: 'similar', score: 0.93 })
   assert.equal(similar.body.error.message, `${REFUSAL_GUARD_MESSAGE} 当前提示词与曾被拒答的内容相似（相似度 93%）。`)
-  assert.deepEqual(similar.body.error.details, { reason: 'similar', score: 0.93 })
+  assert.deepEqual(similar.body.error.details, {
+    reason: 'similar',
+    score: 0.93,
+    blocked_by: 'similar',
+    retryable: false,
+  })
 })
 
 test('list remove and clear', () => {

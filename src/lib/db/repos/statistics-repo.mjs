@@ -12,7 +12,7 @@
 
 import { getDb } from '../database.mjs'
 import { reportTimezone, zonedDayStartMs, zonedParts, zonedWallToMs } from '../../core/timezone.mjs'
-import { ERROR_PRED, PROMPT_TOKENS_SQL, SUCCESS_PRED, ownerPred } from './usage-log-preds.mjs'
+import { ERROR_PRED, PROMPT_TOKENS_SQL, SUCCESS_PRED, TOTAL_TOKENS_SQL, ownerPred } from './usage-log-preds.mjs'
 import { lookupNames } from './usage-logs-view.mjs'
 
 export const STATS_RANGES = ['today', '7days', '30days', 'thisMonth']
@@ -31,8 +31,7 @@ const LEADERBOARD_MAX = 100
 
 const DIMENSION_COLUMN = { user: 'user_id', key: 'api_key_id', model: 'model', vm: 'vm_id' }
 
-const TOKENS_SQL =
-  'IFNULL(input_tokens, 0) + IFNULL(output_tokens, 0) + IFNULL(cache_read_tokens, 0) + IFNULL(cache_creation_tokens, 0)'
+const TOKENS_SQL = TOTAL_TOKENS_SQL
 
 /** created_at (`YYYY-MM-DDTHH:MM:SS.sssZ`) floored to its 15-minute UTC slot. */
 const SLOT_SQL = "substr(created_at, 1, 14) || printf('%02d', (CAST(substr(created_at, 15, 2) AS INTEGER) / 15) * 15)"

@@ -126,7 +126,7 @@ test('ingestHeaders reads OpenAI prompt_tokens_details cache fields', () => {
     },
   )
   const acc = q.snapshot().accounts.find((a) => a.account_id === 'a-oa')
-  assert.equal(acc.tokens_in, 20)
+  assert.equal(acc.tokens_in, 6)
   assert.equal(acc.tokens_out, 4)
   assert.equal(acc.cache_read_tokens, 11)
   assert.equal(acc.cache_creation_tokens, 3)

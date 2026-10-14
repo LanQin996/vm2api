@@ -170,10 +170,10 @@ test('leaderboard sorts by official cost, names entities, and caps the limit', (
   assert.equal(repo.leaderboard({ range: 'today', scope: 'key', limit: 500, tz: 'UTC', now }).entries.length, 3)
 })
 
-test('cache rates include Claude writes and preserve inclusive Codex input across log formats', () => {
+test('cache hit rate uses disjoint input plus cache buckets for every route', () => {
   const now = Date.parse('2026-05-01T12:00:00Z')
   const at = '2026-05-01T09:00:00.000Z'
-  const inclusive = { input_tokens: 100, cache_read_tokens: 80, cache_creation_tokens: 10 }
+  const disjoint = { input_tokens: 10, cache_read_tokens: 80, cache_creation_tokens: 10 }
   const cases = [
     {
       name: 'Claude writes previously made 80% display as 100.0%',
@@ -181,59 +181,9 @@ test('cache rates include Claude writes and preserve inclusive Codex input acros
       rate: 80_000 / 100_020,
       display: '80.0',
     },
+    { name: 'Codex kernel stores disjoint input', row: { ...disjoint, via: 'codex-kernel' }, rate: 0.8 },
     {
-      name: 'Codex route takes priority over an opaque or Claude-looking alias',
-      row: { ...inclusive, via: 'codex-kernel' },
-      rate: 0.8,
-    },
-    {
-      name: 'streaming API OpenAI usage stays inclusive for Anthropic clients',
-      row: {
-        ...inclusive,
-        via: 'api-kernel',
-        protocol: 'anthropic.messages',
-        stream: true,
-        upstream_model: 'gpt-5.4',
-      },
-      rate: 0.8,
-    },
-    {
-      name: 'non-streaming Codex usage stays inclusive for Anthropic clients',
-      row: { ...inclusive, via: 'codex-kernel', protocol: 'anthropic.messages', stream: false },
-      rate: 0.8,
-    },
-    {
-      name: 'historical priced Codex model without a route',
-      row: { ...inclusive, model: 'alias', pricing_model: 'gpt-5.3-codex' },
-      rate: 0.8,
-    },
-    {
-      name: 'unpriced rows fall back to the upstream model',
-      row: { ...inclusive, pricing_model: 'unpriced', upstream_model: 'gpt-6.1-sol' },
-      rate: 0.8,
-    },
-    {
-      name: 'historical GPT model with no pricing or route metadata',
-      row: { ...inclusive, model: 'GPT-5.1-CODEX-MAX' },
-      rate: 0.8,
-    },
-    {
-      name: 'requested model is the last fallback',
-      row: { ...inclusive, model: null, requested_model: 'gpt-5.4' },
-      rate: 0.8,
-    },
-    {
-      name: 'known non-GPT OpenAI billing model',
-      row: { ...inclusive, pricing_model: 'o3' },
-      rate: 0.8,
-    },
-    {
-      name: 'historical codex model family',
-      row: { ...inclusive, model: 'codex-mini-latest' },
-      rate: 0.8,
-    },
-    {
-      name: 'Claude served through the Responses compatibility endpoint',
+      name: 'Claude through Responses still uses input+read+write',
       row: {
         path: '/v1/responses',
         protocol: 'openai.responses',
@@ -243,24 +193,8 @@ test('cache rates include Claude writes and preserve inclusive Codex input acros
       },
       rate: 0.5,
     },
-    {
-      name: 'actual Claude billing model takes priority over a requested GPT alias',
-      row: {
-        model: 'gpt-alias',
-        pricing_model: 'sonnet-4',
-        input_tokens: 20,
-        cache_read_tokens: 40,
-        cache_creation_tokens: 20,
-      },
-      rate: 0.5,
-    },
     { name: 'cache creation without reads', row: { cache_creation_tokens: 100 }, rate: 0 },
     { name: 'missing input counts', row: { input_tokens: null, output_tokens: 50 }, rate: 0 },
-    {
-      name: 'malformed upstream usage cannot exceed 100%',
-      row: { via: 'codex-kernel', input_tokens: 10, cache_read_tokens: 20 },
-      rate: 1,
-    },
   ]
   for (const { name, row, rate, display } of cases) {
     const db = freshDb()
@@ -275,6 +209,32 @@ test('cache rates include Claude writes and preserve inclusive Codex input acros
     } finally {
       db.close()
     }
+  }
+})
+
+test('Codex 100k input / 80k cached / 2k out stores 20k input and totals 102k tokens', () => {
+  const now = Date.parse('2026-05-01T12:00:00Z')
+  const at = '2026-05-01T09:00:00.000Z'
+  const db = freshDb()
+  try {
+    seed(db, [
+      {
+        created_at: at,
+        user_id: 'u1',
+        via: 'codex-kernel',
+        model: 'gpt-5.4',
+        input_tokens: 20_000,
+        output_tokens: 2_000,
+        cache_read_tokens: 80_000,
+        cache_creation_tokens: 0,
+      },
+    ])
+    const totals = new StatisticsRepo(db).statistics({ range: 'today', tz: 'UTC', now }).totals
+    assert.equal(totals.inputTokens, 20_000)
+    assert.equal(totals.tokens, 102_000)
+    assert.notEqual(totals.tokens, 182_000)
+  } finally {
+    db.close()
   }
 })
 
@@ -342,7 +302,7 @@ test('API OpenAI replies converted to non-streaming Anthropic retain disjoint hi
           protocol: 'anthropic.messages',
           stream: true,
           upstream_model: upstream.model,
-          input_tokens: 1000,
+          input_tokens: 600,
           cache_read_tokens: 400,
         },
       ])
@@ -362,7 +322,7 @@ test('mixed-provider cache rates weight each row by prompt tokens for every scop
     const shared = { created_at: at, user_id: 'u1', api_key_id: 'k1', vm_id: 'vm-a', model: 'shared-alias' }
     seed(db, [
       { ...shared, upstream_model: 'claude-sonnet-4', cache_read_tokens: 80, cache_creation_tokens: 20 },
-      { ...shared, via: 'codex-kernel', input_tokens: 1000, cache_read_tokens: 400, cache_creation_tokens: 100 },
+      { ...shared, via: 'codex-kernel', input_tokens: 500, cache_read_tokens: 400, cache_creation_tokens: 100 },
       { created_at: at, user_id: 'u2', api_key_id: 'k2', input_tokens: 50, cache_read_tokens: 50 },
       // Outside the current window: must not change its denominator.
       { ...shared, created_at: '2026-04-30T23:59:59.000Z', cache_creation_tokens: 10_000 },
@@ -380,7 +340,7 @@ test('mixed-provider cache rates weight each row by prompt tokens for every scop
     assert.equal(mine.cacheReadTokens, 480)
     assert.equal(mine.cacheCreationTokens, 120)
     // The existing total-token metric is intentionally separate from this fix.
-    assert.equal(mine.tokens, 1600)
+    assert.equal(mine.tokens, 1100)
     assert.equal(repo.statistics(options).totals.cacheHitRate, 530 / 1200)
     const empty = repo.statistics({ ...options, owner_user_id: 'missing-user' }).totals
     assert.equal(empty.cacheHitRate, 0)
