@@ -67,20 +67,38 @@ export async function hashPasswordAsync(password) {
   return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('hex')}$${hash.toString('hex')}`
 }
 
-/** Runs scrypt on the libuv pool so a login flood cannot stall the event loop. */
-export async function verifyPassword(password, stored) {
+function parseStoredHash(stored) {
   const parts = String(stored || '').split('$')
-  if (parts[0] !== 'scrypt' || parts.length !== 6) return false
+  if (parts[0] !== 'scrypt' || parts.length !== 6) return null
   const N = Number(parts[1])
   const r = Number(parts[2])
   const p = Number(parts[3])
-  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) return false
+  if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p)) return null
+  const salt = Buffer.from(parts[4], 'hex')
+  const expected = Buffer.from(parts[5], 'hex')
+  if (!salt.length || !expected.length) return null
+  return { salt, expected, options: scryptOptions(N, r, p) }
+}
+
+/** Runs scrypt on the libuv pool so a login flood cannot stall the event loop. */
+export async function verifyPassword(password, stored) {
   try {
-    const salt = Buffer.from(parts[4], 'hex')
-    const expected = Buffer.from(parts[5], 'hex')
-    if (!salt.length || !expected.length) return false
-    const actual = await scryptAsync(String(password), salt, expected.length, scryptOptions(N, r, p))
-    return actual.length === expected.length && crypto.timingSafeEqual(actual, expected)
+    const h = parseStoredHash(stored)
+    if (!h) return false
+    const actual = await scryptAsync(String(password), h.salt, h.expected.length, h.options)
+    return actual.length === h.expected.length && crypto.timingSafeEqual(actual, h.expected)
+  } catch {
+    return false
+  }
+}
+
+/** Blocking variant for non-login checks; never call it on a path an anonymous client can repeat. */
+export function verifyPasswordSync(password, stored) {
+  try {
+    const h = parseStoredHash(stored)
+    if (!h) return false
+    const actual = crypto.scryptSync(String(password), h.salt, h.expected.length, h.options)
+    return actual.length === h.expected.length && crypto.timingSafeEqual(actual, h.expected)
   } catch {
     return false
   }

@@ -3,7 +3,7 @@
  * Copy and URLs stay in the panel; this module only returns ids / done flags.
  */
 import { normalizePanelRole } from './panel-acl.mjs'
-import { verifyPassword } from './panel-users.mjs'
+import { verifyPasswordSync } from './panel-users.mjs'
 
 export const ONBOARDING_STATE_KEY = 'onboarding_state'
 export const MASTER_ONBOARDING_USER = '__master__'
@@ -43,10 +43,17 @@ export function isDefaultEnvAdminPassword(password) {
   return String(password ?? '') === DEFAULT_ADMIN_PASSWORD
 }
 
+// The onboarding payload is fetched on every panel load; one scrypt per stored hash, not per request.
+let defaultHashMemo = { hash: null, isDefault: false }
+function hashIsDefaultPassword(hash) {
+  if (defaultHashMemo.hash !== hash) {
+    defaultHashMemo = { hash, isDefault: verifyPasswordSync(DEFAULT_ADMIN_PASSWORD, hash) }
+  }
+  return defaultHashMemo.isDefault
+}
+
 export function adminPasswordDone({ envPassword, envAdmin } = {}) {
-  return envAdmin
-    ? !verifyPassword(DEFAULT_ADMIN_PASSWORD, envAdmin.password_hash)
-    : !isDefaultEnvAdminPassword(envPassword)
+  return envAdmin ? !hashIsDefaultPassword(envAdmin.password_hash) : !isDefaultEnvAdminPassword(envPassword)
 }
 
 export function vmStepFacts(vms = []) {
