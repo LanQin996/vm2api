@@ -3,7 +3,6 @@ import { Link } from '@tanstack/react-router'
 import type { Vm, VmProxySnap } from '@/types/panel-vm'
 import { Check, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { isCodexVm } from '@/lib/vm-kind'
 import {
   localProxyText,
   localProxyOptsFromProxy,
@@ -55,7 +54,6 @@ type VmProxyTabProps = {
   onBind: () => void
   onProbe: () => void
   onGeo: () => void
-  onEnsureIpv6: () => void
 }
 
 export function VmProxyTab(props: VmProxyTabProps) {
@@ -71,10 +69,8 @@ export function VmProxyTab(props: VmProxyTabProps) {
     onBind,
     onProbe,
     onGeo,
-    onEnsureIpv6,
   } = props
   const health = proxyHealthOf(vm, proxy)
-  const codex = isCodexVm(vm)
   const local = !!boundId && proxyIsLocal(proxy)
   const fallbackOpts = useLocalProxyLabelOpts(vm.node_id)
   const labelOpts = localProxyOptsFromProxy(proxy, fallbackOpts)
@@ -94,49 +90,6 @@ export function VmProxyTab(props: VmProxyTabProps) {
           proxyLabel(p, labelOpts).toLowerCase().includes(q)
       )
     : free
-
-  if (codex) {
-    const ipv6 = vm.codex_ipv6_egress
-    return (
-      <TabsContent value='proxy' className='space-y-3 pt-4'>
-        <Card>
-          <CardHeader className='pb-2'>
-            <CardTitle className='text-sm'>Codex IPv6 出口</CardTitle>
-          </CardHeader>
-          <p className='px-6 pb-2 text-xs text-muted-foreground'>
-            这是宿主机上 Codex kernel 的专属出站地址。GPT
-            容器本身没有网络，且不会使用 IPv4 代理。
-          </p>
-          <CardContent className='flex flex-wrap gap-6 pt-0'>
-            <HealthDonut score={health.score} label='IPv6' size={80} />
-            <div className='min-w-0 flex-1 divide-y'>
-              <Field label='状态'>
-                <StatusMark variant='pill' tone={health.tone} />
-              </Field>
-              <Field label='IPv6 地址'>
-                <span className='field-host text-xs'>
-                  {ipv6?.active ? ipv6.address || '已分配' : '尚未分配'}
-                </span>
-              </Field>
-              <Field label='网络接口'>
-                <span className='field-host text-xs'>
-                  {ipv6?.active ? ipv6.interface || '—' : '—'}
-                </span>
-              </Field>
-              <Field label='分配时机'>
-                启动 GPT kernel 或首次 GPT 请求时自动分配
-              </Field>
-            </div>
-          </CardContent>
-        </Card>
-        <div className='flex flex-wrap gap-2'>
-          <Button size='sm' variant='outline' onClick={onEnsureIpv6}>
-            启动并初始化 IPv6
-          </Button>
-        </div>
-      </TabsContent>
-    )
-  }
 
   return (
     <TabsContent value='proxy' className='space-y-3 pt-4'>

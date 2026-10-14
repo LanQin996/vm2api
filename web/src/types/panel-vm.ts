@@ -202,12 +202,6 @@ export type Vm = {
   can_import_credential?: boolean
   proxy?: VmProxySnap
   proxy_id?: string
-  /** Host-side IPv6-only egress used by the Codex kernel. */
-  codex_ipv6_egress?: {
-    active: boolean
-    address: string | null
-    interface: string | null
-  } | null
   schedulable?: boolean
   schedule_manual?: boolean
   /** Operator switch vs quota/cooldown park. */

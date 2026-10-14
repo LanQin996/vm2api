@@ -408,7 +408,6 @@ export function VmDetailPage() {
                 })
                 .catch((error: Error) => toast.error(error.message))
             }
-            onEnsureIpv6={() => act.mutate({ path: '/start' })}
           />
           <VmTestTab
             {...test}
