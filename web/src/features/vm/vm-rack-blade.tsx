@@ -132,7 +132,7 @@ export function VmSeats({
   const queued = Number(vm.queue_depth) || 0
   return (
     <span
-      className='inline-flex items-center gap-1.5 whitespace-nowrap'
+      className='inline-flex min-w-0 items-center gap-1.5 whitespace-nowrap'
       title={`席位 ${used}/${max}${queued ? ` · 排队 ${queued}` : ''}`}
     >
       <SeatCells
@@ -140,13 +140,13 @@ export function VmSeats({
         grace={Number(vm.seats_grace) || 0}
         max={max}
         size='sm'
-        className='flex-nowrap'
+        className='min-w-0 flex-nowrap overflow-hidden'
       />
-      <span className='tabular-nums'>
+      <span className='shrink-0 tabular-nums'>
         {used}/{max}
       </span>
       {queued ? (
-        <span className='font-medium text-[color:var(--status-warn)] tabular-nums'>
+        <span className='shrink-0 font-medium text-[color:var(--status-warn)] tabular-nums'>
           {compact ? `+${queued}` : `排队 ${queued}`}
         </span>
       ) : null}
@@ -515,7 +515,7 @@ export const VmBlade = memo(function VmBlade({
       aria-label={`查看 ${vm.id} 详情`}
       style={tierStyle(vm)}
       className={cn(
-        'relative grid min-w-0 cursor-pointer grid-rows-[auto_auto_1fr_auto] rounded-[10px] shadow-[inset_0_0_0_1px_var(--hairline)] transition-[background-color,box-shadow] duration-150 ease-out hover:bg-muted hover:shadow-[inset_0_0_0_1px_var(--border)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
+        'relative grid min-w-0 cursor-pointer grid-cols-[minmax(0,1fr)] grid-rows-[auto_auto_1fr_auto] rounded-[10px] shadow-[inset_0_0_0_1px_var(--hairline)] transition-[background-color,box-shadow] duration-150 ease-out hover:bg-muted hover:shadow-[inset_0_0_0_1px_var(--border)] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring',
         "before:absolute before:top-3 before:left-0 before:h-[18px] before:w-[3px] before:rounded-r-[2px] before:bg-[color:var(--tc,transparent)] before:content-['']",
         large
           ? 'gap-2.5 px-3 ps-3.5 pt-3 pb-2'
@@ -568,9 +568,9 @@ export const VmBlade = memo(function VmBlade({
       ) : (
         <BladeCallout vm={vm} accounts={accounts} state={state} />
       )}
-      <div className='hairline-t flex min-h-9 items-center gap-1.5 pt-1.5 text-[11.5px] text-muted-foreground'>
+      <div className='hairline-t flex min-h-9 min-w-0 items-center gap-1.5 pt-1.5 text-[11.5px] text-muted-foreground'>
         {vm.seats_max != null ? (
-          <span className='me-0.5 border-e border-[color:var(--hairline)] pe-2'>
+          <span className='me-0.5 flex min-w-0 border-e border-[color:var(--hairline)] pe-2'>
             <VmSeats vm={vm} />
           </span>
         ) : null}
