@@ -25,6 +25,7 @@ export const CHATGPT_RESET_CONSUME_URL = `${CHATGPT_RESET_CREDITS_URL}/consume`
 export const OPENAI_QUOTA_TIMEOUT_MS = 20_000
 const CODEX_BETA = 'codex-1'
 const quotaChecks = new Map()
+const TERMINAL_AUTH_CODES = new Set(['token_revoked', 'account_deactivated', 'account_suspended'])
 
 function num(value) {
   if (value == null || value === '') return null
@@ -383,6 +384,12 @@ async function queryUpstream(slot, { fetchImpl, rotate = true, projectRoot, vmId
   }
 
   let pack = await run(current.access)
+  if (pack.error === 'upstream_auth' && TERMINAL_AUTH_CODES.has(String(pack.payload?.error?.code || ''))) {
+    recordCredential('invalid', 'oauth_invalid_grant')
+    return fail('upstream_auth', 'GPT 凭证已失效，请重新导入', mapUpstreamStatus(pack.status || 401), {
+      upstream_status: pack.status,
+    })
+  }
   if (pack.error === 'upstream_auth' && rotate && current.refresh) {
     current = await rotateIfNeeded(current, projectRoot, vmId, fetchImpl)
     if (!current.access || current.rotateError) {

@@ -839,7 +839,7 @@ test('when every slot returns 503, each is tried at most three times and the fin
   }
 })
 
-test('401 moves to another account without retrying the expired token', async () => {
+test('401 token_revoked disables the credential and moves to another account', async () => {
   const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
   rt.resetOpenAIAccountRuntime()
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-auth-failover-'))
@@ -858,7 +858,12 @@ test('401 moves to another account without retrying the expired token', async ()
           streamCodexKernel: async ({ exec }) => {
             seen.push(exec.vm.id)
             if (exec.vm.id === 'vm-gpt-a')
-              return { ok: false, status: 401, committed: false, body: { error: { code: 'oauth_revoked' } } }
+              return {
+                ok: false,
+                status: 401,
+                committed: false,
+                body: { error: { code: 'upstream_auth', upstream_code: 'token_revoked' } },
+              }
             return { ok: true, status: 200, terminalState: 'verified', body: { id: 'resp_ok' } }
           },
         },
@@ -867,6 +872,8 @@ test('401 moves to another account without retrying the expired token', async ()
     )
     assert.equal(out.status, 200)
     assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+    assert.equal(getVm(root, 'vm-gpt-a').codex.credential_state, 'invalid')
+    assert.equal(getVm(root, 'vm-gpt-a').schedulable, false)
     assert.equal(logBag.attempt_count, 2)
   } finally {
     rt.resetOpenAIAccountRuntime()

@@ -184,6 +184,28 @@ test('revoked access plus invalid_grant disables the slot and exposes its creden
   }
 })
 
+test('terminal token_revoked disables the slot even when refresh is temporarily unavailable', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-revoked-refresh-unavailable-'))
+  try {
+    writeGptSlot(root)
+    const result = await queryOpenaiQuota({
+      projectRoot: root,
+      vmId: 'vm-codex-01',
+      fetchImpl: async (url) => ({
+        status: url === CODEX_OAUTH_TOKEN_URL ? 503 : 401,
+        json: async () =>
+          url === CODEX_OAUTH_TOKEN_URL ? { error: 'temporarily_unavailable' } : { error: { code: 'token_revoked' } },
+      }),
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.error, 'upstream_auth')
+    assert.equal(getVm(root, 'vm-codex-01').codex.credential_state, 'invalid')
+    assert.equal(listVms(root)[0].schedulable, false)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('expired access is refreshed once across concurrent checks without disabling a valid grant', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-openai-refresh-once-'))
   try {
@@ -245,10 +267,7 @@ test('an old rejected probe cannot invalidate credentials imported while the pro
       projectRoot: root,
       vmId: 'vm-codex-01',
       fetchImpl: async (url) => {
-        if (url === CODEX_OAUTH_TOKEN_URL) {
-          upsertCodexAccount(root, 'vm-codex-01', { access_token: 'new-at', refresh_token: 'new-rt' })
-          return { status: 400, json: async () => ({ error: 'invalid_grant' }) }
-        }
+        upsertCodexAccount(root, 'vm-codex-01', { access_token: 'new-at', refresh_token: 'new-rt' })
         return { status: 401, json: async () => ({ error: { code: 'token_revoked' } }) }
       },
     })

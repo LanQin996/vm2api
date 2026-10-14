@@ -26,7 +26,12 @@ import { ensureCodexKernel, writeCodexKernelConfig } from '../transport/codex-ke
 import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { codexIpv6ProxyUrl, ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
-import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
+import {
+  codexCredentialVersion,
+  persistCodexCredentialState,
+  readCodexAccounts,
+  upsertCodexAccount,
+} from '../vm/codex-slot.mjs'
 import { queryOpenaiQuota } from '../oauth/openai-quota.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
 import {
@@ -232,9 +237,25 @@ function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = nu
   return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })
 }
 
-function checkCodexHopCredential(projectRoot, vmId, result, ops = {}) {
+function checkCodexHopCredential(projectRoot, vmId, result, ops = {}, expectedVersion = null) {
   if (result?.ok) return
-  const code = String(result?.body?.error?.code || '')
+  const authError = result?.body?.error || {}
+  const code = String(authError.upstream_code || authError.code || '')
+  const message = String(authError.message || '')
+  const terminalRevocation =
+    /^(token_revoked|account_deactivated|account_suspended|oauth_revoked|oauth_invalid_grant|invalid_grant)$/.test(
+      code,
+    ) ||
+    (Number(result?.upstream_status || authError.upstream_status) === 401 &&
+      /invalidated oauth token|token has been revoked/i.test(message))
+  if (terminalRevocation) {
+    persistCodexCredentialState(projectRoot, vmId, {
+      state: 'invalid',
+      error: 'oauth_invalid_grant',
+      expectedVersion,
+    })
+    return
+  }
   const unauthorized = Number(result?.status) === 401 || /upstream_auth|no_credential/.test(code)
   if (!unauthorized && code !== 'no_capacity') return
   const vm = getVm(projectRoot, vmId)
@@ -716,6 +737,7 @@ export async function handleCodexProtocol({
         const outboundHeaders = codexKernelHeaders(req.headers, outboundBody, session)
         if (captureOutbound) logBag.outbound_body = outboundBody
         logBag.outbound_headers = redactHeaders(outboundHeaders)
+        const credentialVersion = codexCredentialVersion(readCodexAccounts(projectRoot, vm.id))
         const result = await runCodexKernelHop({
           hop,
           wait: ops.waitCodexRetry,
@@ -778,7 +800,7 @@ export async function handleCodexProtocol({
           result.body = { error: conversionError }
         }
         ingestCodexHop(projectRoot, vm.id, result, Date.now(), normalizeCodexRouting(routing.codex).quota)
-        if (!gone.signal.aborted) checkCodexHopCredential(projectRoot, vm.id, result, ops)
+        if (!gone.signal.aborted) checkCodexHopCredential(projectRoot, vm.id, result, ops, credentialVersion)
         logBag.attempt_count += Math.max(0, (result?.kernel_attempt_count || 1) - 1)
         if (result?.transport_retried) logBag.transport_retried = true
         if (result?.server_retry_count)
