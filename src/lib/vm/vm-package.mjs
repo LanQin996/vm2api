@@ -174,13 +174,13 @@ export function buildVmPackage({
       inference_engine: engineOf(vm.inference_engine) || '',
       dataplane: normalizeKernelDataplane(vm.dataplane, { inherit: true }) || '',
       auth_scheme: codex ? '' : normalizeAuthScheme(vm.claude?.auth_scheme || vm.auth_scheme),
-      proxy_cli_enabled: hasBoundExit(proxy || vm.proxy),
+      proxy_cli_enabled: codex ? false : hasBoundExit(proxy || vm.proxy),
       schedulable: operatorSchedulable(vm),
       schedule_manual: vm.schedule_manual === true,
       policy: policyFromVm(vm, codex),
       seed_policy: defaultSeedPolicy(vm.seed_policy || {}),
     },
-    proxy: proxyDocument(proxy, proxyLabel),
+    proxy: codex ? null : proxyDocument(proxy, proxyLabel),
     credential: null,
   }
   if (codex) {
@@ -516,6 +516,7 @@ function mirrorCodex(vm, account) {
  * Runs before any file is written so a refused package leaves nothing behind.
  */
 function proxyBindAllowed(spec, vm, role, proxyPool) {
+  if (spec.codex && spec.proxy) return false
   if (!spec.proxy) return true
   let owner = null
   if (spec.proxy.kind === 'local') {

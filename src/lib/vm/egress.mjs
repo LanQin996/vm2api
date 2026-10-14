@@ -2,8 +2,8 @@
  * Remote SOCKS5: one docker net per proxy, kin-egress REDIRECTs that bridge.
  * Local egress (`px-local` / scheme=local) is the host default route. Do not
  * start kin-egress and do not treat a missing helper as "no proxy".
- * Slot start still attaches a masquerade net so the container is not on a
- * redirected SOCKS bridge.
+ * Claude slots attach their proxy bridge. Codex's identity container has no
+ * network; its host-side kernel uses a per-slot IPv6-only SOCKS listener.
  */
 import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -12,6 +12,7 @@ import { getDb, isDbOpen } from '../db/database.mjs'
 import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { socksProxyUrl } from './socks-address.mjs'
 import { assertProxyAllowed, proxyBlockedReason } from './proxy-policy.mjs'
+import { isCodexVm } from './vm-kind.mjs'
 
 export const EGRESS_BIN = process.env.KIN_EGRESS_BIN || '/opt/kin-gateway/bin/kin-egress'
 export const LOCAL_EGRESS_ID = 'px-local'
@@ -606,6 +607,7 @@ export function stopProxyEgress(projectRoot, proxyId, { subnet, runDocker = dock
 }
 
 export function slotNetworkForVm(vm, _env = process.env) {
+  if (isCodexVm(vm)) return 'none'
   const id = vm?.proxy?.id
   if (!id) return ''
   return networkName(id)

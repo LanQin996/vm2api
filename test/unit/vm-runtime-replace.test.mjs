@@ -16,6 +16,7 @@ import {
   slotWorkerNeedsRecreate,
   writeWorkerFiles,
   startVmRuntime,
+  ensureOuterSocks,
   slotContainerCommand,
   CODEX_SLOT_ROLE,
 } from '../../src/lib/vm/vm-runtime.mjs'
@@ -97,6 +98,12 @@ test('slotContainerNetworkMismatch compares docker network to bound proxy', () =
   assert.equal(slotContainerNetworkMismatch({ running: true, networkMode: null }, vm), true)
   assert.equal(slotContainerNetworkMismatch(null, vm), true)
   assert.equal(slotContainerNetworkMismatch({ running: true, networkMode: 'kin-eg-px-old' }, { id: 'vm-01' }), false)
+})
+
+test('GPT slots bypass the SOCKS requirement because Codex egress is IPv6-only', () => {
+  const vm = { id: 'vm-gpt', platform: 'openai', family: 'codex', proxy: null }
+  assert.deepEqual(ensureOuterSocks(vm), { ok: true, transport: 'codex-ipv6' })
+  assert.equal(slotNetworkForVm(vm), 'none')
 })
 
 test('reload recreates a docker slot when egress network mismatches', (t) => {
@@ -304,7 +311,7 @@ test('a GPT slot container is live without kernel.sock, and an old kin-kernel on
   t.after(() => fs.rmSync(runDir, { recursive: true, force: true }))
   const paths = { socket: path.join(runDir, 'worker.sock'), kernelSocket: path.join(runDir, 'kernel.sock') }
   const codex = { id: 'vm-codex-01', platform: 'openai', family: 'codex', codex_kernel: true }
-  const current = { running: true, networkMode: null, role: CODEX_SLOT_ROLE }
+  const current = { running: true, networkMode: 'none', role: CODEX_SLOT_ROLE }
   assert.equal(slotKernelAlive(current, paths, codex), true)
   assert.equal(slotWorkerNeedsRecreate(current, codex, paths), false, 'reload must not docker rm a healthy GPT slot')
   // Created before the role label: PID 1 is kin-kernel and restarts every few minutes.

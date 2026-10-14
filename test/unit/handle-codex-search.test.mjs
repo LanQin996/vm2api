@@ -235,7 +235,7 @@ test('the alpha/search route authenticates, logs and reaches the Codex search ho
   await handleSearch(req, res, '/v1/alpha/search')
   res.finish()
   assert.equal(res.statusCode, 502)
-  assert.equal(res.body.error.code, 'proxy_required')
+  assert.match(res.body.error.code, /^codex_ipv6_unavailable/)
   assert.equal(rows.length, 1)
   assert.equal(rows[0].protocol, 'openai.search')
   assert.equal(rows[0].via, 'codex-search')

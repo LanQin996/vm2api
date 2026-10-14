@@ -105,6 +105,36 @@ test('create does not 409 when proxy allocation fails', async () => {
   }
 })
 
+test('GPT creation skips IPv4 proxy allocation even when auto allocation is requested', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-gpt-ipv6-'))
+  try {
+    let allocations = 0
+    const pool = {
+      allocateForVm() {
+        allocations++
+        throw new Error('GPT must not allocate a SOCKS proxy')
+      },
+      getProxyForVm() {
+        return null
+      },
+    }
+    const { handlePanel, response } = makeCreateHandler(
+      root,
+      { platform: 'openai', start: false, auto_allocate_proxy: true },
+      pool,
+    )
+    await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+    assert.equal(response.status, 200, response.body?.error?.message || JSON.stringify(response.body))
+    const vm = response.body?.data?.vm
+    assert.equal(vm.platform, 'openai')
+    assert.equal(allocations, 0)
+    const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${vm.id}.json`), 'utf8'))
+    assert.equal(saved.proxy, null)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('create preserves Tokyo timezone in the VM, fingerprint, and CLI seed files', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-tokyo-'))
   try {

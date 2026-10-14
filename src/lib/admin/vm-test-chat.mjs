@@ -18,6 +18,7 @@ import { getVm, vmHasClaudeCredential } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { summarizeCodexSlot, readCodexAccounts, writeCodexAccounts } from '../vm/codex-slot.mjs'
 import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
 import { loadVmIdentity } from '../identity/vm-identity.mjs'
 import { snapshotOauth } from '../vm/execution-context.mjs'
@@ -189,6 +190,19 @@ export async function syncCodexCatalog({
   let usedVm = null
   let lastError = null
   for (const target of targets) {
+    if (!fetchImpl) {
+      try {
+        await ensureCodexIpv6Egress(target)
+      } catch (error) {
+        lastError = {
+          ok: false,
+          error: 'codex_ipv6_unavailable',
+          message: String(error?.message || error),
+          vm_id: target.id,
+        }
+        continue
+      }
+    }
     const direct = isLocalEgressProxy(target.proxy)
     const proxyUrl = hostProxyUrlForVm(target)
     if (!proxyUrl && !fetchImpl && !direct) {
@@ -952,7 +966,7 @@ export async function runVmTestChat(opts = {}) {
         }`,
   )
 
-  if (!vm.proxy?.url && !vm.proxy?.host) {
+  if (!codex && !vm.proxy?.url && !vm.proxy?.host) {
     push('error', '未绑定 SOCKS5，拒绝测试。请先绑代理，不要测无出口的旧槽。')
     return done({
       ok: false,
@@ -962,7 +976,7 @@ export async function runVmTestChat(opts = {}) {
       duration_ms: Date.now() - started,
     })
   }
-  push('info', `代理 ${vm.proxy?.host || 'bound'}`)
+  push('info', codex ? `IPv6 出口 ${hostProxyUrlForVm(vm)}` : `代理 ${vm.proxy?.host || 'bound'}`)
 
   let model = String(opts.model || '').trim()
   if (!model) {
@@ -1114,6 +1128,7 @@ export async function runVmTestChat(opts = {}) {
       const refreshToken = String(first.refresh_token || '').trim()
       if (refreshToken) {
         push('info', 'Codex hop 401，尝试刷新 OAuth')
+        if (!opts.fetchImpl) await ensureCodexIpv6Egress(vm)
         const tok = await refreshCodexAccessToken({
           refreshToken,
           proxyUrl: hostProxyUrlForVm(vm),

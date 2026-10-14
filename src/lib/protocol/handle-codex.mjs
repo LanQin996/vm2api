@@ -23,8 +23,9 @@ import { extraFromCodexHeaders, codexQuotaPark, CODEX_DEFAULT_PARK_MS } from './
 import { extractOpenaiUsage } from './openai-usage.mjs'
 import { streamCodexKernel } from '../transport/codex-kernel-client.mjs'
 import { ensureCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
-import { boundProxyUrl, isLocalEgressProxy } from '../vm/egress.mjs'
+import { isLocalEgressProxy } from '../vm/egress.mjs'
 import { hostProxyUrlForVm } from '../vm/slot-host.mjs'
+import { codexIpv6ProxyUrl, ensureCodexIpv6Egress } from '../vm/codex-ipv6-egress.mjs'
 import { readCodexAccounts, upsertCodexAccount } from '../vm/codex-slot.mjs'
 import { queryOpenaiQuota } from '../oauth/openai-quota.mjs'
 import { scopeAccountFromVm } from './jev-intercept.mjs'
@@ -572,6 +573,7 @@ export async function handleCodexProtocol({
   const hop = ops.streamCodexKernel || streamCodexKernel
   const writeCfg = ops.writeCodexKernelConfig || writeCodexKernelConfig
   const ensure = ops.ensureCodexKernel || ensureCodexKernel
+  const ensureIpv6Exit = ops.ensureCodexIpv6Egress || ensureCodexIpv6Egress
   const anthropicSse = protocol === 'anthropic.messages' ? createAnthropicSseState() : null
   const chatSse =
     protocol === 'openai.chat' || protocol === 'openai.completions'
@@ -653,8 +655,9 @@ export async function handleCodexProtocol({
       }
       let attemptKind = 'failed'
       try {
+        const ipv6Exit = ops.writeCodexKernelConfig ? { proxyUrl: codexIpv6ProxyUrl(vm.id) } : await ensureIpv6Exit(vm)
         writeCfg(projectRoot, vm, {
-          proxyUrl: boundProxyUrl(vm.proxy),
+          proxyUrl: ipv6Exit.proxyUrl,
           proxyRequired: true,
         })
         const ready = await ensure(execFor(projectRoot, vm))
@@ -1012,6 +1015,13 @@ function plainHeaders(headers) {
 
 /** One search call on one slot. Resolves `{ status, text, headers }`, or `{ status: 0, error }`. */
 async function postCodexSearch({ projectRoot, vm, body, turnMetadata, fetchImpl, refresh = refreshCodexAccessToken }) {
+  if (!fetchImpl) {
+    try {
+      await ensureCodexIpv6Egress(vm)
+    } catch (error) {
+      return { status: 0, error: `codex_ipv6_unavailable:${String(error?.message || error)}` }
+    }
+  }
   const proxyUrl = hostProxyUrlForVm(vm)
   if (!fetchImpl && !proxyUrl && !isLocalEgressProxy(vm.proxy)) return { status: 0, error: 'proxy_required' }
   const doFetch = fetchImpl || makeProxyFetch(proxyUrl, CODEX_SEARCH_TIMEOUT_MS, { maxMs: CODEX_SEARCH_TIMEOUT_MS })

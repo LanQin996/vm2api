@@ -7,6 +7,8 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { boundProxyUrl, isLocalEgressProxy, localEgressProxyUrl } from '../vm/egress.mjs'
+import { codexIpv6ProxyUrl } from '../vm/codex-ipv6-egress.mjs'
+import { isCodexVm } from '../vm/vm-kind.mjs'
 import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { codexKernelHealth, codexKernelPaths } from './codex-kernel-client.mjs'
 
@@ -41,8 +43,11 @@ export function codexKernelBinPath() {
 
 export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxyRequired } = {}) {
   if (!projectRoot || !vm?.id) return null
-  assertProxyAllowed(vm.proxy)
-  if (proxyUrl) assertProxyAllowed({ url: proxyUrl })
+  const ipv6Only = isCodexVm(vm)
+  if (!ipv6Only) {
+    assertProxyAllowed(vm.proxy)
+    if (proxyUrl) assertProxyAllowed({ url: proxyUrl })
+  }
   const runDir = path.join(projectRoot, 'vms', vm.id, 'run')
   fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
   const socketPath = path.join(runDir, 'codex-kernel.sock')
@@ -58,9 +63,13 @@ export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxy
   if (!secret) secret = crypto.randomBytes(24).toString('hex')
   fs.writeFileSync(tokenPath, secret + '\n', { mode: 0o600 })
   const local = isLocalEgressProxy(vm?.proxy)
-  const proxy = local ? localEgressProxyUrl() : String(proxyUrl || boundProxyUrl(vm?.proxy) || '').trim()
+  const proxy = ipv6Only
+    ? codexIpv6ProxyUrl(vm.id)
+    : local
+      ? localEgressProxyUrl()
+      : String(proxyUrl || boundProxyUrl(vm?.proxy) || '').trim()
   // A configured deployment proxy is this slot's exit: fail closed instead of going direct.
-  const required = local ? !!proxy : proxyRequired == null ? !!proxy : !!proxyRequired
+  const required = ipv6Only || (local ? !!proxy : proxyRequired == null ? !!proxy : !!proxyRequired)
   const deviceId = String(vm.device_id || vm.fingerprint?.device_id || vm.id).trim() || vm.id
   const config = {
     vm_id: vm.id,
