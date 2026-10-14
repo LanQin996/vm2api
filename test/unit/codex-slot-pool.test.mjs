@@ -85,13 +85,16 @@ test('capped 5h window parks the slot', () => {
   )
 })
 
-test('auth, quota and 502/503 failures fail over; committed hops do not', () => {
+test('auth, quota and 5xx failures fail over; committed hops do not', () => {
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: false }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'usage_limit_reached' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: true }), false)
   assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 503, body: { error: { code: 'server_error' } } }), true)
+  assert.equal(isCodexFailoverError({ ok: false, status: 500, body: { error: { code: 'server_error' } } }), true)
+  assert.equal(isCodexFailoverError({ ok: false, status: 504 }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 503, committed: true }), false)
+  assert.equal(isCodexFailoverError({ ok: false, status: 500, committed: true }), false)
   assert.equal(isCodexFailoverError({ ok: false, status: 400 }), false)
 })
 

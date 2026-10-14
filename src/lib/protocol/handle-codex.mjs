@@ -435,6 +435,8 @@ export function reasoningHistoryFallback(args, result) {
 }
 
 const CODEX_MAX_HOP_ATTEMPTS = 3
+// OpenAI's generic "An error occurred while processing your request" is a 500 server_error.
+const CODEX_RETRY_STATUSES = new Set([500, 502, 503, 504])
 const CODEX_RETRY_DELAYS_MS = [500, 1000]
 const CODEX_MAX_RETRY_WAIT_MS = 30000
 
@@ -493,7 +495,7 @@ export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFa
     !args.signal?.aborted &&
     attempts < CODEX_MAX_HOP_ATTEMPTS &&
     !/^(no_capacity|no_credential|upstream_auth|sticky_unavailable)$/.test(result?.body?.error?.code || '') &&
-    [502, 503].includes(Number(result?.status))
+    CODEX_RETRY_STATUSES.has(Number(result?.status))
   ) {
     const delay = codexRetryDelay(result, retries)
     if (delay > CODEX_MAX_RETRY_WAIT_MS) break

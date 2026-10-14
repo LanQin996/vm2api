@@ -294,8 +294,11 @@ test('runCodexKernelHop does not stack reasoning fallback after emit, transport 
       return serverError(500)
     },
     args: qualifyingArgs(),
+    wait: async () => {},
   })
-  assert.equal(n, 2)
+  // The 500 still gets the generic server retry, just never the reasoning-history rewrite.
+  assert.equal(n, 3)
+  assert.equal(transportThenError.server_retry_count, 1)
   assert.equal(transportThenError.transport_retried, true)
   assert.equal(transportThenError.reasoning_history_retried, undefined)
 

@@ -66,8 +66,8 @@ test('runCodexKernelHop does not retry after SSE has started', async () => {
   assert.equal(result.transport_retried, undefined)
 })
 
-test('silent 502/503 retries back off on the same request and stop at three attempts', async () => {
-  for (const status of [502, 503]) {
+test('silent 5xx retries back off on the same request and stop at three attempts', async () => {
+  for (const status of [500, 502, 503, 504]) {
     const body = { model: 'gpt-6.1-sol', input: 'hello' }
     const calls = []
     const delays = []
@@ -87,6 +87,50 @@ test('silent 502/503 retries back off on the same request and stop at three atte
     assert.equal(result.kernel_attempt_count, 3)
     assert.equal(result.server_retry_count, 2)
   }
+})
+
+test('OpenAI generic 500 server_error recovers on the same request', async () => {
+  let calls = 0
+  const delays = []
+  const result = await runCodexKernelHop({
+    hop: async () => {
+      calls += 1
+      if (calls === 1)
+        return {
+          ok: false,
+          status: 500,
+          committed: false,
+          body: {
+            error: {
+              type: 'server_error',
+              code: 'server_error',
+              message:
+                'An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.',
+            },
+          },
+        }
+      return { ok: true, status: 200 }
+    },
+    wait: async (ms) => delays.push(ms),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(calls, 2)
+  assert.deepEqual(delays, [500])
+  assert.equal(result.server_retry_count, 1)
+})
+
+test('a 500 after output already reached the caller is never replayed', async () => {
+  let calls = 0
+  const result = await runCodexKernelHop({
+    hop: async ({ onEvent }) => {
+      calls += 1
+      await onEvent('data: {"type":"response.output_text.delta","delta":"hi"}')
+      return { ok: false, status: 500, committed: false, body: { error: { code: 'server_error' } } }
+    },
+    wait: async () => assert.fail('must not wait'),
+  })
+  assert.equal(calls, 1)
+  assert.equal(result.status, 500)
 })
 
 test('server retry stops on success and respects Retry-After', async () => {
