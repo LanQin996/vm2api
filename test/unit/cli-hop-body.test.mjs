@@ -1,7 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { prepareCliHopBody, stripCliOwnedSystem } from '../../src/lib/protocol/outbound-attempt.mjs'
-import { CRS_OFFICIAL_SYSTEM, CRS_OFFICIAL_CLI_SYSTEM } from '../../src/lib/identity/crs-persona.mjs'
+import {
+  applyCrsUnofficialPersona,
+  CRS_OFFICIAL_SYSTEM,
+  CRS_OFFICIAL_CLI_SYSTEM,
+  parkableSystemText,
+} from '../../src/lib/identity/crs-persona.mjs'
 import { CRS_OFFICIAL_AGENT_PROMPT } from '../../src/lib/identity/official-cc-system-2.1.241.mjs'
 
 test('prepareCliHopBody drops metadata and CLI-owned system but keeps official agent leftover', () => {
@@ -370,6 +375,68 @@ test('cli-hop lifts role=system turns for models that reject them', () => {
   })
   assert.ok(body.messages.every((message) => message.role !== 'system'))
   assert.equal(body.system.at(-1).text, 'reminder')
+})
+
+test('sonnet-5 lift keeps one context-budget reminder so the system tail stays stable', () => {
+  const budget = (left) => ({
+    role: 'system',
+    content: `<system-reminder>\n<total_tokens>${left} tokens left</total_tokens>\n</system-reminder>`,
+  })
+  const env = {
+    role: 'system',
+    content: '<system-reminder>\n# Environment\n - Primary working directory: /tmp\n</system-reminder>',
+  }
+  const base = {
+    model: 'claude-sonnet-5',
+    max_tokens: 256,
+    system: [{ type: 'text', text: 'main prompt' }],
+  }
+  const first = prepareCliHopBody({
+    ...base,
+    messages: [{ role: 'user', content: 'u1' }, env, budget(14930105)],
+  })
+  const second = prepareCliHopBody({
+    ...base,
+    messages: [
+      { role: 'user', content: 'u1' },
+      env,
+      budget(14930105),
+      { role: 'assistant', content: 'a1' },
+      { role: 'user', content: 'u2' },
+      budget(14928642),
+    ],
+  })
+  const reminders = (body) => JSON.stringify(body.system).match(/<total_tokens>/g)?.length || 0
+  assert.equal(reminders(first), 1)
+  assert.equal(reminders(second), 1)
+  assert.deepEqual(second.system, first.system)
+  assert.ok(second.messages.every((message) => message.role !== 'system'))
+  const persona = (body) =>
+    applyCrsUnofficialPersona(body, {
+      mode: 'official_full',
+      park: false,
+      forceConfigured: true,
+      model: 'claude-sonnet-5',
+      sessionId: '11111111-2222-4333-8444-555555555555',
+    })
+  const renderedFirst = persona(first)
+  const renderedSecond = persona(second)
+  assert.deepEqual(renderedSecond.system, renderedFirst.system)
+  assert.equal(JSON.stringify(renderedSecond.system).match(/<total_tokens>/g)?.length, 2)
+})
+
+test('a later budget drop leaves a mixed system-reminder wrapper intact', () => {
+  const only = '<system-reminder>\n<total_tokens>2 tokens left</total_tokens>\n</system-reminder>'
+  const mixed = '<system-reminder>\nKEEP\n<total_tokens>1 tokens left</total_tokens>\n</system-reminder>'
+  const joined = parkableSystemText([
+    { type: 'text', text: only },
+    { type: 'text', text: mixed },
+  ])
+  assert.equal(joined.split('<system-reminder>').length, joined.split('</system-reminder>').length)
+  assert.match(joined, /<system-reminder>\nKEEP\n\n?<\/system-reminder>/)
+  assert.equal(joined.match(/<total_tokens>/g)?.length, 1)
+  assert.match(joined, /<total_tokens>2 tokens left<\/total_tokens>/)
+  assert.doesNotMatch(joined, /<total_tokens>1 tokens left<\/total_tokens>/)
 })
 
 test('cli-hop makes Opus 5.5 acceptable to Claude Code 2.1.280', () => {

@@ -541,11 +541,81 @@ export function sanitizeUnofficialMessages(messages) {
   return messages
 }
 
+const BUDGET_REMINDER_RE =
+  /(?:\n[ \t]*){0,2}(?:<system-reminder>\s*<total_tokens>\d+ tokens left<\/total_tokens>\s*<\/system-reminder>|<total_tokens>\d+ tokens left<\/total_tokens>)/g
+
+/**
+ * Sonnet 5 / Haiku 4.5 lift every historical role=system turn into top-level
+ * system. Each turn appends another identical context-budget reminder after
+ * the cache breakpoint, so message-cache reads freeze at the stable prefix
+ * (about 80K once tools + the official prompt are in front of it) and the
+ * whole conversation is rewritten. One reminder is enough.
+ */
+export function collapseRepeatedBudgetReminders(text, state = { seen: false }) {
+  const src = String(text ?? '')
+  if (!src.includes('total_tokens')) return src
+  return src.replace(BUDGET_REMINDER_RE, (match) => {
+    if (state.seen) return ''
+    state.seen = true
+    return match
+  })
+}
+
+export function collapseSystemBudgetReminders(body) {
+  if (!body || typeof body !== 'object' || body.system == null) return body
+  const system = collapseBudgetReminderBlocks(body.system)
+  if (system === body.system) return body
+  return { ...body, system }
+}
+
+function collapseBudgetReminderBlocks(system) {
+  const state = { seen: false }
+  if (typeof system === 'string') {
+    const text = collapseRepeatedBudgetReminders(system, state)
+    return text === system ? system : text
+  }
+  if (!Array.isArray(system)) return system
+  let changed = false
+  const next = []
+  for (const block of system) {
+    if (typeof block === 'string') {
+      const text = collapseRepeatedBudgetReminders(block, state)
+      if (!text.trim()) {
+        changed = true
+        continue
+      }
+      if (text !== block) changed = true
+      next.push(text)
+      continue
+    }
+    if (!block || typeof block !== 'object' || typeof block.text !== 'string') {
+      next.push(block)
+      continue
+    }
+    const text = collapseRepeatedBudgetReminders(block.text, state)
+    if (!text.trim()) {
+      changed = true
+      continue
+    }
+    if (text === block.text) {
+      next.push(block)
+      continue
+    }
+    changed = true
+    next.push({ ...block, text })
+  }
+  return changed ? next : system
+}
+
 export function parkableSystemTexts(system) {
   const kept = []
+  const state = { seen: false }
   for (const raw of extractSystemTexts(system)) {
     const cleaned = dropRewriteSourceText(raw)
-    if (cleaned) kept.push(cleaned)
+    if (!cleaned) continue
+    const collapsed = collapseRepeatedBudgetReminders(cleaned, state)
+    const text = collapsed === cleaned ? cleaned : collapsed.trim()
+    if (text) kept.push(text)
   }
   return kept
 }

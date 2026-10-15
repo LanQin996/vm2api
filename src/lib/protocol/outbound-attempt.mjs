@@ -28,6 +28,7 @@ import { withRequestProtocolBetas } from './claude-code-betas.mjs'
 import {
   refreshOfficialSystemEnvironment,
   stampBillingPromptId,
+  collapseSystemBudgetReminders,
   CRS_OFFICIAL_SYSTEM,
   CRS_OFFICIAL_CLI_SYSTEM,
   CRS_COMPACT_IDENTITY,
@@ -186,6 +187,7 @@ export function prepareCliHopBody(
   body = stabilizeMessageBudgets(body)
   // cli-node sends mid-conversation-system. Only models that reject the role need the lift.
   if (!modelSupportsMidConversationSystem(body.model)) body = liftMidConversationSystemMessages(body)
+  body = collapseSystemBudgetReminders(body)
 
   if (!repaired) {
     body = ensureUnofficialAdaptiveThinking(body)
