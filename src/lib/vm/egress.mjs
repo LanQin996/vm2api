@@ -15,17 +15,43 @@ import { assertProxyAllowed, proxyBlockedReason } from './proxy-policy.mjs'
 
 export const EGRESS_BIN = process.env.KIN_EGRESS_BIN || '/opt/kin-gateway/bin/kin-egress'
 export const LOCAL_EGRESS_ID = 'px-local'
+const LOCAL_EGRESS_NODE_PREFIX = `${LOCAL_EGRESS_ID}-`
+
+/**
+ * Local egress is one pool row per VPS: `px-local` for the control plane,
+ * `px-local-<nodeId>` for each cluster node. Bind capacity, probe and geo are
+ * then per machine, while every local row on a host shares the same docker
+ * bridge (see egressArtifactId).
+ */
+export function localEgressIdForNode(nodeId) {
+  const key = String(nodeId || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '')
+  return key ? `${LOCAL_EGRESS_NODE_PREFIX}${key}` : LOCAL_EGRESS_ID
+}
+
+export function isLocalEgressId(proxyId) {
+  const id = String(proxyId || '').trim()
+  return id === LOCAL_EGRESS_ID || id.startsWith(LOCAL_EGRESS_NODE_PREFIX)
+}
+
+/** Node a local row belongs to; null for the control plane (or a non-local id). */
+export function localEgressNodeId(proxyId) {
+  const id = String(proxyId || '').trim()
+  return id.startsWith(LOCAL_EGRESS_NODE_PREFIX) ? id.slice(LOCAL_EGRESS_NODE_PREFIX.length) || null : null
+}
 
 export function isLocalEgressProxy(proxy) {
   if (!proxy || typeof proxy !== 'object') return false
   const id = String(proxy.id || '').trim()
+  if (isLocalEgressId(id)) return true
   const scheme = String(proxy.scheme || proxy.kind || '')
     .trim()
     .toLowerCase()
   const host = String(proxy.host || '')
     .trim()
     .toLowerCase()
-  return id === LOCAL_EGRESS_ID || scheme === 'local' || host === 'local'
+  return scheme === 'local' || host === 'local'
 }
 
 /** Remote SOCKS (url or host:port) or local egress. Empty URL is not "unbound". */
@@ -64,14 +90,19 @@ export function proxyKey(proxyId) {
     .replace(/[^a-zA-Z0-9_-]/g, '')
 }
 
+// Each host has a single local masquerade bridge, whichever per-node local row a slot holds.
+function egressArtifactId(proxyId) {
+  return isLocalEgressId(proxyId) ? LOCAL_EGRESS_ID : proxyId
+}
+
 export function networkName(proxyId) {
-  const id = proxyKey(proxyId)
+  const id = proxyKey(egressArtifactId(proxyId))
   return id ? `kin-eg-${id}` : ''
 }
 
 /** Linux iface max 15 chars. */
 export function bridgeName(proxyId) {
-  const hex = proxyKey(proxyId)
+  const hex = proxyKey(egressArtifactId(proxyId))
     .replace(/^px-/, '')
     .replace(/[^a-zA-Z0-9]/g, '')
     .slice(0, 12)
@@ -79,7 +110,7 @@ export function bridgeName(proxyId) {
 }
 
 export function chainName(proxyId) {
-  const hex = proxyKey(proxyId)
+  const hex = proxyKey(egressArtifactId(proxyId))
     .replace(/^px-/, '')
     .replace(/[^a-zA-Z0-9]/g, '')
     .slice(0, 12)
@@ -87,7 +118,7 @@ export function chainName(proxyId) {
 }
 
 export function portsForProxy(proxyId) {
-  const s = proxyKey(proxyId)
+  const s = proxyKey(egressArtifactId(proxyId))
   let h = 2166136261
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
   const n = (h >>> 0) % 8000
@@ -591,6 +622,8 @@ export function ensureProxyEgress(
 }
 
 export function stopProxyEgress(projectRoot, proxyId, { subnet, runDocker = docker, runIptables = iptables } = {}) {
+  // A node's local row owns nothing here; its bridge name is the control plane's px-local one.
+  if (localEgressNodeId(proxyId)) return { ok: true, skipped: 'node_local' }
   const net = inspectEgressNetwork(proxyId, runDocker)
   const plan = iptablesPlan({
     chain: chainName(proxyId),

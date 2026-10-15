@@ -14,7 +14,6 @@ import {
   proxyRegion,
 } from './proxy-region'
 import {
-  LOCAL_PROXY_SHARED_QUOTA,
   PROXY_HEALTH_KEYS,
   PROXY_HEALTH_LABEL,
   type ProxyFilter,
@@ -454,16 +453,12 @@ function SeatReadout({
           </span>
           <span className='shrink-0 tabular-nums'>
             {proxyBoundIds(p).length}/{proxyBindLimit(p, poolLimit)}
-            {proxyIsLocal(p) ? `（${LOCAL_PROXY_SHARED_QUOTA}）` : ''}
           </span>
           <span className='shrink-0'>
             {PROXY_HEALTH_LABEL[proxyHealthKey(p)]}
           </span>
           {p.latency_ms != null ? (
-            <span className='shrink-0 tabular-nums'>
-              {p.latency_ms}ms
-              {proxyIsLocal(p) ? ' · 控制面' : ''}
-            </span>
+            <span className='shrink-0 tabular-nums'>{p.latency_ms}ms</span>
           ) : null}
         </>
       ) : (

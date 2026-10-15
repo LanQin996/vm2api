@@ -58,6 +58,7 @@ import {
 import { officialCcHome, readOfficialCcStatus, scheduleOfficialCcBootstrap } from '../oauth/official-cc-bootstrap.mjs'
 import { invalidateLiveCredentialCache } from './panel-live-credentials.mjs'
 import { LOGIN_RATE_LIMITED_MESSAGE, createLoginGuard, loginGuardOptionsFromEnv } from './login-guard.mjs'
+import { ensureCodexKernel, stopCodexKernel } from '../transport/codex-kernel-supervisor.mjs'
 import { listOfficialModels, seedModelCatalog } from '../protocol/models.mjs'
 import { getModelPolicy, saveModelPolicy, resetModelPolicy, listPolicyModels } from '../protocol/model-policy.mjs'
 import {
@@ -192,13 +193,17 @@ import { normalizeVmConfig, resolveMachineSpec, validateVmConfigPatch } from '..
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
+import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { writeSlotSeedFiles } from '../vm/slot-seed.mjs'
 import {
   egressEnabled,
   ensureProxyEgress,
   stopProxyEgress,
   hasBoundExit,
+  isLocalEgressId,
   isLocalEgressProxy,
+  localEgressIdForNode,
+  boundProxyUrl,
   dnsUpstreamChain,
 } from '../vm/egress.mjs'
 import { collectSlotIdentity } from '../vm/guest-identity.mjs'
@@ -260,6 +265,8 @@ import {
 function logsOwner(req, u) {
   return panelIdentity(req).role === 'user' ? req.panelUserId : u.searchParams.get('user_id') || null
 }
+
+const LOCAL_PROXY_MISMATCH_MESSAGE = '本地代理只能绑定到它所在 VPS 上的槽位'
 
 function clusterNodesOf(ctx) {
   try {
@@ -371,7 +378,7 @@ async function commitImportedCodexVm({
 }) {
   const wasCodex = isCodexVm(existing)
   const previousPolicy = existing.policy && typeof existing.policy === 'object' ? existing.policy : {}
-  const saved = upsertCodexAccount(cfg.paths.project, existing.id, account)
+  const saved = upsertCodexAccount(cfg.paths.project, existing.id, account, { replaceCredentials: true })
   existing.platform = 'openai'
   existing.family = 'codex'
   existing.codex_kernel = true
@@ -529,6 +536,55 @@ export function createPanelHandler(ctx) {
     const vm = getVm(cfg.paths.project, id)
     if (!vm?.proxy?.id || validTimezone(vm.timezone)) return null
     return syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, id, { force: true })
+  }
+
+  /**
+   * Geo-probe through the slot's real exit: its bound SOCKS5, or the local row
+   * of the VPS that runs it (control plane, or the node's own route). A local
+   * probe refreshes that row's geo, so the pool page shows the same answer.
+   */
+  async function probeVmExitGeo(vm) {
+    const proxy = vm?.proxy || null
+    if (!hasBoundExit(proxy)) return { ok: false, code: 'proxy_required', error: '槽位未绑定出口' }
+    const blocked = proxyBlockedReason(proxy)
+    if (blocked) return { ok: false, code: blocked, error: blocked }
+    if (!isLocalEgressProxy(proxy)) {
+      const url = boundProxyUrl(proxy)
+      if (!url) return { ok: false, code: 'proxy_url_missing', error: 'bound proxy has no URL' }
+      const r = await proxyPool.geoLookup(url, { timeoutMs: proxyPool.state?.config?.geo_timeout_ms })
+      if (!r?.ok) return { ok: false, code: 'geo_lookup_failed', error: String(r?.error || 'geo lookup failed') }
+      return { ok: true, via: 'socks5', proxy_id: proxy.id || null, geo: r.geo }
+    }
+    const host = slotHost(vm)
+    const via = host.nodeId ? 'node' : 'local'
+    if (!host.nodeId) {
+      // A control-plane Codex slot leaves through the deployment proxy, not the host route.
+      let hostUrl = ''
+      try {
+        hostUrl = host.localExitProxyUrl(vm) || ''
+      } catch {}
+      if (hostUrl) {
+        const r = await proxyPool.geoLookup(hostUrl, { timeoutMs: proxyPool.state?.config?.geo_timeout_ms })
+        if (!r?.ok) return { ok: false, code: 'geo_lookup_failed', error: String(r?.error || 'geo lookup failed') }
+        return { ok: true, via: 'deploy_proxy', node_id: null, proxy_id: proxy.id || null, geo: r.geo }
+      }
+    }
+    const rowId = localEgressIdForNode(host.nodeId)
+    if (proxyPool.getProxyByIdWithAuth(rowId)) {
+      const r = await proxyPool.detectGeo(rowId, { force: true })
+      if (!r?.ok) return { ok: false, code: 'geo_lookup_failed', error: String(r?.error || 'geo lookup failed') }
+      return { ok: true, via, node_id: host.nodeId || null, proxy_id: rowId, geo: r.geo }
+    }
+    // Local egress never seeded as a row: look up over the host's route directly.
+    let url
+    try {
+      url = host.localExitProxyUrl(vm)
+    } catch (err) {
+      return { ok: false, code: err?.code || 'node_egress_unavailable', error: String(err?.message || err) }
+    }
+    const r = await proxyPool.exitGeo(host.nodeId ? `node:${host.nodeId}` : 'local', url, { detect: true, force: true })
+    if (!r?.ok) return { ok: false, code: 'geo_lookup_failed', error: String(r?.error || 'geo lookup failed') }
+    return { ok: true, via, node_id: host.nodeId || null, proxy_id: proxy.id || null, geo: r.geo }
   }
 
   async function bringUpImportedVm(id) {
@@ -2619,6 +2675,19 @@ export function createPanelHandler(ctx) {
         if (result.status) return json(res, result.status, result.body)
         return json(res, 200, result)
       }
+      // POST /api/panel/vms/:id/exit-probe — geo probe through the slot's real exit.
+      if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/exit-probe$/.test(p)) {
+        const id = p.split('/')[4]
+        const vm = getVm(cfg.paths.project, id)
+        if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
+        const result = await probeVmExitGeo(vm)
+        if (!result.ok)
+          return json(res, 502, {
+            ok: false,
+            error: { code: result.code || 'exit_probe_failed', message: result.error },
+          })
+        return json(res, 200, panel.ok({ vm_id: id, ...result }))
+      }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/openai-quota\/refresh$/.test(p)) {
         const id = p.split('/')[4]
         const result = await panel.buildOpenaiQuotaRefresh({ cfg, id, routingConfig: ctx.routingConfig })
@@ -2973,6 +3042,89 @@ export function createPanelHandler(ctx) {
         })
       }
 
+      // POST /api/panel/vms/:id/credential/clear - drop the account, keep the slot.
+      // local patch (patches/clear-credential): clear the credential only; the slot
+      // and its container stay exactly as they are, so a new account can be
+      // imported into the same slot afterwards.
+      if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/credential\/clear$/.test(p)) {
+        const id = p.split('/')[4]
+        const vmPath = path.join(cfg.paths.project, 'vms', `${id}.json`)
+        if (!fs.existsSync(vmPath)) {
+          return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
+        }
+        await readBody(req, 32 * 1024).catch(() => ({}))
+        return await withVmLock(vmPath, async () => {
+          if (!fs.existsSync(vmPath)) {
+            return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'VM not found' } })
+          }
+          const prev = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
+          prev.id = prev.id || id
+          const slotDir = path.join(cfg.paths.project, 'vms', id)
+          const removed = []
+          for (const file of [
+            path.join(slotDir, 'codex-credentials.json'),
+            path.join(slotDir, 'cli-home', '.codex', 'auth.json'),
+            path.join(slotDir, 'cli-home', '.claude', 'credentials.json'),
+            path.join(slotDir, 'cli-home', '.claude', '.credentials.json'),
+          ]) {
+            try {
+              if (fs.existsSync(file)) {
+                fs.rmSync(file, { force: true })
+                removed.push(path.relative(cfg.paths.project, file))
+              }
+            } catch {}
+          }
+          const vm =
+            patchVmRecord(cfg.paths.project, id, (record) => {
+              record.email = null
+              record.account_uuid = null
+              record.org_uuid = null
+              record.expires_at = null
+              record.codex = {}
+              record.claude = {}
+              record.worker_credential = null
+              record.refresh_status = null
+              record.refresh_error = null
+              record.restriction_reason = null
+              record.restriction_until = null
+              record.schedulable = false
+              record.schedule_disabled_reason = 'no_credential'
+              return record
+            }) || prev
+          try {
+            invalidateLiveCredentialCache()
+          } catch {}
+          // The kernel still holds the old token in memory: stop it, then bring a
+          // credential-less kernel back so the slot matches an empty slot.
+          const kernel = { stopped: false, restarted: false, error: null }
+          try {
+            kernel.stopped = !!stopCodexKernel(id)
+            if (isCodexVm(vm)) {
+              const started = await ensureCodexKernel(slotExec(cfg.paths.project, getVm(cfg.paths.project, id) || vm), {
+                timeoutMs: 8000,
+              })
+              kernel.restarted = !!started?.ok
+              if (!started?.ok) kernel.error = started?.reason || 'codex_kernel_start_failed'
+            }
+          } catch (e) {
+            kernel.error = String(e?.message || e).slice(0, 160)
+          }
+          try {
+            const repo = ctx.accountQuota?.repo
+            const row = repo && typeof repo.get === 'function' ? repo.get(id) : null
+            if (row && typeof repo.save === 'function') repo.save({ ...row, email: null, name: id })
+          } catch {}
+          const saved = getVm(cfg.paths.project, id) || vm
+          return json(
+            res,
+            200,
+            panel.ok({
+              cleared: { vm_id: id, files: removed, kernel },
+              vm: summarizeVm(saved, cfg.paths.project, ctx.routingConfig),
+            }),
+          )
+        })
+      }
       // POST /api/panel/vms/:id/reset-fingerprint
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/reset-fingerprint$/.test(p)) {
         const id = p.split('/')[4]
@@ -3346,7 +3498,18 @@ export function createPanelHandler(ctx) {
           }
         }
         // An explicit exit (e.g. local egress for a node: that VPS's own route) replaces auto-allocation.
-        const pickedProxyId = typeof body.proxy_id === 'string' ? body.proxy_id.trim() : ''
+        let pickedProxyId = typeof body.proxy_id === 'string' ? body.proxy_id.trim() : ''
+        if (pickedProxyId && isLocalEgressId(pickedProxyId)) {
+          // Local egress is per VPS: a generic pick resolves to the target machine's own row.
+          const resolved = proxyPool.resolveLocalTarget(pickedProxyId, nodeId || null)
+          if (!resolved.ok) {
+            return json(res, 409, {
+              ok: false,
+              error: { code: resolved.error, message: LOCAL_PROXY_MISMATCH_MESSAGE },
+            })
+          }
+          pickedProxyId = resolved.id
+        }
         if (pickedProxyId) {
           const row = proxyPool.snapshot().proxies.find((proxy) => proxy.id === pickedProxyId)
           const owner = ident.role === 'user' ? normalizeOwnerId(req.panelUserId) : null
@@ -4737,6 +4900,8 @@ export function createPanelHandler(ctx) {
       if (req.method === 'POST' && p === '/api/panel/proxies/local') {
         const result = proxyPool.ensureLocal()
         if (result.created) ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(result.proxy.id))
+        // Enabling local egress on a cluster that already has nodes: each VPS gets its row now.
+        proxyPool.syncLocalNodes(clusterNodesOf(ctx).map((node) => node.id))
         return json(res, 200, panel.ok(result))
       }
       if (req.method === 'POST' && p === '/api/panel/proxies/import') {
@@ -5003,7 +5168,11 @@ export function createPanelHandler(ctx) {
         const result = proxyPool.bind(id, vmId)
         if (!result.ok) {
           const message =
-            result.error === 'proxy_bind_limit' ? `SOCKS5 最多绑定 ${result.max || 5} 台虚拟机` : result.error
+            result.error === 'proxy_bind_limit'
+              ? `SOCKS5 最多绑定 ${result.max || 5} 台虚拟机`
+              : result.error === 'local_proxy_node_mismatch'
+                ? LOCAL_PROXY_MISMATCH_MESSAGE
+                : result.error
           return json(res, 400, {
             ok: false,
             error: { type: 'invalid_request_error', code: result.error, message, details: result },

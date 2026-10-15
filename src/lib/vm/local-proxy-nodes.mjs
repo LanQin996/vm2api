@@ -1,10 +1,10 @@
 /**
- * Display grouping for the shared px-local record.
- *
- * Quota stays one bind_limit across every node. These helpers only attach
- * placement labels so the panel can say which VPS a bound slot actually exits
- * from. Per-node capacity is a different decision (see #330).
+ * Panel labels for local egress. Each VPS has its own local row (`px-local`
+ * for the control plane, `px-local-<nodeId>` per node), so bind capacity,
+ * probe and geo are per machine; these helpers attach the node's display name
+ * for admins and redact it for tenants.
  */
+import { isLocalEgressProxy, localEgressNodeId } from './egress.mjs'
 
 export function canRevealClusterNodes(role) {
   const r = String(role || '')
@@ -39,53 +39,12 @@ function boundIdsOf(proxy) {
 }
 
 /**
- * Group bound VM ids by the slot's placement node. Control plane uses
- * `node_id: null`. `node_name` is only filled when `reveal` is true.
+ * Shape a public proxy row for the panel. A local row names its own VPS for
+ * admins; tenants keep their own VM ids and no node names.
  */
-export function groupLocalBoundNodes({ boundVmIds = [], vms = [], nodes = [], reveal = false } = {}) {
-  const vmById = new Map((vms || []).map((vm) => [String(vm.id), vm]))
-  const groups = new Map()
-  for (const rawId of boundVmIds || []) {
-    const id = String(rawId || '').trim()
-    if (!id) continue
-    const nodeId = vmNodeIdOf(vmById.get(id))
-    const key = nodeId || ''
-    let group = groups.get(key)
-    if (!group) {
-      group = { node_id: nodeId, bound_vm_ids: [] }
-      if (reveal) group.node_name = nodeId ? nodeNameOf(nodes, nodeId) : null
-      groups.set(key, group)
-    }
-    group.bound_vm_ids.push(id)
-  }
-  return [...groups.values()].sort((a, b) => {
-    if (!a.node_id && b.node_id) return -1
-    if (a.node_id && !b.node_id) return 1
-    return String(a.node_id || '').localeCompare(String(b.node_id || ''))
-  })
-}
-
-function isLocalProxy(proxy) {
-  if (!proxy || typeof proxy !== 'object') return false
-  const id = String(proxy.id || '')
-    .trim()
-    .toLowerCase()
-  const scheme = String(proxy.scheme || proxy.kind || '')
-    .trim()
-    .toLowerCase()
-  const host = String(proxy.host || '')
-    .trim()
-    .toLowerCase()
-  return id === 'px-local' || scheme === 'local' || host === 'local'
-}
-
-/**
- * Shape a public proxy row for the panel. Local stays one record; admin sees
- * per-node bound groups, tenants keep their own VM ids and no node names.
- */
-export function annotatePublicLocalProxy(proxy, { reveal = false, vms = [], nodes = [], ownerVmIds = null } = {}) {
+export function annotatePublicLocalProxy(proxy, { reveal = false, nodes = [], ownerVmIds = null } = {}) {
   if (!proxy) return proxy
-  if (!isLocalProxy(proxy)) {
+  if (!isLocalEgressProxy(proxy)) {
     if (reveal) return proxy
     const out = { ...proxy }
     delete out.node_name
@@ -103,14 +62,12 @@ export function annotatePublicLocalProxy(proxy, { reveal = false, vms = [], node
     bound_vm_id: ids[0] || null,
     bound_count: ids.length,
   }
-  // Shared px-local is not one node's exit; placement lives on bound_nodes / the VM.
-  delete out.node_id
-  delete out.node_name
-  if (reveal) {
-    out.bound_nodes = groupLocalBoundNodes({ boundVmIds: ids, vms, nodes, reveal: true })
-  } else {
-    delete out.bound_nodes
-  }
+  const nodeId = localEgressNodeId(proxy.id)
+  out.node_id = nodeId
+  // One row per VPS: the row itself names its machine, no per-node grouping left to do.
+  delete out.bound_nodes
+  if (reveal) out.node_name = nodeId ? nodeNameOf(nodes, nodeId) : null
+  else delete out.node_name
   return out
 }
 

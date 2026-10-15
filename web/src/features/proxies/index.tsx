@@ -42,7 +42,7 @@ import {
   proxyBoundIds,
   proxyLabel,
   proxyInFilter,
-  proxyIsLocal,
+  proxyIsControlLocal,
   proxyMatchesQuery,
   readPositive,
   sortedProxies,
@@ -488,7 +488,7 @@ export function ProxiesPage() {
                 followProxyTimezone={cfg.follow_proxy_timezone !== false}
               />
             ) : (
-              <ProxyImportPanel hasLocal={list.some(proxyIsLocal)} />
+              <ProxyImportPanel hasLocal={list.some(proxyIsControlLocal)} />
             )}
           </div>
         </SheetContent>

@@ -353,33 +353,41 @@ test('local proxy node labels are present for admin and absent for tenant', asyn
     claude: {},
   })
 
-  const pool = new ProxyPool({ dataDir })
-  t.after(() => pool.stopScheduler())
-  pool.ensureLocal()
-  assert.equal(pool.bind('px-local', 'vm-ctrl').ok, true)
-  assert.equal(pool.bind('px-local', 'vm-tokyo').ok, true)
-  assert.equal(pool.bind('px-local', 'vm-tenant').ok, true)
-
-  const nodes = [{ id: 'node-a', label: '东京-01' }]
   const vms = [
     { id: 'vm-ctrl' },
     { id: 'vm-tokyo', node_id: 'node-a' },
     { id: 'vm-tenant', node_id: 'node-a', owner_user_id: 'user-1' },
   ]
+  const pool = new ProxyPool({
+    dataDir,
+    vmNodeOf: (vmId) => vms.find((vm) => vm.id === vmId)?.node_id || null,
+  })
+  t.after(() => pool.stopScheduler())
+  pool.ensureLocal()
+  // A generic px-local bind lands each slot on its own VPS's local row.
+  assert.equal(pool.bind('px-local', 'vm-ctrl').proxy.id, 'px-local')
+  assert.equal(pool.bind('px-local', 'vm-tokyo').proxy.id, 'px-local-node-a')
+  assert.equal(pool.bind('px-local', 'vm-tenant').proxy.id, 'px-local-node-a')
+
+  const nodes = [{ id: 'node-a', label: '东京-01' }]
   const adminSnap = pool.panelSnapshot({ role: 'admin', vms, nodes })
   const local = adminSnap.proxies.find((p) => p.id === 'px-local')
   assert.ok(local)
-  assert.equal(local.node_name, undefined)
-  assert.deepEqual(
-    local.bound_nodes.map((g) => ({ node_id: g.node_id, node_name: g.node_name, ids: g.bound_vm_ids })),
-    [
-      { node_id: null, node_name: null, ids: ['vm-ctrl'] },
-      { node_id: 'node-a', node_name: '东京-01', ids: ['vm-tokyo', 'vm-tenant'] },
-    ],
-  )
+  assert.equal(local.node_id, null)
+  assert.equal(local.node_name, null)
+  assert.deepEqual(local.bound_vm_ids, ['vm-ctrl'])
+  const tokyoRow = adminSnap.proxies.find((p) => p.id === 'px-local-node-a')
+  assert.ok(tokyoRow)
+  assert.equal(tokyoRow.node_id, 'node-a')
+  assert.equal(tokyoRow.node_name, '东京-01')
+  assert.deepEqual(tokyoRow.bound_vm_ids, ['vm-tokyo', 'vm-tenant'])
 
   const tenantSnap = pool.panelSnapshot({ role: 'user', ownerUserId: 'user-1', vms, nodes })
-  const tenantLocal = tenantSnap.proxies.find((p) => p.id === 'px-local')
+  assert.equal(
+    tenantSnap.proxies.find((p) => p.id === 'px-local'),
+    undefined,
+  )
+  const tenantLocal = tenantSnap.proxies.find((p) => p.id === 'px-local-node-a')
   assert.ok(tenantLocal)
   assert.equal(tenantLocal.node_name, undefined)
   assert.equal(tenantLocal.bound_nodes, undefined)

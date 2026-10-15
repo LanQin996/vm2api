@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import {
   annotatePublicLocalProxy,
   canRevealClusterNodes,
-  groupLocalBoundNodes,
   localProxyNodeFields,
 } from '../../src/lib/vm/local-proxy-nodes.mjs'
 
@@ -14,21 +13,21 @@ test('canRevealClusterNodes is admin/super only', () => {
   assert.equal(canRevealClusterNodes(undefined), false)
 })
 
-test('groupLocalBoundNodes splits control plane from named extension nodes', () => {
-  const groups = groupLocalBoundNodes({
-    boundVmIds: ['vm-ctrl', 'vm-tokyo', 'vm-osaka'],
-    vms: [{ id: 'vm-ctrl' }, { id: 'vm-tokyo', node_id: 'node-a' }, { id: 'vm-osaka', node_id: 'node-b' }],
-    nodes: [
-      { id: 'node-a', label: '东京-01' },
-      { id: 'node-b', label: '大阪-02' },
-    ],
-    reveal: true,
-  })
-  assert.deepEqual(groups, [
-    { node_id: null, node_name: null, bound_vm_ids: ['vm-ctrl'] },
-    { node_id: 'node-a', node_name: '东京-01', bound_vm_ids: ['vm-tokyo'] },
-    { node_id: 'node-b', node_name: '大阪-02', bound_vm_ids: ['vm-osaka'] },
-  ])
+test('annotatePublicLocalProxy names each VPS’s own local row for admins', () => {
+  const nodes = [{ id: 'node-a', label: '东京-01' }]
+  const ctrl = annotatePublicLocalProxy(
+    { id: 'px-local', kind: 'local', bound_vm_ids: ['vm-ctrl'] },
+    { reveal: true, nodes },
+  )
+  assert.equal(ctrl.node_id, null)
+  assert.equal(ctrl.node_name, null)
+  const tokyo = annotatePublicLocalProxy(
+    { id: 'px-local-node-a', kind: 'local', bound_vm_ids: ['vm-tokyo'] },
+    { reveal: true, nodes },
+  )
+  assert.equal(tokyo.node_id, 'node-a')
+  assert.equal(tokyo.node_name, '东京-01')
+  assert.equal(tokyo.bound_nodes, undefined)
 })
 
 test('annotatePublicLocalProxy redacts node names and other tenants for user', () => {
@@ -44,7 +43,7 @@ test('annotatePublicLocalProxy redacts node names and other tenants for user', (
     vms: [{ id: 'vm-a' }, { id: 'vm-b', node_id: 'node-a' }],
     nodes: [{ id: 'node-a', label: '东京-01' }],
   })
-  assert.equal(admin.bound_nodes[1].node_name, '东京-01')
+  assert.equal(admin.node_name, null)
   assert.equal(admin.geo.ip, '203.0.113.9')
 
   const tenant = annotatePublicLocalProxy(proxy, {

@@ -9,6 +9,7 @@ import {
   platformLabel,
   compactEmail,
   slotAccountLabel,
+  slotCredentialLabel,
   vmKindOf,
 } from '@/lib/vm-kind'
 
@@ -69,6 +70,36 @@ describe('kindFromModel / slotAccountLabel', () => {
     expect(compactEmail('no-at-but-extremely-long-label-here', 12)).toBe(
       'no-at-but-e…'
     )
+  })
+})
+
+describe('slotCredentialLabel', () => {
+  it('shows full emails on blades and local parts on compact units', () => {
+    for (const platform of ['openai', 'anthropic']) {
+      const vm = {
+        id: 'vm-01',
+        platform,
+        email: 'user@example.com',
+        has_token: true,
+      }
+      expect(slotCredentialLabel(vm)).toBe('user@example.com')
+      expect(slotCredentialLabel(vm, true)).toBe('user')
+    }
+  })
+
+  it('distinguishes imported accounts without email from empty slots at both sizes', () => {
+    for (const compact of [false, true]) {
+      expect(slotCredentialLabel({ has_token: true }, compact)).toBe(
+        '已导入账号 · 邮箱未知'
+      )
+      expect(slotCredentialLabel({ has_refresh: true }, compact)).toBe(
+        '已导入账号 · 邮箱未知'
+      )
+      expect(slotCredentialLabel({ has_token: false }, compact)).toBe('空槽')
+      expect(
+        slotCredentialLabel({ email: '  ', has_token: true }, compact)
+      ).toBe('已导入账号 · 邮箱未知')
+    }
   })
 })
 

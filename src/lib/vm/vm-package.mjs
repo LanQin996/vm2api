@@ -539,7 +539,8 @@ async function attachProxy(projectRoot, id, spec, proxyPool, ownerUserId) {
     if (!proxyId) return fail('proxy_import_failed', '本机直连出口不可用')
     const bound = proxyPool.bind(proxyId, id)
     if (!bound.ok) return fail(bound.error || 'proxy_bind_failed', '绑定直连出口失败')
-    bindVmProxy(projectRoot, id, proxyPool.getProxyByIdWithAuth(proxyId))
+    // bind() lands a node slot on its own VPS's local row, not the control plane's.
+    bindVmProxy(projectRoot, id, proxyPool.getProxyByIdWithAuth(bound.proxy?.id || proxyId))
     return { ok: true }
   }
   const ensured = proxyPool.ensureSocks(spec.proxy, { ownerUserId, label: spec.proxy.label })

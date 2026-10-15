@@ -66,7 +66,7 @@ import {
   usageErrorText,
 } from '../oauth/crs-usage-probe.mjs'
 import { proxyHasVm } from '../vm/proxy-pool.mjs'
-import { isLocalEgressProxy } from '../vm/egress.mjs'
+import { isLocalEgressId, isLocalEgressProxy } from '../vm/egress.mjs'
 import { canRevealClusterNodes, localProxyNodeFields, nodeNameOf } from '../vm/local-proxy-nodes.mjs'
 import { collectLivePanelCredentials } from './panel-live-credentials.mjs'
 import { officialCcHome, readOfficialCcStatus, normalizeOfficialCcConfig } from '../oauth/official-cc-bootstrap.mjs'
@@ -1529,7 +1529,8 @@ function poolProxyForVm(v, poolSnap) {
   const list = poolSnap?.proxies || []
   if (!list.length) return null
   const id = v.proxy_id || v.proxy?.id
-  return list.find((p) => (id && p.id === id) || proxyHasVm(p, v.id)) || null
+  // The pool's binding wins over the slot's recorded id (a node slot may still record px-local).
+  return list.find((p) => proxyHasVm(p, v.id)) || (id && list.find((p) => p.id === id)) || null
 }
 
 function proxyConfigured(v, hit) {
@@ -1543,7 +1544,7 @@ function canImportCredential(v, hit) {
   const base = v.proxy || {}
   const scheme = String(base.scheme || base.kind || '').toLowerCase()
   const host = String(base.host || '').toLowerCase()
-  if (base.id === 'px-local' || scheme === 'local' || host === 'local') return true
+  if (isLocalEgressId(base.id) || scheme === 'local' || host === 'local') return true
   return !!(base.url || (base.host && base.port) || v.proxy_id)
 }
 
@@ -1559,7 +1560,7 @@ function mergeVmProxy(v, poolSnap, { role = 'admin', nodes = [] } = {}) {
     host: normalizeSocksHost(hit?.host || base.host) || hit?.host || base.host || null,
     port: hit?.port ?? base.port ?? null,
     label: hit?.label || null,
-    scheme: hit?.scheme || base.scheme || (hit?.id === 'px-local' || base.id === 'px-local' ? 'local' : 'socks5'),
+    scheme: hit?.scheme || base.scheme || (isLocalEgressId(hit?.id) || isLocalEgressId(base.id) ? 'local' : 'socks5'),
     has_auth: hit?.has_auth ?? !!(base.url && /\/\/[^/@]+@/.test(base.url)),
     status: hit?.status ?? null,
     enabled: hit?.enabled ?? null,

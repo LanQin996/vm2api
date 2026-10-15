@@ -180,7 +180,7 @@ export function VmDetailPage() {
   const pool = proxies.data?.proxies || []
   const boundId = String(proxy.id || vm.proxy_id || '')
   // 本地代理固定第一。已绑到本槽的留在下拉里，否则正在用它时列表里没有。
-  const free = proxiesForVmBind(pool, id, 5)
+  const free = proxiesForVmBind(pool, id, 5, vm.node_id ?? null)
   const pol =
     (seed.data?.seed_policy as Record<string, unknown> | undefined) || {}
   const syncTelemetry =

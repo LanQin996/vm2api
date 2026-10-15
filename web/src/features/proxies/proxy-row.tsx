@@ -29,9 +29,9 @@ import { type ProxyHover, useProxyHovered } from './proxy-hover'
 import { SeatCells } from './proxy-seats'
 import {
   LOCAL_PROXY_HINT,
-  LOCAL_PROXY_SHARED_QUOTA,
-  localBoundGroupLabel,
-  localBoundGroups,
+  localProxyExitText,
+  localProxyFitsNode,
+  localProxyProbeText,
   proxyBindLimit,
   proxyBindable,
   proxyBoundIds,
@@ -120,11 +120,13 @@ export function ProxyRow({
   const free = Math.max(0, limit - ids.length)
   const error =
     proxy.last_error && !proxy.blocked_reason ? proxy.last_error : ''
+  // 本地代理只接它所在 VPS 上的槽位。
   const accepts =
     !!dragVm &&
     bindable &&
     free > 0 &&
     !ids.includes(dragVm) &&
+    localProxyFitsNode(proxy, vmById.get(dragVm)?.node_id ?? null) &&
     !pending.binding
   const alreadyHere = !!dragVm && ids.includes(dragVm)
   const detailId = `proxy-detail-${id}`
@@ -132,7 +134,7 @@ export function ProxyRow({
     ? proxyHostText(proxy)
     : proxy.label || proxyHostText(proxy)
   const sub = local
-    ? `${LOCAL_PROXY_HINT} · ${LOCAL_PROXY_SHARED_QUOTA}`
+    ? `${LOCAL_PROXY_HINT} · ${localProxyExitText(proxy)}`
     : proxy.label
       ? proxyHostText(proxy)
       : ''
@@ -244,11 +246,7 @@ export function ProxyRow({
           aria-valuemin={0}
           aria-valuemax={limit}
           aria-valuenow={ids.length}
-          aria-valuetext={
-            local
-              ? `已绑 ${ids.length} / ${limit}（${LOCAL_PROXY_SHARED_QUOTA}）`
-              : `已绑 ${ids.length} / ${limit}`
-          }
+          aria-valuetext={`已绑 ${ids.length} / ${limit}`}
           className='flex w-[88px] shrink-0 items-center gap-2 @3xl/plist:w-auto'
         >
           <span className='w-9 shrink-0 text-xs tabular-nums'>
@@ -456,9 +454,10 @@ function ProxyDetail({
 }) {
   const pxId = proxy.id || ''
   const geo = proxy.geo
-  const groups = local ? localBoundGroups(proxy, vmById) : []
-  const showGroups =
-    local && (proxy.bound_nodes != null || groups.some((g) => g.node_id))
+  // 本地代理一台 VPS 一条：绑定入口只列这台机器上的槽位。
+  const pickable = local
+    ? vms.filter((vm) => localProxyFitsNode(proxy, vm.node_id ?? null))
+    : vms
   const chip = (vmId: string) => (
     <VmChip
       key={vmId}
@@ -481,8 +480,8 @@ function ProxyDetail({
           {local ? (
             <span className='text-muted-foreground'>
               {' '}
-              · {LOCAL_PROXY_HINT}，每台机器自己的公网出口，绑定额度
-              {LOCAL_PROXY_SHARED_QUOTA}
+              · {LOCAL_PROXY_HINT}，{localProxyExitText(proxy)}
+              ，绑定额度按这台 VPS 单独计
             </span>
           ) : null}
           <span className='text-muted-foreground'>
@@ -500,7 +499,7 @@ function ProxyDetail({
                 {[geo.isp, geo.ip].filter(Boolean).length
                   ? ` · ${[geo.isp, geo.ip].filter(Boolean).join(' · ')}`
                   : ''}
-                {local ? ' · 控制面探测，节点槽从节点本机出网' : ''}
+                {local ? ` · ${localProxyProbeText(proxy)}` : ''}
               </span>
             </span>
           ) : (
@@ -533,29 +532,15 @@ function ProxyDetail({
         </DetailField>
         <DetailField label='已绑槽位'>
           <div className='space-y-1.5'>
-            {showGroups ? (
-              groups.map((group) => (
-                <div key={group.node_id || 'control'} className='space-y-1'>
-                  <p className='text-[11px] text-muted-foreground'>
-                    {localBoundGroupLabel(group)}
-                    {group.node_id ? ' · 出口为该节点本机' : ''}
-                  </p>
-                  <div className='flex flex-wrap gap-1'>
-                    {group.bound_vm_ids.map(chip)}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <div className='flex flex-wrap items-center gap-1'>
-                {ids.map(chip)}
-                {!ids.length ? (
-                  <span className='text-muted-foreground'>还没有绑定槽位</span>
-                ) : null}
-              </div>
-            )}
+            <div className='flex flex-wrap items-center gap-1'>
+              {ids.map(chip)}
+              {!ids.length ? (
+                <span className='text-muted-foreground'>还没有绑定槽位</span>
+              ) : null}
+            </div>
             {bindable && free > 0 ? (
               <ProxyBindPicker
-                vms={vms}
+                vms={pickable}
                 boundHere={ids}
                 ownerOf={ownerOf}
                 free={free}
@@ -663,7 +648,12 @@ function GeoText({
   const geo = proxy.geo
   const country = geo?.country_code || geo?.country
   const title =
-    [geo?.timezone, geo?.isp, geo?.ip, local ? '控制面探测' : null]
+    [
+      geo?.timezone,
+      geo?.isp,
+      geo?.ip,
+      local ? localProxyProbeText(proxy) : null,
+    ]
       .filter(Boolean)
       .join(' · ') || undefined
   return (
@@ -697,7 +687,7 @@ function Latency({ proxy, local }: { proxy: VmProxySnap; local: boolean }) {
   return (
     <div
       className='flex shrink-0 items-end gap-1.5'
-      title={`${ago ? `${ago}探测` : '未探测'}${local ? ' · 控制面' : ''}`}
+      title={`${ago ? `${ago}探测` : '未探测'}${local ? ` · ${localProxyProbeText(proxy)}` : ''}`}
     >
       <span aria-hidden='true' className='flex items-end gap-[2px] pb-px'>
         {BAR_H.map((h, i) => (

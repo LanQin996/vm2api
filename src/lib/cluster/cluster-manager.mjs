@@ -98,8 +98,14 @@ export class ClusterManager {
     socketDir = process.env.VM2API_CLUSTER_SOCKET_DIR,
     vmsOnNode = () => [],
     logger = console,
+    onNodesChanged = null,
+    onLinkState = null,
   }) {
     this.listen = listen
+    // Node add / remove: per-node resources (each VPS's local egress row) follow the list.
+    this.onNodesChanged = onNodesChanged
+    // Link settled (ready after its health check, or failed): per-node consumers refresh.
+    this.onLinkState = onLinkState
     this.containerName = containerName
     this._local = null
     this._localAt = 0
@@ -146,8 +152,14 @@ export class ClusterManager {
     const link = new SshLink({ id: node.id, resolveTarget: () => this._targetFor(node.id) })
     link.on('state', (state) => {
       this.logger.log(JSON.stringify({ event: 'cluster-link', node: node.id, state, error: link.error?.code || null }))
-      if (state === 'ready') this._checkHealth(node.id)
-      else this.health.delete(node.id)
+      if (state === 'ready') {
+        Promise.resolve(this._checkHealth(node.id))
+          .catch(() => {})
+          .finally(() => this._linkState(node.id, state))
+      } else {
+        this.health.delete(node.id)
+        this._linkState(node.id, state)
+      }
     })
     this.links.set(node.id, link)
     const bridge = new SocketRelay({
@@ -295,7 +307,24 @@ export class ClusterManager {
       host_key_alg: spec.host_key_alg || 'unknown',
     })
     this._attach(node)
+    this._nodesChanged()
     return this._view(node)
+  }
+
+  _linkState(id, state) {
+    try {
+      this.onLinkState?.(id, state)
+    } catch (err) {
+      this.logger.warn(`[cluster] link-state hook failed: ${err.message}`)
+    }
+  }
+
+  _nodesChanged() {
+    try {
+      this.onNodesChanged?.()
+    } catch (err) {
+      this.logger.warn(`[cluster] nodes-changed hook failed: ${err.message}`)
+    }
   }
 
   async remove(id) {
@@ -315,6 +344,7 @@ export class ClusterManager {
     this.health.delete(id)
     this.installs.delete(id)
     this.repo.remove(id)
+    this._nodesChanged()
   }
 
   reconnect(id) {

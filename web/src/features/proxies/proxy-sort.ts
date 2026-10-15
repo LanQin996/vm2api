@@ -1,9 +1,5 @@
-import type { LocalBoundNode, Vm, VmProxySnap } from '@/types/panel-vm'
-import {
-  type LocalProxyLabelOpts,
-  localProxyText,
-  proxyHostLabel,
-} from '@/lib/vm-status'
+import type { VmProxySnap } from '@/types/panel-vm'
+import { type LocalProxyLabelOpts, proxyHostLabel } from '@/lib/vm-status'
 
 export type ProxySortKey = 'status' | 'latency' | 'seats' | 'geo' | 'host'
 
@@ -27,14 +23,35 @@ export function proxyHealthKey(prx: VmProxySnap): ProxyHealthKey {
 }
 
 export function proxyIsLocal(prx: VmProxySnap): boolean {
-  return prx.kind === 'local' || prx.scheme === 'local' || prx.id === 'px-local'
+  return (
+    prx.kind === 'local' ||
+    prx.scheme === 'local' ||
+    prx.id === 'px-local' ||
+    String(prx.id || '').startsWith('px-local-')
+  )
+}
+
+/** 控制面自己的那条本地代理（`px-local`）。节点那几条跟着它自动建。 */
+export function proxyIsControlLocal(prx: VmProxySnap): boolean {
+  return proxyIsLocal(prx) && !proxyLocalNodeId(prx)
+}
+
+/** 本地代理每台 VPS 一条：控制面 `px-local`，集群节点 `px-local-<节点>`。 */
+export function proxyLocalNodeId(prx: VmProxySnap): string | null {
+  return prx.node_id || null
 }
 
 /** 本地代理 = 槽位所在那台机器自己的公网出口。 */
 export const LOCAL_PROXY_HINT = '本地代理'
 
-/** 绑定额度跨控制面与所有集群节点共用同一条 px-local。 */
-export const LOCAL_PROXY_SHARED_QUOTA = '所有节点共用'
+/** 本地代理的出口与探测都在它自己那台 VPS 上。 */
+export function localProxyExitText(prx: VmProxySnap): string {
+  return proxyLocalNodeId(prx) ? '出口为该节点本机' : '控制面本机出口'
+}
+
+export function localProxyProbeText(prx: VmProxySnap): string {
+  return proxyLocalNodeId(prx) ? '经节点本机探测' : '控制面本机探测'
+}
 
 /** 本地代理固定排第一，其余保持原相对顺序。 */
 function localFirst(a: VmProxySnap, b: VmProxySnap): number {
@@ -78,49 +95,6 @@ export function proxyBoundIds(prx: VmProxySnap | undefined): string[] {
   return prx.bound_vm_id ? [prx.bound_vm_id] : []
 }
 
-export function localBoundGroups(
-  proxy: VmProxySnap,
-  vmById: Map<string, Pick<Vm, 'id' | 'node_id' | 'node_name'>>
-): LocalBoundNode[] {
-  if (Array.isArray(proxy.bound_nodes) && proxy.bound_nodes.length) {
-    return proxy.bound_nodes
-  }
-  const groups = new Map<string, LocalBoundNode>()
-  for (const id of proxyBoundIds(proxy)) {
-    const vm = vmById.get(id)
-    const nodeId = vm?.node_id || null
-    const key = nodeId || ''
-    let group = groups.get(key)
-    if (!group) {
-      group = {
-        node_id: nodeId,
-        node_name: vm?.node_name ?? null,
-        bound_vm_ids: [],
-      }
-      groups.set(key, group)
-    } else if (!group.node_name && vm?.node_name) {
-      group.node_name = vm.node_name
-    }
-    group.bound_vm_ids.push(id)
-  }
-  return [...groups.values()].sort((a, b) => {
-    if (!a.node_id && b.node_id) return -1
-    if (a.node_id && !b.node_id) return 1
-    return String(a.node_name || a.node_id || '').localeCompare(
-      String(b.node_name || b.node_id || ''),
-      'zh'
-    )
-  })
-}
-
-export function localBoundGroupLabel(group: LocalBoundNode): string {
-  return localProxyText({
-    nodeName: group.node_name,
-    nodeId: group.node_id,
-    revealNode: true,
-  })
-}
-
 export function proxyBindLimit(
   prx: VmProxySnap | undefined,
   fallback: number
@@ -162,12 +136,13 @@ export function proxyOptionLabel(
   const limit = proxyBindLimit(prx, poolBindLimit)
   if (proxyIsLocal(prx)) {
     const nodeExit =
-      !!opts &&
-      typeof opts === 'object' &&
-      opts.revealNode &&
-      !!(opts.nodeName || opts.nodeId)
+      !!proxyLocalNodeId(prx) ||
+      (!!opts &&
+        typeof opts === 'object' &&
+        opts.revealNode &&
+        !!(opts.nodeName || opts.nodeId))
     const exit = nodeExit ? '出口为该节点本机' : LOCAL_PROXY_HINT
-    return `${proxyLabel(prx, opts)} · ${exit} · ${used}/${limit}（${LOCAL_PROXY_SHARED_QUOTA}）`
+    return `${proxyLabel(prx, opts)} · ${exit} · ${used}/${limit}`
   }
   const lat = prx.latency_ms != null ? `${prx.latency_ms}ms` : '—'
   return `${proxyLabel(prx, opts)} · ${proxyStatusLabel(prx)} ${lat} · ${used}/${limit}`
@@ -233,15 +208,30 @@ export function sortedProxiesByAvailability(
 export function proxiesForVmBind(
   list: VmProxySnap[],
   vmId: string,
-  poolBindLimit = 5
+  poolBindLimit = 5,
+  /** 槽位所在节点（控制面为 null）；给出时只列它自己那台 VPS 的本地代理。 */
+  vmNodeId?: string | null
 ): VmProxySnap[] {
   const open = list.filter((p) => {
     if (!p.id || !p.enabled || p.status === 'dead' || p.blocked_reason) {
       return false
     }
+    if (!localProxyFitsNode(p, vmNodeId)) return false
     return proxyRemaining(p, vmId, poolBindLimit) > 0
   })
   return sortedProxiesByAvailability(open, vmId, poolBindLimit)
+}
+
+/**
+ * 本地代理只能绑到它所在 VPS 上的槽位。`vmNodeId` 未给出（undefined）时不过滤；
+ * 网关仍会把通用 px-local 落到槽位自己的节点上，绑错机器会被拒。
+ */
+export function localProxyFitsNode(
+  prx: VmProxySnap,
+  vmNodeId: string | null | undefined
+): boolean {
+  if (vmNodeId === undefined || !proxyIsLocal(prx)) return true
+  return proxyLocalNodeId(prx) === (vmNodeId || null)
 }
 
 function cmp(
@@ -344,11 +334,9 @@ export function proxyMatchesQuery(
     proxyHostText(prx),
     prx.label,
     ...proxyBoundIds(prx).flatMap((id) => [id, vmName(id)]),
-    ...(prx.bound_nodes || []).flatMap((g) => [
-      g.node_name,
-      g.node_id,
-      localBoundGroupLabel(g),
-    ]),
+    prx.node_name,
+    prx.node_id,
+    proxyIsLocal(prx) ? proxyHostText(prx) : null,
     prx.geo?.country,
     prx.geo?.country_code,
     prx.geo?.city,

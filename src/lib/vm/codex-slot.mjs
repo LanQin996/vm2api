@@ -30,7 +30,7 @@ export function writeCodexAccounts(projectRoot, vmId, accounts) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   const next = Array.isArray(accounts) ? accounts : []
   const previous = codexCredentialVersion(readCodexAccounts(projectRoot, vmId))
-  atomicWriteJson(codexCredentialPath(projectRoot, vmId), { accounts: next }, { mode: 0o600 })
+  atomicWriteJson(codexCredentialPath(projectRoot, vmId), { accounts: next.map(enrichCodexAccountIdentity) }, { mode: 0o600 })
   if (previous !== codexCredentialVersion(next)) persistCodexCredentialState(projectRoot, vmId, { state: 'unverified' })
 }
 
@@ -306,7 +306,7 @@ function accountFromTokens(source, access, refresh, idToken) {
     src.email,
     nested.email,
     emailFromTokens(idToken, access),
-    nested.id,
+    EMAIL_RE.test(firstString(nested.id)) ? nested.id : '',
     EMAIL_RE.test(name) ? name : '',
   )
   const expiresAt =
@@ -317,7 +317,7 @@ function accountFromTokens(source, access, refresh, idToken) {
   const planType = firstString(src.plan_type, nested.plan_type, src.planType, nested.planType)
   const rpm = Number(src.rpm ?? nested.rpm)
   const conc = Number(src.max_concurrency ?? nested.max_concurrency ?? (sub2apiAccount ? src.concurrency : undefined))
-  return {
+  const account = enrichCodexAccountIdentity({
     id: email || chatgptAccountId || 'codex',
     access_token: access,
     refresh_token: refresh,
@@ -328,7 +328,11 @@ function accountFromTokens(source, access, refresh, idToken) {
     plan_type: planType || null,
     rpm: Number.isFinite(rpm) && rpm > 0 ? rpm : 0,
     max_concurrency: Number.isFinite(conc) && conc > 0 ? conc : 0,
-  }
+  })
+  // Older kernel exports used the email as their account id. Other ids are not emails.
+  const legacyId = firstString(nested.id)
+  if (!account.email && EMAIL_RE.test(legacyId)) account.email = legacyId
+  return { ...account, id: account.email || account.chatgpt_account_id || 'codex' }
 }
 
 function parseTokenList(text, mode) {
@@ -522,11 +526,25 @@ export function enrichCodexAccountIdentity(account = {}) {
   return next
 }
 
-export function upsertCodexAccount(projectRoot, vmId, patch = {}) {
+export function upsertCodexAccount(projectRoot, vmId, patch = {}, { replaceCredentials = false } = {}) {
   const accounts = readCodexAccounts(projectRoot, vmId)
-  const cur = enrichCodexAccountIdentity({ ...(accounts[0] || {}), ...patch })
-  // A re-imported credential must not keep the previous account's email.
-  cur.email = emailFromTokens(cur.id_token, cur.access_token) || cur.email || null
+  const previous = { ...(accounts[0] || {}) }
+  // Importing another account must not inherit the previous account's tokens or identity.
+  // Refreshes still retain metadata when the provider omits it from the response.
+  if (replaceCredentials) {
+    for (const key of [
+      'id',
+      'email',
+      'chatgpt_account_id',
+      'access_token',
+      'refresh_token',
+      'id_token',
+      'expires_at',
+    ]) {
+      delete previous[key]
+    }
+  }
+  const cur = enrichCodexAccountIdentity({ ...previous, ...patch })
   if (!cur.id) cur.id = cur.email || cur.chatgpt_account_id || 'codex'
   if (!accounts.length) accounts.push(cur)
   else accounts[0] = cur
@@ -569,7 +587,7 @@ export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredi
 
 export function summarizeCodexSlot(projectRoot, vm = {}) {
   const accounts = projectRoot && vm?.id ? readCodexAccounts(projectRoot, vm.id) : []
-  const first = accounts[0] || {}
+  const first = enrichCodexAccountIdentity(accounts[0] || {})
   const extra = vm.codex?.extra || vm.codex_extra || {}
   // extra is the source of truth; the stored view is only a fallback for slots without extra.
   const usage = buildCodexUsageView(Object.keys(extra).length ? extraToCodexSnapshot(extra) : vm.codex?.usage || {})
@@ -593,8 +611,6 @@ export function summarizeCodexSlot(projectRoot, vm = {}) {
       first.email ||
       vm.codex?.email ||
       vm.email ||
-      first.chatgpt_account_id ||
-      vm.codex?.chatgpt_account_id ||
       null,
     expires_at: first.expires_at || vm.codex?.expires_at || null,
     chatgpt_account_id: first.chatgpt_account_id || vm.codex?.chatgpt_account_id || null,

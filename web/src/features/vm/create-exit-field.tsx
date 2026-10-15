@@ -11,7 +11,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import {
-  LOCAL_PROXY_SHARED_QUOTA,
+  localProxyFitsNode,
+  proxyIsLocal,
   proxyBindable,
   proxyOptionLabel,
   proxyRemaining,
@@ -49,9 +50,19 @@ export function useCreateExit(nodeId: string): CreateExit {
     readPositive(cfg, 'bind_limit', 5)
   )
   const labelOpts = useLocalProxyLabelOpts(nodeId || null)
-  const options = sortedProxiesByAvailability(proxies, '', poolLimit).filter(
+  const open = sortedProxiesByAvailability(proxies, '', poolLimit).filter(
     (p) => p.id && proxyBindable(p) && proxyRemaining(p, '', poolLimit) > 0
   )
+  // 本地代理每台 VPS 一条：只列目标机器自己的那条。节点那条还没建时退回
+  // 通用 px-local，网关会把它落到该节点上。
+  const target = nodeId || null
+  const own = open.filter(
+    (p) => !proxyIsLocal(p) || localProxyFitsNode(p, target)
+  )
+  const options =
+    target && !own.some(proxyIsLocal)
+      ? [...open.filter((p) => p.id === 'px-local'), ...own]
+      : own
   // 选中的出口被删 / 绑满后退回自动分配，不提交一个必然被拒的 id。
   const value = options.some((p) => p.id === picked) ? picked : AUTO_EXIT
   return {
@@ -91,8 +102,7 @@ export function CreateExitField({
       <p className='text-xs text-muted-foreground'>
         本地代理 = {localProxyText(exit.labelOpts)}
         ：槽位与控制面代发请求都从{remote ? '目标节点' : '本机'}
-        自身出网，绑定额度
-        {LOCAL_PROXY_SHARED_QUOTA}。
+        自身出网，绑定额度按这台 VPS 单独计。
       </p>
     </div>
   )

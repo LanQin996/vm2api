@@ -11,6 +11,7 @@ import { credEndpointLabel, credEndpointOf } from '@/lib/cred-type'
 import { fmtAgo, fmtNum, fmtUsd } from '@/lib/format'
 import { tierVisual } from '@/lib/tier-visual'
 import { cn } from '@/lib/utils'
+import { slotCredentialLabel } from '@/lib/vm-kind'
 import {
   claudeTier,
   credentialStatus,
@@ -441,7 +442,7 @@ export const VmBlade = memo(function VmBlade({
               : 'font-medium text-muted-foreground'
           )}
         >
-          {email || '空槽'}
+          {slotCredentialLabel(vm)}
         </span>
         {restricted && state !== 'dead' ? (
           <StatusMark

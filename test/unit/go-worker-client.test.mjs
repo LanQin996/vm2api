@@ -626,6 +626,95 @@ unixTest('streamGoWorker stamps TTFT on text and thinking deltas', async () => {
   }
 })
 
+unixTest('streamGoWorker stamps TTFT on omitted thinking progress before visible output', async (t) => {
+  let now = 1_000
+  t.mock.method(Date, 'now', () => now)
+  const sawEmpty = gate()
+  const sawProgress = gate()
+  const fx = await fixture(async (req, res) => {
+    res.setHeader('content-type', 'text/event-stream')
+    writeData(res, { type: 'message_start', message: { model: 'claude-test' } })
+    writeData(res, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } })
+    writeData(res, {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 0 },
+    })
+    await sawEmpty.ready
+    writeData(res, {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: '', estimated_tokens: 50 },
+    })
+    await sawProgress.ready
+    writeData(res, { type: 'content_block_stop', index: 0 })
+    writeData(res, { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } })
+    writeData(res, { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'ok' } })
+    writeData(res, { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 52 } })
+    writeData(res, { type: 'message_stop' })
+    res.end()
+  })
+  try {
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: {
+        model: 'claude-test',
+        stream: true,
+        thinking: { type: 'adaptive', display: 'omitted' },
+        messages: [{ role: 'user', content: 'hi' }],
+      },
+      onEvent: (line) => {
+        if (line.includes('"estimated_tokens":0')) {
+          now = 2_000
+          sawEmpty.release()
+        } else if (line.includes('"estimated_tokens":50')) {
+          now = 5_000
+          sawProgress.release()
+        }
+      },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.ttftMs, 1_000)
+    assert.equal(result.firstTokenAt, 2_000)
+    assert.equal(result.usage.output_tokens, 52)
+  } finally {
+    await fx.close()
+    t.mock.restoreAll()
+  }
+})
+
+unixTest('streamGoWorker does not stamp TTFT on no-op or invalid thinking progress', async () => {
+  const fx = await fixture((req, res) => {
+    res.setHeader('content-type', 'text/event-stream')
+    writeData(res, { type: 'message_start', message: { model: 'claude-test' } })
+    writeData(res, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } })
+    for (const estimated_tokens of [undefined, null, 0, -1, '50', true, NaN, Infinity]) {
+      writeData(res, {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: '', estimated_tokens },
+      })
+    }
+    writeData(res, { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'fixture' } })
+    writeData(res, { type: 'content_block_stop', index: 0 })
+    writeData(res, { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } })
+    writeData(res, { type: 'message_stop' })
+    res.end()
+  })
+  try {
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-test', stream: true, messages: [{ role: 'user', content: 'hi' }] },
+      onEvent: () => {},
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.ttftMs, null)
+    assert.equal(result.firstTokenAt, null)
+  } finally {
+    await fx.close()
+  }
+})
+
 unixTest('streamGoWorker keeps observed firstTokenAt when the client cancels', async () => {
   const sawText = gate()
   const fx = await fixture(async (req, res) => {

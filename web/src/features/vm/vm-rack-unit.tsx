@@ -4,6 +4,7 @@ import type { Vm } from '@/types/panel-vm'
 import { resetCountdown } from '@/lib/fable-status'
 import { fmtNum, fmtUsd } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { slotCredentialLabel } from '@/lib/vm-kind'
 import { vmCostLedger } from '@/lib/vm-usage'
 import { RISK_SOLID, riskFg, riskLevel } from '@/features/vm/usage-meter'
 import {
@@ -107,7 +108,7 @@ export const VmUnit = memo(function VmUnit({
           !email && 'font-medium text-muted-foreground'
         )}
       >
-        {email ? email.split('@')[0] : '空槽'}
+        {slotCredentialLabel(vm, true)}
       </span>
       {state === 'live' ? (
         <span className='flex items-end gap-1.5'>

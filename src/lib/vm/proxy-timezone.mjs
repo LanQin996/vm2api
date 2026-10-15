@@ -7,7 +7,7 @@
  * unless the operator pinned one by hand (`vm.timezone_source === 'manual'`).
  */
 import { validTimezone } from '../core/timezone.mjs'
-import { isLocalEgressProxy } from './egress.mjs'
+import { isLocalEgressProxy, localEgressIdForNode } from './egress.mjs'
 import { slotHost } from './slot-host.mjs'
 import { getVm, persistVmTimezone } from './vm-registry.mjs'
 
@@ -34,8 +34,17 @@ export async function syncVmTimezoneFromProxy(
   const boundRow = vm.proxy?.id === bound ? vm.proxy : { id: bound }
   const host = slotHost(vm)
   let timezone = ''
-  if (bound && host.nodeId && isLocalEgressProxy(boundRow)) {
-    // px-local's row geo is the control plane's; this slot leaves from its node.
+  const nodeRow = host.nodeId ? localEgressIdForNode(host.nodeId) : null
+  if (bound && nodeRow && isLocalEgressProxy(boundRow) && proxyPool.getProxyByIdWithAuth?.(nodeRow)) {
+    // The slot leaves from its own node: that VPS's local row carries its geo.
+    timezone = proxyPool.proxyTimezone(nodeRow)
+    if (!timezone && detect) {
+      const detected = await proxyPool.detectGeo(nodeRow)
+      if (!detected?.ok) return skip(detected?.error || 'geo_lookup_failed')
+      timezone = validTimezone(detected.geo?.timezone)
+    }
+  } else if (bound && host.nodeId && isLocalEgressProxy(boundRow)) {
+    // No node row (local egress never seeded): ask the node's route directly.
     let url
     try {
       url = host.localExitProxyUrl(vm)

@@ -138,7 +138,7 @@ export function ProxyImportPanel({ hasLocal }: { hasLocal: boolean }) {
           onClick={() => addLocal.mutate()}
           disabled={addLocal.isPending || hasLocal}
           loading={addLocal.isPending}
-          title='本地代理：不走 SOCKS5，槽位经所在 VPS（本机或集群节点）自身出口出站，绑定额度所有节点共用'
+          title='本地代理：不走 SOCKS5，槽位经所在 VPS（本机或集群节点）自身出口出站。每台 VPS 一条，绑定额度按机器单独计'
         >
           <House aria-hidden='true' />
           {hasLocal ? '已有本地代理' : '本地代理'}

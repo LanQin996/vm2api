@@ -70,6 +70,16 @@ export function kindFromModel(
   return 'claude'
 }
 
+/** Account line on rack cards: credential presence is independent of the email. */
+export function slotCredentialLabel(
+  vm?: Pick<Vm, 'email' | 'has_token' | 'has_refresh'>,
+  compact = false
+): string {
+  const email = String(vm?.email || '').trim()
+  if (email) return compact ? email.split('@')[0] : email
+  return vm?.has_token || vm?.has_refresh ? '已导入账号 · 邮箱未知' : '空槽'
+}
+
 export function slotAccountLabel(
   vm?: Vm,
   fallback?: {

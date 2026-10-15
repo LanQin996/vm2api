@@ -271,7 +271,8 @@ export function isDownstreamCommitEvent(event) {
 /**
  * Timing starts at generated content, independently of downstream commitment.
  * A generated tool name is first output: name-only tools often never send a
- * parameter delta. Connection metadata, empty blocks, and trailers are not TTFT.
+ * parameter delta. Omitted thinking reports generated tokens without text.
+ * Connection metadata, empty blocks, and trailers are not TTFT.
  * Shared Claude/Codex kernel stream path only; API transport still stamps the
  * first `data:` line in api-protocol.mjs.
  */
@@ -293,8 +294,11 @@ function isFirstTokenEvent(event) {
   const type = String(event.type || '')
   if (type === 'content_block_delta') {
     const delta = event.delta || {}
-    return [delta.text, delta.thinking, delta.partial_json, delta.refusal].some(
-      (value) => typeof value === 'string' && value.length > 0,
+    return (
+      [delta.text, delta.thinking, delta.partial_json, delta.refusal].some(
+        (value) => typeof value === 'string' && value.length > 0,
+      ) ||
+      (delta.type === 'thinking_delta' && Number.isFinite(delta.estimated_tokens) && delta.estimated_tokens > 0)
     )
   }
   if (type === 'content_block_start') return hasGeneratedContent(event.content_block)

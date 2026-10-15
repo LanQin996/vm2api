@@ -64,6 +64,7 @@
 | PATCH | `/vms/:id` | 热改并发/RPM、OpenAI 会话上限、Claude 席位/配额、模型白名单、槽策略、Claude `schedule_level`、`weight`（Codex 选槽权重 1–100，`null` 回默认 1）、`active_hours` 或 `timezone`（不重启槽）。`timezone` 为任意有效 IANA 名称，会钉住该槽（后续绑定不覆盖）；`timezone_follow_proxy: true` 重新跟随已绑代理的出口时区 |
 | POST | `/vms/pool-policy` | 批量槽策略。`{ ids: [...] }` 或 `{ all: true }`，可带 `weight`(1–100) / `schedule_level`(1–10 或 `"auto"`) / `max_concurrency`(1–256) / `max_rpm`(0–1000000) / `max_sessions`(0–256)；`null`（或 `""`）取消钉住：weight 回默认 1、schedule_level 回 auto、上限回 tier / 全局默认，语义与逐槽 PATCH 一致。只写 `vms/*.json`、不重建槽详情，100+ 槽一次调用即可（逐个 `PATCH /vms/:id` 每槽约 4s，并发下发会压住控制面）。返回 `{ updated, missing, failed, items: [{ id, weight, schedule_level, max_concurrency, concurrency_override, max_rpm, max_sessions }] }` |
 | POST | `/vms/:id/probe` | 槽 SOCKS5 探官方 `/usage` + Fable（Pro 跳过 Fable） |
+| POST | `/vms/:id/exit-probe` | 测这个槽真实出口的 IP 与地理（仅 admin）：SOCKS5 槽经代理查；本地代理槽查它所在 VPS 那条本地代理并刷新该行地理。未绑定 502 `proxy_required` |
 | POST | `/vms/:id/schedulable` | `{ schedulable }` 是否入池；不改容器 |
 | POST | `/vms/:id/cooldown/clear` | 清账号/模型冷却、粘性钉和 `/usage` 429 旗标，重新入池 |
 | POST | `/vms/:id/test-chat` | loopback `POST /v1/messages`，master 可钉槽；官方 CC 入站 + 4 块 system。默认 prompt `hello` |
@@ -344,6 +345,14 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 自定义 URL 必须以小写 `https://` 开头，百分号编码必须有效；域名大小写不受限制。设置会保留原 URL 字符串，不做隐式改写。
 
 `GET /proxies` 和 `GET /proxies/config` 仅向管理员返回 `dns_primary`；租户响应省略该字段（自定义 URL 的路径 / 查询参数可能包含私有令牌），其它配置字段保持不变。
+
+### 本地代理（每台 VPS 一条）
+
+本地代理按机器拆分：控制面是 `px-local`，每个集群节点一条 `px-local-<节点 id>`（行上带 `node_id`；管理员另带 `node_name`，租户不返回节点名）。启用了本地代理（`px-local` 存在）后，接入节点时自动建立该节点的行，删除节点时清掉没有绑定的行；升级后首次启动会把仍挂在 `px-local` 上的节点槽迁到各自节点的行，并改写槽位记录里的 `proxy.id`，槽位所在机器的 docker 网络不变。
+
+- **绑定**：`bind_limit` 按行计，即每台 VPS 各自计数。绑定、创建（`proxy_id`）、导入时传通用的 `px-local` 会落到槽位所在机器的那一行；把别的机器的本地代理绑给槽位返回 `local_proxy_node_mismatch`。自动分配只考虑槽位自己机器的本地代理。
+- **探测**：`px-local` 仍视为直连成功；节点行按该节点的 SSH 链路判定，延迟为链路 RTT。链路不通只把该行标为 `fail`，不会禁用代理或停掉槽位调度（节点健康由集群负责）。
+- **地理**：节点行经该节点本机出网查询，`px-local` 经控制面默认路由查询；节点槽的跟随时区读取它所在节点那一行的地理。
 
 ### `POST /proxies/geo` · `POST /proxies/:id/geo`
 

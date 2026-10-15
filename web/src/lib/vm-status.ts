@@ -835,7 +835,7 @@ export function localProxyOptsFromProxy(
 
 function isLocalProxyRef(proxy: ProxyRef): boolean {
   return (
-    proxy.id === 'px-local' ||
+    String(proxy.id || '').startsWith('px-local') ||
     proxy.scheme === 'local' ||
     proxy.kind === 'local' ||
     proxy.host === 'local'

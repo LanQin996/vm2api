@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createPanelHandler } from '../../src/lib/admin/panel-routes.mjs'
 import {
   enrichCodexAccountIdentity,
   parseCodexCredentialInput,
@@ -66,7 +67,7 @@ test('Codex account summary recovers email from existing access token', () => {
       },
     ])
     assert.equal(listVms(root)[0].email, 'existing@example.com')
-    assert.equal(readCodexAccounts(root, 'vm-codex-01')[0].email, undefined)
+    assert.equal(readCodexAccounts(root, 'vm-codex-01')[0].email, 'existing@example.com')
   } finally {
     fs.rmSync(root, { recursive: true, force: true })
   }
@@ -144,6 +145,195 @@ test('parseCodexCredentialInput rejects OPENAI_API_KEY-only client config', () =
   assert.equal(parsed.error, 'not_oauth_account')
 })
 
+test('credential imports resolve explicit email, id_token, then access_token', () => {
+  const idToken = jwt({ 'https://api.openai.com/profile': { email: 'id@example.com' } })
+  const accessToken = jwt({
+    email: 'access@example.com',
+    'https://api.openai.com/auth': { chatgpt_account_id: 'acc-jwt' },
+  })
+  const auth = { tokens: { id_token: idToken, access_token: accessToken, refresh_token: 'rt' } }
+  assert.equal(
+    parseCodexCredentialInput({ ...auth, email: 'explicit@example.com' }).account.email,
+    'explicit@example.com',
+  )
+  const parsed = parseCodexCredentialInput(JSON.stringify(auth))
+  assert.equal(parsed.account.email, 'id@example.com')
+  assert.equal(parsed.account.id, 'id@example.com')
+  assert.equal(parsed.account.chatgpt_account_id, 'acc-jwt')
+  const accessOnly = parseCodexCredentialInput(accessToken, { mode: 'access_token' })
+  assert.equal(accessOnly.account.email, 'access@example.com')
+  assert.equal(accessOnly.account.access_token, accessToken)
+})
+
+test('CPR camelCase tokens resolve identity without treating opaque ids as emails', () => {
+  const parsed = parseCodexCredentialInput({
+    documents: [
+      {
+        provider: 'openai',
+        document: {
+          accounts: [
+            {
+              id: 'codex',
+              credentials: {
+                idToken: jwt({ email: 'cpr@example.com' }),
+                accessToken: 'opaque-at',
+                refreshToken: 'rt',
+              },
+            },
+          ],
+        },
+      },
+    ],
+  })
+  assert.equal(parsed.account.email, 'cpr@example.com')
+  for (const token of ['opaque-at', 'header.invalid.sig', jwt({ sub: 'user-id' })]) {
+    const unknown = parseCodexCredentialInput({ id: 'user-id', access_token: token })
+    assert.equal(unknown.ok, true)
+    assert.equal(unknown.account.email, null)
+  }
+  assert.equal(parseCodexCredentialInput('rt-only', { mode: 'refresh_token' }).account.email, null)
+})
+
+test('legacy credentials show token identity on read without rewriting the credential file', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-legacy-id-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const vmId = 'vm-01'
+  const dir = path.join(root, 'vms', vmId)
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, 'codex-credentials.json')
+  const raw = JSON.stringify({
+    accounts: [
+      {
+        id: 'codex',
+        access_token: jwt({ 'https://api.openai.com/auth': { chatgpt_account_id: 'legacy-acc' } }),
+        id_token: jwt({ 'https://api.openai.com/profile': { email: 'legacy@example.com' } }),
+      },
+    ],
+  })
+  fs.writeFileSync(file, raw)
+  const summary = summarizeCodexSlot(root, { id: vmId, platform: 'openai', codex: {} })
+  assert.equal(summary.email, 'legacy@example.com')
+  assert.equal(summary.has_token, true)
+  assert.equal(summary.chatgpt_account_id, 'legacy-acc')
+  assert.equal(fs.readFileSync(file, 'utf8'), raw)
+  assert.equal(readCodexAccounts(root, vmId)[0].email, undefined)
+})
+
+test('slot summaries keep account ids separate from missing emails', () => {
+  const summary = summarizeCodexSlot(null, {
+    id: 'vm-01',
+    codex: { has_refresh: true, chatgpt_account_id: 'account-uuid' },
+  })
+  assert.equal(summary.has_token, true)
+  assert.equal(summary.email, null)
+  assert.equal(summary.chatgpt_account_id, 'account-uuid')
+})
+
+test('all credential writers persist token identity without changing tokens or account ids', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-write-id-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-01'), { recursive: true })
+  const accessToken = jwt({ 'https://api.openai.com/profile': { email: 'written@example.com' } })
+  writeCodexAccounts(root, 'vm-01', [{ id: 'stable-id', access_token: accessToken, refresh_token: 'rt' }])
+  const saved = readCodexAccounts(root, 'vm-01')[0]
+  assert.equal(saved.email, 'written@example.com')
+  assert.equal(saved.id, 'stable-id')
+  assert.equal(saved.access_token, accessToken)
+  assert.equal(saved.refresh_token, 'rt')
+})
+
+test('refresh preserves explicit identity while credential replacement clears the old account', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-replace-id-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  fs.mkdirSync(path.join(root, 'vms', 'vm-01'), { recursive: true })
+  upsertCodexAccount(root, 'vm-01', {
+    id: 'old-id',
+    email: 'explicit@example.com',
+    chatgpt_account_id: 'old-acc',
+    id_token: jwt({ email: 'old@example.com' }),
+    access_token: 'old-at',
+    refresh_token: 'old-rt',
+    expires_at: 123,
+    max_concurrency: 4,
+  })
+  const refreshed = upsertCodexAccount(root, 'vm-01', { access_token: 'new-at', refresh_token: 'new-rt' })
+  assert.equal(refreshed.email, 'explicit@example.com')
+  assert.equal(refreshed.chatgpt_account_id, 'old-acc')
+  const replacement = upsertCodexAccount(root, 'vm-01', { refresh_token: 'other-rt' }, { replaceCredentials: true })
+  assert.equal(replacement.email, null)
+  assert.equal(replacement.chatgpt_account_id, null)
+  assert.equal(replacement.id, 'codex')
+  assert.equal(replacement.id_token, undefined)
+  assert.equal(replacement.access_token, undefined)
+  assert.equal(replacement.expires_at, undefined)
+  assert.equal(replacement.max_concurrency, 4)
+  const identified = upsertCodexAccount(
+    root,
+    'vm-01',
+    {
+      access_token: 'other-at',
+      id_token: jwt({ email: 'other@example.com' }),
+    },
+    { replaceCredentials: true },
+  )
+  assert.equal(identified.email, 'other@example.com')
+  assert.equal(identified.id, 'other@example.com')
+})
+
+test('panel import replaces credentials and returns the current account email', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-panel-id-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const vmId = 'vm-01'
+  fs.mkdirSync(path.join(root, 'vms', vmId), { recursive: true })
+  const vmFile = path.join(root, 'vms', `${vmId}.json`)
+  fs.writeFileSync(
+    vmFile,
+    JSON.stringify({
+      id: vmId,
+      platform: 'openai',
+      family: 'codex',
+      codex: { email: 'old@example.com', has_access: true, has_refresh: true },
+    }),
+  )
+  upsertCodexAccount(root, vmId, {
+    email: 'old@example.com',
+    access_token: 'old-at',
+    refresh_token: 'old-rt',
+    id_token: jwt({ email: 'old@example.com' }),
+  })
+  for (const [token, expectedEmail] of [
+    [jwt({ email: 'new@example.com' }), 'new@example.com'],
+    ['opaque-at', null],
+  ]) {
+    let status
+    let response
+    const handlePanel = createPanelHandler({
+      cfg: { paths: { project: root } },
+      routingConfig: { codex: { catalog_client_version: '0.160.0' } },
+      requireAuth(req) {
+        req.apiKeyKind = 'master'
+        req.panelRole = 'admin'
+        return true
+      },
+      readBody: async () => ({ vm_id: vmId, mode: 'access_token', raw: token }),
+      json(_res, code, body) {
+        status = code
+        response = body
+        return true
+      },
+    })
+    await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/import'))
+    assert.equal(status, 200)
+    assert.equal(response.data.vm.email, expectedEmail)
+    assert.equal(response.data.vm.has_token, true)
+    const saved = readCodexAccounts(root, vmId)[0]
+    assert.equal(saved.email, expectedEmail)
+    assert.equal(saved.access_token, token)
+    assert.equal(saved.refresh_token, '')
+    assert.equal(saved.id_token, '')
+    assert.equal(JSON.parse(fs.readFileSync(vmFile, 'utf8')).codex.email, expectedEmail)
+  }
+})
 test('enrichCodexAccountIdentity extracts email from OAuth id_token', () => {
   const idToken = jwt({ email: 'gpt-user@example.com', sub: 'sub-1' })
   const accessToken = jwt({

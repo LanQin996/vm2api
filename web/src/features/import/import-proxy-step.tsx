@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { StatusMark } from '@/components/status-mark'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
+  localProxyFitsNode,
   proxyBindLimit,
   proxyBoundIds,
   proxyIsInvalid,
@@ -102,7 +103,11 @@ export function ImportProxyStep({
   )
   // 「马上能用的排前面」——健康 → 有余位 → 余位多 → 延迟低。原始顺序是后端
   // 的入库序，直接铺出来会把失效和绑满的混在中间，选起来要靠眼睛筛。
-  const options = sortedProxiesByAvailability(proxies, vmId, poolLimit)
+  // 本地代理每台 VPS 一条，只列本槽所在机器的那条（绑错机器网关会拒）。
+  const options = sortedProxiesByAvailability(proxies, vmId, poolLimit).filter(
+    (p) =>
+      localProxyFitsNode(p, nodeId === undefined ? undefined : nodeId || null)
+  )
   const bound = proxies.find((p) => proxyBoundIds(p).includes(vmId)) || null
   const labelOpts = useLocalProxyLabelOpts(nodeId)
 

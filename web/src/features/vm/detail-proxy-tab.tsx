@@ -26,7 +26,6 @@ import { TabsContent } from '@/components/ui/tabs'
 import { StatusMark } from '@/components/status-mark'
 import { HealthDonut } from '@/features/overview/health-gauge'
 import {
-  LOCAL_PROXY_SHARED_QUOTA,
   proxyIsLocal,
   proxyLabel,
   proxyMatchesQuery,
@@ -76,7 +75,6 @@ export function VmProxyTab(props: VmProxyTabProps) {
   const labelOpts = localProxyOptsFromProxy(proxy, fallbackOpts)
   const localLabel = localProxyText(labelOpts)
   // 本地代理行的地理/延迟是控制面那台；节点槽从节点出网，那份探测不代表它。
-  const nodeLocal = local && !!vm.node_id
   const selectedId = bindId || free[0]?.id || ''
   const selected = free.find((p) => p.id === selectedId)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -101,7 +99,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
         </CardHeader>
         <p className='px-6 pb-2 text-xs text-muted-foreground'>
           {local
-            ? `${localLabel}：槽内流量与控制面代发请求（换票、刷新、测试）都从所在机器出网。绑定额度${LOCAL_PROXY_SHARED_QUOTA}。`
+            ? `${localLabel}：槽内流量与控制面代发请求（换票、刷新、测试）都从所在机器出网。每台 VPS 一条本地代理，绑定额度、测通与测地理都只算这台机器。`
             : '出站经这条代理的 egress 网关。槽内不 Dial SOCKS。'}
         </p>
         <CardContent className='flex flex-wrap gap-6 pt-0'>
@@ -140,25 +138,15 @@ export function VmProxyTab(props: VmProxyTabProps) {
               <span
                 className={cn(
                   'field-metric text-sm',
-                  nodeLocal
-                    ? 'text-muted-foreground'
-                    : proxyFieldClass(proxyLatencyTone(proxy))
+                  proxyFieldClass(proxyLatencyTone(proxy))
                 )}
               >
-                {nodeLocal
-                  ? '出口为该节点本机'
-                  : proxy.latency_ms != null
-                    ? `${proxy.latency_ms}ms`
-                    : '—'}
+                {proxy.latency_ms != null ? `${proxy.latency_ms}ms` : '—'}
               </span>
             </Field>
             <Field label='认证'>{proxy.has_auth ? '有' : '无'}</Field>
             <Field label='出口'>
-              {nodeLocal ? (
-                <span className='text-xs text-muted-foreground'>
-                  出口为该节点本机（时区按节点出口地理同步）
-                </span>
-              ) : proxy.geo?.country || proxy.geo?.timezone ? (
+              {proxy.geo?.country || proxy.geo?.timezone ? (
                 <span className='flex flex-wrap items-center gap-1.5'>
                   {[proxy.geo.country_code || proxy.geo.country, proxy.geo.city]
                     .filter(Boolean)
@@ -215,7 +203,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
               size='sm'
               variant='outline'
               onClick={onProbe}
-              disabled={!!proxy.blocked_reason || nodeLocal}
+              disabled={!!proxy.blocked_reason}
             >
               测通
             </Button>
@@ -223,7 +211,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
               size='sm'
               variant='outline'
               onClick={onGeo}
-              disabled={!!proxy.blocked_reason || nodeLocal}
+              disabled={!!proxy.blocked_reason}
             >
               测地理
             </Button>
