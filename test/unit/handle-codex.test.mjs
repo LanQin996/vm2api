@@ -67,7 +67,7 @@ test('runCodexKernelHop does not retry after SSE has started', async () => {
 })
 
 test('silent 5xx retries back off on the same request and stop at three attempts', async () => {
-  for (const status of [500, 502, 503, 504]) {
+  for (const status of [500, 502, 504]) {
     const body = { model: 'gpt-6.1-sol', input: 'hello' }
     const calls = []
     const delays = []
@@ -831,10 +831,11 @@ test('502/503 retries exhaust one slot before failing over, with cumulative atte
         ),
       )
       assert.equal(out.status, 200)
-      assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b'])
-      assert.deepEqual(delays, [500, 1000])
-      assert.equal(logBag.attempt_count, 4)
-      assert.equal(logBag.codex_server_retries, 2)
+      const expectedSeen = status === 503 ? ['vm-gpt-a', 'vm-gpt-b'] : ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b']
+      assert.deepEqual(seen, expectedSeen)
+      assert.deepEqual(delays, status === 503 ? [] : [500, 1000])
+      assert.equal(logBag.attempt_count, status === 503 ? 2 : 4)
+      assert.equal(logBag.codex_server_retries || 0, status === 503 ? 0 : 2)
       assert.equal(logBag.codex_failed_over, true)
       assert.equal(rt.openAIRuntimeSignals('vm-gpt-a').inFlight, 0)
       assert.equal(rt.openAIRuntimeSignals('vm-gpt-b').inFlight, 0)
@@ -875,8 +876,8 @@ test('when every slot returns 503, each is tried at most three times and the fin
     )
     assert.equal(out.status, 503)
     assert.equal(out.body.error.message, 'vm-gpt-b')
-    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b', 'vm-gpt-b', 'vm-gpt-b'])
-    assert.equal(logBag.attempt_count, 6)
+    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+    assert.equal(logBag.attempt_count, 2)
   } finally {
     rt.resetOpenAIAccountRuntime()
     fs.rmSync(root, { recursive: true, force: true })
@@ -1065,6 +1066,43 @@ test('#A04: the fifth GPT slot is reached after four slots fail over', async () 
   assert.equal(new Set(seen).size, 5)
   assert.equal(logBag.attempt_count, 5)
   assert.equal(logBag.vm_id, seen[4])
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('uncommitted 503 server_error fails over to the next GPT slot', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-503-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b']) writeGptVm(root, id)
+  const seen = []
+  const logBag = {}
+  const out = await handleCodexProtocol(
+    codexArgs(
+      root,
+      {
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ exec, onEvent }) => {
+          seen.push(exec.vm.id)
+          if (seen.length === 1) {
+            return {
+              ok: false,
+              status: 503,
+              committed: false,
+              body: { error: { type: 'server_error', code: 'server_error', message: 'busy' } },
+            }
+          }
+          await onEvent('data: {"type":"response.completed"}')
+          return { ok: true, status: 200, terminalState: 'verified' }
+        },
+      },
+      { logBag },
+    ),
+  )
+  assert.equal(out.status, 200)
+  assert.equal(seen.length, 2)
+  assert.notEqual(seen[0], seen[1])
+  assert.equal(logBag.attempt_count, 2)
   rt.resetOpenAIAccountRuntime()
   fs.rmSync(root, { recursive: true, force: true })
 })

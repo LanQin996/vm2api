@@ -3,7 +3,7 @@
  * server wiring; this factory owns convert → pool → Go/Rust hop → client.
  */
 import { applyIntercept } from '../core/intercept.mjs'
-import { streamIdleTimeoutMs as idleTimeoutFromRouting } from '../core/config.mjs'
+import { streamIdleTimeoutMs as idleTimeoutFromRouting, inboundBodyLimit } from '../core/config.mjs'
 import { applyEagerToolStreaming } from './eager-tool-streaming.mjs'
 import {
   inboundRefusalDeviceId,
@@ -507,7 +507,7 @@ export function createHandleProtocol(deps) {
 
     let inbound
     try {
-      inbound = await readBody(req, cfg.limits.max_body_bytes)
+      inbound = await readBody(req, inboundBodyLimit(getRouting(), cfg.limits.max_body_bytes))
     } catch (error) {
       stats.errors++
       logBag.error_code = error?.body?.error?.code || ErrorCode.INVALID_JSON
@@ -1378,9 +1378,12 @@ export function createHandleProtocol(deps) {
               if (res.writableEnded || res.destroyed) return
               if (!res.headersSent) writeSSEHeaders(res)
               res.write(chunk)
+              // A ping is already a downstream byte. Commit so a later upstream
+              // failure cannot switch slots onto this socket.
+              onCommit()
             },
           })
-          keepalive.start()
+          keepalive.arm()
           try {
             return await dispatchStreamInference({
               exec: candidate.exec,
@@ -1610,7 +1613,7 @@ export function createHandleProtocol(deps) {
     }
     let body
     try {
-      body = await readBody(req, cfg.limits.max_body_bytes)
+      body = await readBody(req, inboundBodyLimit(getRouting(), cfg.limits.max_body_bytes))
     } catch (error) {
       stats.errors++
       logBag.error_code = error?.body?.error?.code || ErrorCode.INVALID_JSON

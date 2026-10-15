@@ -26,6 +26,32 @@ export function streamIdleTimeoutMs(routing, fallbackMs = Number(process.env.KIN
   return Math.min(STREAM_IDLE_TIMEOUT_MAX_MS, Math.max(STREAM_IDLE_TIMEOUT_MIN_MS, Math.round(ms)))
 }
 
+export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+const MAX_REQUEST_MIB_MIN = 8
+const MAX_REQUEST_MIB_MAX = 128
+
+/**
+ * Bytes the slot kernel will buffer. The panel value
+ * (failover.max_request_mib) is the receive size; axum rejects anything
+ * larger with 413 before the CLI runs. Absent or invalid keeps fallbackBytes
+ * (32 MiB on the kernel, the process ceiling on the gateway).
+ */
+export function maxRequestBytes(routing, fallbackBytes = DEFAULT_MAX_REQUEST_BYTES) {
+  const mib = Number(routing?.failover?.max_request_mib)
+  if (!Number.isFinite(mib) || mib <= 0) return fallbackBytes
+  const clamped = Math.min(MAX_REQUEST_MIB_MAX, Math.max(MAX_REQUEST_MIB_MIN, Math.round(mib)))
+  return clamped * 1024 * 1024
+}
+
+/** Protocol ingress limit. A panel value cannot exceed the process ceiling. */
+export function inboundBodyLimit(routing, ceilingBytes) {
+  const ceiling = Number(ceilingBytes)
+  const cap = Number.isFinite(ceiling) && ceiling > 0 ? ceiling : DEFAULT_MAX_REQUEST_BYTES
+  const mib = Number(routing?.failover?.max_request_mib)
+  if (!Number.isFinite(mib) || mib <= 0) return cap
+  return Math.min(cap, maxRequestBytes(routing))
+}
+
 /** Live routing.json. KIN_ROUTING_FILE wins; otherwise <project>/src/config/routing.json. */
 export function routingConfigFile(projectRoot = PROJECT) {
   const override = String(process.env.KIN_ROUTING_FILE || '').trim()

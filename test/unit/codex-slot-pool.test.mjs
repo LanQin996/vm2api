@@ -89,13 +89,30 @@ test('auth, quota and 5xx failures fail over; committed hops do not', () => {
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: false }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'usage_limit_reached' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 429, committed: true }), false)
-  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }), true)
+  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'upstream_transport' } } }), false)
+  assert.equal(isCodexFailoverError({ ok: false, status: 502, body: { error: { code: 'server_error' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 503, body: { error: { code: 'server_error' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 500, body: { error: { code: 'server_error' } } }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 504 }), true)
   assert.equal(isCodexFailoverError({ ok: false, status: 503, committed: true }), false)
   assert.equal(isCodexFailoverError({ ok: false, status: 500, committed: true }), false)
   assert.equal(isCodexFailoverError({ ok: false, status: 400 }), false)
+  assert.equal(
+    isCodexFailoverError({ ok: false, status: 503, committed: false, body: { error: { code: 'server_error' } } }),
+    true,
+  )
+  assert.equal(
+    isCodexFailoverError({ ok: false, status: 503, committed: true, body: { error: { code: 'server_error' } } }),
+    false,
+  )
+  assert.equal(
+    isCodexFailoverError({
+      ok: false,
+      status: 503,
+      body: { error: { code: 'codex_kernel_unavailable' } },
+    }),
+    false,
+  )
 })
 
 test('spent 5h window evaluates to restriction, not 调度关', () => {

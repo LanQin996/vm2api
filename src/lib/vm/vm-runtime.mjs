@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
-import { readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
+import { maxRequestBytes, readRoutingConfigFile, streamIdleTimeoutMs } from '../core/config.mjs'
 import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
 import { runtimeKind, isKvmRuntime, RUNTIME_KVM } from './runtime-kind.mjs'
 import { isCodexVm } from './vm-kind.mjs'
@@ -524,7 +524,7 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
     request_timeout_seconds: 0,
     first_byte_timeout_seconds: 600,
     idle_timeout_seconds: Math.ceil(streamIdleTimeoutMs(resolvedRouting) / 1000),
-    max_request_bytes: 32 * 1024 * 1024,
+    max_request_bytes: maxRequestBytes(resolvedRouting),
     max_response_bytes: 64 * 1024 * 1024,
     max_event_bytes: 32 * 1024 * 1024,
     test_endpoints: testEndpoints,

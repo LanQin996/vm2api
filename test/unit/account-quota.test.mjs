@@ -866,6 +866,39 @@ test('429 unified exhausted marks headers rejected without inventing official 10
   assert.equal(q.canAccept('acc-429').ok, false)
 })
 
+test('local 429 without quota evidence does not reject the 5h window', () => {
+  const q = new AccountQuota({ dataDir: tmpDir(), config: {} })
+  q.ingestHeaders('acc-local-429', {
+    'anthropic-ratelimit-unified-5h-utilization': '0.23',
+    'anthropic-ratelimit-unified-5h-status': 'allowed',
+    'anthropic-ratelimit-unified-7d-utilization': '0.04',
+    'anthropic-ratelimit-unified-7d-status': 'allowed',
+  })
+  q.ingestHeaders('acc-local-429', {}, null, { status: 429, exhausted: false, countRequest: false })
+  q.ingestHeaders('acc-local-503', {
+    'anthropic-ratelimit-unified-5h-utilization': '0.23',
+    'anthropic-ratelimit-unified-5h-status': 'allowed',
+  })
+  q.ingestHeaders('acc-local-503', {}, null, { status: 503, exhausted: false, countRequest: false })
+  const local = q.repo.get('acc-local-429')
+  assert.equal(local.unified.headers['5h'].status, 'allowed')
+  assert.equal(local.unified.headers['5h'].utilization, 0.23)
+  assert.equal(local.unified.headers['7d'].status, 'allowed')
+  assert.equal(q.repo.get('acc-local-503').unified.headers['5h'].status, 'allowed')
+  q.ingestHeaders(
+    'acc-header-429',
+    {
+      'anthropic-ratelimit-unified-5h-utilization': '0.9',
+      'anthropic-ratelimit-unified-5h-status': 'rejected',
+    },
+    null,
+    { status: 429, exhausted: false, countRequest: false },
+  )
+  assert.equal(q.repo.get('acc-header-429').unified.headers['5h'].status, 'rejected')
+  assert.equal(q.canAccept('acc-local-429').ok, true)
+  assert.equal(q.canAccept('acc-header-429').ok, false)
+})
+
 test('stuck 5h header with growing tokens does not lift official utilization', () => {
   const q = new AccountQuota({
     dataDir: tmpDir(),

@@ -3,7 +3,13 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { readRoutingConfigFile, routingConfigFile, streamIdleTimeoutMs } from '../../src/lib/core/config.mjs'
+import {
+  inboundBodyLimit,
+  maxRequestBytes,
+  readRoutingConfigFile,
+  routingConfigFile,
+  streamIdleTimeoutMs,
+} from '../../src/lib/core/config.mjs'
 
 function withEnv(key, value, fn) {
   const prev = process.env[key]
@@ -73,6 +79,18 @@ test('streamIdleTimeoutMs prefers the panel value, then the caller fallback', ()
   withEnv('KIN_STREAM_IDLE_TIMEOUT', '240000', () => {
     assert.equal(streamIdleTimeoutMs(null), 240_000)
   })
+})
+
+test('maxRequestBytes uses the panel MiB value and clamps it', () => {
+  assert.equal(maxRequestBytes(null), 32 * 1024 * 1024)
+  assert.equal(maxRequestBytes({ failover: {} }, 1024), 1024)
+  assert.equal(maxRequestBytes({ failover: { max_request_mib: 64 } }), 64 * 1024 * 1024)
+  assert.equal(maxRequestBytes({ failover: { max_request_mib: 1 } }), 8 * 1024 * 1024)
+  assert.equal(maxRequestBytes({ failover: { max_request_mib: 512 } }), 128 * 1024 * 1024)
+  assert.equal(maxRequestBytes({ failover: { max_request_mib: 'nope' } }, 2048), 2048)
+  assert.equal(inboundBodyLimit({}, 128 * 1024 * 1024), 128 * 1024 * 1024)
+  assert.equal(inboundBodyLimit({ failover: { max_request_mib: 64 } }, 128 * 1024 * 1024), 64 * 1024 * 1024)
+  assert.equal(inboundBodyLimit({ failover: { max_request_mib: 128 } }, 32 * 1024 * 1024), 32 * 1024 * 1024)
 })
 
 test('readRoutingConfigFile identifies invalid JSON', () => {

@@ -95,3 +95,17 @@ test('keepalive arm starts pinging before the first upstream event', async () =>
   keepalive.stop()
   assert.ok(writes.some((chunk) => chunk.includes('event: ping')))
 })
+
+test('keepalive start alone does not write before the first upstream event', async () => {
+  const writes = []
+  const keepalive = createDownstreamKeepalive({
+    intervalMs: 20,
+    userAgent: 'claude-cli/2.1.187 (external, cli)',
+    protocol: 'anthropic.messages',
+    write: (chunk) => writes.push(chunk),
+  })
+  keepalive.start()
+  await new Promise((resolve) => setTimeout(resolve, 80))
+  keepalive.stop()
+  assert.equal(writes.length, 0)
+})

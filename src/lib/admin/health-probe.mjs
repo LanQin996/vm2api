@@ -31,6 +31,10 @@ export const DEFAULT_HEALTH_PROBE = Object.freeze({
   intercept_warmup: true,
   fail_closed: true,
   run_on_start: true,
+  // Off: stop after the first successful slot (cache snapshot unchanged). On: probe every
+  // schedulable slot each interval; first success still writes the cache snapshot.
+  probe_all_slots: false,
+  concurrency: 2,
   real: Object.freeze({
     model: 'claude-haiku-4-5',
     prompt: 'hello',
@@ -160,6 +164,8 @@ export function normalizeHealthProbeConfig(raw = {}) {
     intercept_warmup: asBool(src.intercept_warmup, DEFAULT_HEALTH_PROBE.intercept_warmup),
     fail_closed: asBool(src.fail_closed, true),
     run_on_start: asBool(src.run_on_start, true),
+    probe_all_slots: asBool(src.probe_all_slots, DEFAULT_HEALTH_PROBE.probe_all_slots),
+    concurrency: clampInt(src.concurrency, 1, 8, DEFAULT_HEALTH_PROBE.concurrency),
     real: {
       model: String(realSrc.model || DEFAULT_HEALTH_PROBE.real.model).trim() || DEFAULT_HEALTH_PROBE.real.model,
       prompt:
@@ -654,38 +660,87 @@ export function createHealthProbeMonitor(opts = {}) {
       }
       return
     }
-    let lastError = null
-    for (const vm of targets) {
-      if (typeof opts.runChat !== 'function') {
-        lastError = 'runChat missing'
-        break
+    if (typeof opts.runChat !== 'function') {
+      const prev = snapshots[platform]
+      if (prev?.ok && isSnapshotValid(prev, config, nowFn())) return
+      snapshots[platform] = {
+        ok: false,
+        at: new Date(started).toISOString(),
+        vm_id: targets[0]?.id || null,
+        model: real.model,
+        text: null,
+        status: 0,
+        error: 'runChat missing',
+        duration_ms: nowFn() - started,
       }
+      return
+    }
+
+    const writeSuccessSnapshot = (vm, result) => {
+      const body = sanitizeCachedMessage(result.body, {
+        text: result.text,
+        model: result.model || real.model,
+        stop_reason: result.stop_reason,
+        usage: result.usage,
+      })
+      snapshots[platform] = {
+        ok: true,
+        at: new Date(nowFn()).toISOString(),
+        vm_id: result.vm_id || vm.id,
+        model: body.model || result.model || real.model,
+        text: String(result.text || 'ok').slice(0, 4000),
+        status: result.status || 200,
+        error: null,
+        duration_ms: nowFn() - started,
+        body,
+      }
+    }
+
+    const probeVm = async (vm) => {
       try {
         const result = await opts.runChat(vm, real)
-        if (result?.ok) {
-          const body = sanitizeCachedMessage(result.body, {
-            text: result.text,
-            model: result.model || real.model,
-            stop_reason: result.stop_reason,
-            usage: result.usage,
-          })
-          snapshots[platform] = {
-            ok: true,
-            at: new Date(nowFn()).toISOString(),
-            vm_id: result.vm_id || vm.id,
-            model: body.model || result.model || real.model,
-            text: String(result.text || 'ok').slice(0, 4000),
-            status: result.status || 200,
-            error: null,
-            duration_ms: nowFn() - started,
-            body,
-          }
+        if (result?.ok) return { ok: true, result }
+        return {
+          ok: false,
+          error: result?.error?.message || result?.error || 'probe_failed',
+        }
+      } catch (e) {
+        return { ok: false, error: String(e?.message || e).slice(0, 300) }
+      }
+    }
+
+    let lastError = null
+    if (!config.probe_all_slots) {
+      for (const vm of targets) {
+        const outcome = await probeVm(vm)
+        if (outcome.ok) {
+          writeSuccessSnapshot(vm, outcome.result)
           return
         }
-        lastError = result?.error?.message || result?.error || 'probe_failed'
-      } catch (e) {
-        lastError = String(e?.message || e).slice(0, 300)
+        lastError = outcome.error
       }
+    } else {
+      let bestOkIndex = Infinity
+      const limit = config.concurrency
+      let cursor = 0
+      const workers = Array.from({ length: Math.min(limit, targets.length) }, async () => {
+        while (cursor < targets.length) {
+          const index = cursor
+          const vm = targets[cursor]
+          cursor += 1
+          const outcome = await probeVm(vm)
+          if (outcome.ok) {
+            if (index < bestOkIndex) {
+              bestOkIndex = index
+              writeSuccessSnapshot(vm, outcome.result)
+            }
+          } else {
+            lastError = outcome.error
+          }
+        }
+      })
+      await Promise.all(workers)
+      if (snapshots[platform]?.ok) return
     }
     const failedAt = new Date(nowFn()).toISOString()
     const prev = snapshots[platform]

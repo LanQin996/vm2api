@@ -1,8 +1,8 @@
 /**
- * Account-pool notify: SMTP email + Telegram bot.
+ * Account-pool notify: SMTP email + Telegram bot + WeCom group robot.
  * Watches the same availability口径 as the overview KPI
  * (has token and cred_status is not 不可用/吊销).
- * Secrets stay on disk; GET/public views never return pass / bot_token.
+ * Secrets stay on disk; GET/public views never return pass / bot_token / webhook.
  */
 import net from 'node:net'
 import tls from 'node:tls'
@@ -43,7 +43,15 @@ export const DEFAULT_NOTIFY = Object.freeze({
     bot_token: '',
     chat_id: '',
   }),
+  wecom: Object.freeze({
+    enabled: false,
+    webhook: '',
+    mention_all: false,
+  }),
 })
+
+const WECOM_WEBHOOK_BASE = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='
+const WECOM_TEXT_MAX_BYTES = 2048
 
 const EVENT_TITLES = {
   pool_empty: '账号池无可用账号',
@@ -94,6 +102,7 @@ export function normalizeNotifyConfig(raw = {}) {
   const src = raw && typeof raw === 'object' ? raw : {}
   const emailSrc = src.email && typeof src.email === 'object' ? src.email : {}
   const tgSrc = src.telegram && typeof src.telegram === 'object' ? src.telegram : {}
+  const wecomSrc = src.wecom && typeof src.wecom === 'object' ? src.wecom : {}
   const evSrc = src.events && typeof src.events === 'object' ? src.events : {}
   const port = clampInt(emailSrc.port, 1, 65535, DEFAULT_NOTIFY.email.port)
   return {
@@ -140,6 +149,13 @@ export function normalizeNotifyConfig(raw = {}) {
         .trim()
         .slice(0, 80),
     },
+    wecom: {
+      enabled: asBool(wecomSrc.enabled, false),
+      webhook: String(wecomSrc.webhook || '')
+        .trim()
+        .slice(0, 500),
+      mention_all: asBool(wecomSrc.mention_all, false),
+    },
   }
 }
 
@@ -148,15 +164,18 @@ export function mergeNotifyConfig(previous = {}, patch = {}) {
   const nextSrc = patch && typeof patch === 'object' ? patch : {}
   const emailPatch = nextSrc.email && typeof nextSrc.email === 'object' ? nextSrc.email : {}
   const tgPatch = nextSrc.telegram && typeof nextSrc.telegram === 'object' ? nextSrc.telegram : {}
+  const wecomPatch = nextSrc.wecom && typeof nextSrc.wecom === 'object' ? nextSrc.wecom : {}
   const merged = normalizeNotifyConfig({
     ...prev,
     ...nextSrc,
     events: { ...prev.events, ...(nextSrc.events || {}) },
     email: { ...prev.email, ...emailPatch },
     telegram: { ...prev.telegram, ...tgPatch },
+    wecom: { ...prev.wecom, ...wecomPatch },
   })
   if (isSecretKeep(emailPatch.pass)) merged.email.pass = prev.email.pass
   if (isSecretKeep(tgPatch.bot_token)) merged.telegram.bot_token = prev.telegram.bot_token
+  if (isSecretKeep(wecomPatch.webhook)) merged.wecom.webhook = prev.wecom.webhook
   return merged
 }
 
@@ -173,6 +192,11 @@ export function publicNotifyConfig(raw = {}) {
       ...cfg.telegram,
       bot_token: '',
       bot_token_set: !!cfg.telegram.bot_token,
+    },
+    wecom: {
+      ...cfg.wecom,
+      webhook: '',
+      webhook_set: !!cfg.wecom.webhook,
     },
   }
 }
@@ -479,6 +503,10 @@ export function telegramCredentialsReady(cfg) {
   return !!(tg.bot_token && tg.chat_id)
 }
 
+export function wecomCredentialsReady(cfg) {
+  return !!wecomWebhookUrl(cfg?.wecom?.webhook)
+}
+
 export function emailChannelReady(cfg) {
   return !!(cfg?.email?.enabled && emailCredentialsReady(cfg))
 }
@@ -487,12 +515,15 @@ export function telegramChannelReady(cfg) {
   return !!(cfg?.telegram?.enabled && telegramCredentialsReady(cfg))
 }
 
+export function wecomChannelReady(cfg) {
+  return !!(cfg?.wecom?.enabled && wecomCredentialsReady(cfg))
+}
+
 export function notifyChannelsReady(cfg) {
-  return {
-    email: emailChannelReady(cfg),
-    telegram: telegramChannelReady(cfg),
-    any: emailChannelReady(cfg) || telegramChannelReady(cfg),
-  }
+  const email = emailChannelReady(cfg)
+  const telegram = telegramChannelReady(cfg)
+  const wecom = wecomChannelReady(cfg)
+  return { email, telegram, wecom, any: email || telegram || wecom }
 }
 
 function smtpExpectOk(reply, allowed) {
@@ -687,6 +718,74 @@ export async function sendTelegramNotify(cfg, message, opts = {}) {
   return { ok: true, channel: 'telegram', chat_id: tg.chat_id }
 }
 
+// Accepts the full robot URL copied from WeCom or just its key.
+export function wecomWebhookUrl(value) {
+  const s = String(value || '').trim()
+  if (!s) return ''
+  if (/^[A-Za-z0-9-]{8,128}$/.test(s)) return WECOM_WEBHOOK_BASE + s
+  let url
+  try {
+    url = new URL(s)
+  } catch {
+    return ''
+  }
+  if (url.protocol !== 'https:' || !url.searchParams.get('key')) return ''
+  return url.toString()
+}
+
+function redactWecomError(text, cfg) {
+  let out = String(text || 'wecom_failed')
+  const url = wecomWebhookUrl(cfg?.wecom?.webhook)
+  const key = url ? new URL(url).searchParams.get('key') : ''
+  for (const secret of [cfg?.wecom?.webhook, url, key]) {
+    if (secret) out = out.split(secret).join('***')
+  }
+  return out.slice(0, 180)
+}
+
+function truncateUtf8(text, maxBytes) {
+  const buf = Buffer.from(text, 'utf8')
+  if (buf.length <= maxBytes) return text
+  const suffix = '\n…'
+  let cut = buf.subarray(0, maxBytes - Buffer.byteLength(suffix)).toString('utf8')
+  if (cut.endsWith('\uFFFD')) cut = cut.slice(0, -1)
+  return cut + suffix
+}
+
+export async function sendWecomNotify(cfg, message, opts = {}) {
+  const wecom = cfg?.wecom || {}
+  const url = wecomWebhookUrl(wecom.webhook)
+  if (!url) throw new Error('wecom_not_configured')
+  const fetchFn = opts.fetch || globalThis.fetch
+  if (typeof fetchFn !== 'function') throw new Error('wecom_fetch_missing')
+  const text = { content: truncateUtf8(String(message.text || message.title || 'KIN'), WECOM_TEXT_MAX_BYTES) }
+  if (wecom.mention_all) text.mentioned_list = ['@all']
+  let res
+  try {
+    res = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ msgtype: 'text', text }),
+      signal: opts.signal,
+    })
+  } catch (err) {
+    throw new Error(redactWecomError(err?.message || err, cfg))
+  }
+  const raw = await res.text().catch(() => '')
+  let data = {}
+  try {
+    data = raw ? JSON.parse(raw) : {}
+  } catch {
+    data = { errmsg: raw }
+  }
+  if (!res.ok || (data.errcode != null && Number(data.errcode) !== 0)) {
+    const reason =
+      data.errcode != null ? `wecom_${data.errcode} ${data.errmsg || ''}`.trim() : `wecom_http_${res.status}`
+    throw new Error(redactWecomError(reason, cfg))
+  }
+  return { ok: true, channel: 'wecom' }
+}
+
 export async function dispatchNotify(cfg, message, opts = {}) {
   const ready = notifyChannelsReady(cfg)
   if (!ready.any) return { ok: false, error: 'no_channel', results: [] }
@@ -703,6 +802,13 @@ export async function dispatchNotify(cfg, message, opts = {}) {
       results.push(await sendTelegramNotify(cfg, message, opts))
     } catch (err) {
       results.push({ ok: false, channel: 'telegram', error: String(err?.message || err).slice(0, 180) })
+    }
+  }
+  if (ready.wecom) {
+    try {
+      results.push(await sendWecomNotify(cfg, message, opts))
+    } catch (err) {
+      results.push({ ok: false, channel: 'wecom', error: String(err?.message || err).slice(0, 180) })
     }
   }
   return {
@@ -730,6 +836,7 @@ export async function sendNotifyTest(cfg, channel, extra = {}) {
   const want = String(channel || '').toLowerCase()
   if (want === 'email') return sendEmailNotify(cfg, message, extra)
   if (want === 'telegram') return sendTelegramNotify(cfg, message, extra)
+  if (want === 'wecom') return sendWecomNotify(cfg, message, extra)
   return dispatchNotify(cfg, message, extra)
 }
 

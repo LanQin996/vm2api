@@ -345,8 +345,12 @@ export function isCodexFailoverError(result) {
   if (!result || result.ok === true || result.committed === true) return false
   const status = Number(result.status) || 0
   const code = String(result.body?.error?.code || result.error_code || '')
-  if ([401, 403, 429, 500, 502, 503, 504].includes(status)) return true
-  return /usage_limit_reached|upstream_auth|no_credential|sticky_unavailable/.test(code)
+  if (status === 429 || status === 401 || status === 403) return true
+  // These upstream server errors can recover on another account. A 502 transport
+  // failure is not evidence that the account itself is unhealthy.
+  if ([500, 502, 503].includes(status) && code === 'server_error') return true
+  if (status === 504) return true
+  return /usage_limit_reached|upstream_auth|no_credential|no_capacity|sticky_unavailable/.test(code)
 }
 
 export function codexQuotaWindowReason(vm, now = Date.now()) {

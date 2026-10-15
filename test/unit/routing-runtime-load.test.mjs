@@ -194,6 +194,40 @@ test('persistRoutingPatch writes a changed stream idle timeout into Claude kerne
   }
 })
 
+test('persistRoutingPatch writes a changed request body limit into Claude kernel configs', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-body-'))
+  const vms = path.join(root, 'vms')
+  const routingFile = path.join(root, 'routing.json')
+  const kernelFile = path.join(vms, 'vm-claude', 'run', 'kernel.json')
+  fs.mkdirSync(vms, { recursive: true })
+  fs.writeFileSync(path.join(vms, 'vm-claude.json'), JSON.stringify({ id: 'vm-claude', status: 'stopped', claude: {} }))
+  const routingConfig = { failover: { stream_idle_timeout_ms: 180000 }, concurrency: {}, tiers: {} }
+  fs.writeFileSync(routingFile, JSON.stringify(routingConfig))
+  try {
+    const runtime = createRoutingRuntime({
+      cfg: { paths: { project: root } },
+      routingConfigPath: routingFile,
+      routingConfig,
+      stickyRouter: { reloadConfig() {} },
+      accountQuota: {
+        reloadConfig() {},
+        applyTierConcurrency() {},
+        applyTierRpm() {},
+        repo: { get: () => null },
+      },
+      requestLog: { setConfig() {} },
+    })
+    const same = runtime.persistRoutingPatch({ failover: { stream_idle_timeout_ms: 180000 } })
+    assert.equal(same.kernel_persona, null)
+    assert.equal(fs.existsSync(kernelFile), false)
+    const changed = runtime.persistRoutingPatch({ failover: { max_request_mib: 64 } })
+    assert.equal(changed.kernel_reload, 0)
+    assert.equal(JSON.parse(fs.readFileSync(kernelFile, 'utf8')).max_request_bytes, 64 * 1024 * 1024)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('persistRoutingPatch writes persona_preset into Claude kernel system_layout', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-persona-kernel-'))
   const vms = path.join(root, 'vms')

@@ -10,7 +10,7 @@ import { SettingsRepo } from '../db/repos/settings-repo.mjs'
 import { findAccount } from '../admin/panel-api.mjs'
 import { readJevConfig, scopeAccountFromVm } from './jev-intercept.mjs'
 import { runProtocolIntercept } from './intercept-gate.mjs'
-import { readRoutingConfigFile } from '../core/config.mjs'
+import { inboundBodyLimit, readRoutingConfigFile } from '../core/config.mjs'
 import {
   detectProxiedOfficialCcFromRouting,
   isOfficialClaudeCodeTraffic,
@@ -248,7 +248,7 @@ export async function handleUserCountTokens(req, res, deps) {
   if (!deps.requireAuth(req, res)) return
   let inbound
   try {
-    inbound = await deps.readBody(req, deps.cfg.limits.max_body_bytes)
+    inbound = await deps.readBody(req, inboundBodyLimit(deps.getRouting?.(), deps.cfg.limits.max_body_bytes))
   } catch (error) {
     if (error?.body?.error) return json(res, error.status || 400, error.body)
     return json(

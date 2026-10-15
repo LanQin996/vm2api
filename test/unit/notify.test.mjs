@@ -11,6 +11,9 @@ import {
   formatNotifyMessage,
   notifyChannelsReady,
   sendTelegramNotify,
+  sendWecomNotify,
+  wecomWebhookUrl,
+  dispatchNotify,
   sendNotifyTest,
   createNotifyMonitor,
   SECRET_KEEP,
@@ -351,4 +354,82 @@ test('test helper routes to the asked channel', async () => {
     snapshot: summarizePoolAvailability([]),
   })
   assert.equal(out.channel, 'telegram')
+})
+
+test('wecom webhook is redacted, merged and accepts a bare key', async () => {
+  const url = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abcd1234-ef56-7890'
+  const prev = normalizeNotifyConfig({ wecom: { enabled: true, webhook: url } })
+  const merged = mergeNotifyConfig(prev, { wecom: { enabled: true, webhook: '', mention_all: true } })
+  assert.equal(merged.wecom.webhook, url)
+  assert.equal(merged.wecom.mention_all, true)
+  const pub = publicNotifyConfig(merged)
+  assert.equal(pub.wecom.webhook, '')
+  assert.equal(pub.wecom.webhook_set, true)
+  assert.equal(notifyChannelsReady(merged).wecom, true)
+  assert.equal(wecomWebhookUrl('abcd1234-ef56-7890'), url)
+  assert.equal(wecomWebhookUrl('http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x'), '')
+  assert.equal(wecomWebhookUrl('not a url'), '')
+  assert.equal(
+    notifyChannelsReady(normalizeNotifyConfig({ wecom: { enabled: true, webhook: 'bad url' } })).wecom,
+    false,
+  )
+})
+
+test('wecom send posts a text message and never echoes the key', async () => {
+  const cfg = normalizeNotifyConfig({ wecom: { enabled: true, webhook: 'secret-key-123456', mention_all: true } })
+  let called = null
+  const out = await sendWecomNotify(
+    cfg,
+    { text: '你'.repeat(1000) },
+    {
+      fetch: async (u, init) => {
+        called = { url: u, init }
+        return { ok: true, status: 200, text: async () => '{"errcode":0,"errmsg":"ok"}' }
+      },
+    },
+  )
+  assert.equal(out.ok, true)
+  assert.equal(out.channel, 'wecom')
+  assert.match(called.url, /qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=secret-key-123456/)
+  const body = JSON.parse(called.init.body)
+  assert.equal(body.msgtype, 'text')
+  assert.deepEqual(body.text.mentioned_list, ['@all'])
+  assert.ok(Buffer.byteLength(body.text.content) <= 2048)
+  assert.match(body.text.content, /…$/)
+
+  await assert.rejects(
+    () =>
+      sendWecomNotify(
+        cfg,
+        { text: 'x' },
+        {
+          fetch: async () => ({
+            ok: true,
+            status: 200,
+            text: async () => '{"errcode":93000,"errmsg":"invalid webhook url, key=secret-key-123456"}',
+          }),
+        },
+      ),
+    (err) => {
+      assert.match(String(err.message), /wecom_93000/)
+      assert.doesNotMatch(String(err.message), /secret-key-123456/)
+      return true
+    },
+  )
+})
+
+test('dispatch includes wecom and the test helper routes to it', async () => {
+  const cfg = normalizeNotifyConfig({ wecom: { enabled: true, webhook: 'secret-key-123456' } })
+  const fetch = async () => ({ ok: true, status: 200, text: async () => '{"errcode":0}' })
+  const all = await dispatchNotify(cfg, { text: 'hi' }, { fetch })
+  assert.equal(all.ok, true)
+  assert.deepEqual(
+    all.results.map((r) => r.channel),
+    ['wecom'],
+  )
+  const out = await sendNotifyTest(normalizeNotifyConfig({ wecom: { webhook: 'secret-key-123456' } }), 'wecom', {
+    fetch,
+    snapshot: summarizePoolAvailability([]),
+  })
+  assert.equal(out.channel, 'wecom')
 })

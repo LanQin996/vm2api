@@ -17,7 +17,7 @@ import {
 } from '../vm/vm-registry.mjs'
 import { normalizeInferenceConfig, normalizeSessionSlots, resolveInferenceEngine } from '../vm/slot-engine.mjs'
 import { slotExec } from '../vm/slot-runtime.mjs'
-import { streamIdleTimeoutMs } from '../core/config.mjs'
+import { maxRequestBytes, streamIdleTimeoutMs } from '../core/config.mjs'
 
 import { accountTierKey, mergeTierMaps, normalizeTiers } from '../pool/quota-tiers.mjs'
 import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
@@ -404,6 +404,7 @@ export function createRoutingRuntime(ctx) {
     const prevNotify = routingConfig.notify
     const prevTiers = routingConfig.tiers
     const prevIdleMs = streamIdleTimeoutMs(routingConfig)
+    const prevRequestBytes = maxRequestBytes(routingConfig)
     setRouting(routingConfig)
     if (body.sticky) routingConfig.sticky = { ...(routingConfig.sticky || {}), ...body.sticky }
     if (body.quota) routingConfig.quota = { ...(routingConfig.quota || {}), ...body.quota }
@@ -463,9 +464,13 @@ export function createRoutingRuntime(ctx) {
     ctx.accountQuota.reloadConfig(routingConfig)
     getPool()?.reloadConfig?.(poolSchedulerConfig())
     const idleChanged = streamIdleTimeoutMs(routingConfig) !== prevIdleMs
+    const requestBytesChanged = maxRequestBytes(routingConfig) !== prevRequestBytes
+    // Body limit is applied once, when axum builds DefaultBodyLimit.
     const kernelPersona =
-      compatibilityTouchesKernel(body.compatibility) || idleChanged ? syncKernelPanelConfig(routingConfig) : null
-    const kernelReload = idleChanged ? reloadClaudeKernelsWhenIdle(routingConfig) : 0
+      compatibilityTouchesKernel(body.compatibility) || idleChanged || requestBytesChanged
+        ? syncKernelPanelConfig(routingConfig)
+        : null
+    const kernelReload = idleChanged || requestBytesChanged ? reloadClaudeKernelsWhenIdle(routingConfig) : 0
     // Pool and failover settings hot-reload into the live scheduler and runner.
     // Rebuilding them would drop the seat book and queues while their requests
     // still run (the panel sends `failover` with every routing save).

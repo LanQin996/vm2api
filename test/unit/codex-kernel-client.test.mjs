@@ -1,11 +1,14 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import { spawn } from 'node:child_process'
 import { codexKernelPaths, withCodexKernelExec } from '../../src/lib/transport/codex-kernel-client.mjs'
 import {
   ensureCodexKernel,
+  finishCodexRecycle,
   stopCodexKernel,
   writeCodexKernelConfig,
+  shouldRecycleCodexKernel,
 } from '../../src/lib/transport/codex-kernel-supervisor.mjs'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -64,6 +67,75 @@ test('writeCodexKernelConfig writes bound SOCKS proxy', () => {
   assert.equal(cfg.internal_token, 'secret')
   assert.equal(cfg.max_request_bytes, 32 * 1024 * 1024)
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('writeCodexKernelConfig follows the panel request body limit', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-body-'))
+  const vm = { id: 'vm-codex', proxy: { url: 'socks5://127.0.0.1:1080' } }
+  const written = writeCodexKernelConfig(root, vm, {
+    token: 'secret',
+    proxyUrl: 'socks5h://127.0.0.1:1080',
+    proxyRequired: true,
+    routing: { failover: { max_request_mib: 64 } },
+  })
+  const cfg = JSON.parse(fs.readFileSync(written.configPath, 'utf8'))
+  assert.equal(cfg.max_request_bytes, 64 * 1024 * 1024)
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('codex kernel recycles a body-limit change only when the slot is alone', () => {
+  assert.equal(shouldRecycleCodexKernel({ wanted: 64 << 20, stamped: 32 << 20, inFlight: 1 }), true)
+  assert.equal(shouldRecycleCodexKernel({ wanted: 64 << 20, stamped: 32 << 20, inFlight: 0 }), true)
+  assert.equal(shouldRecycleCodexKernel({ wanted: 64 << 20, stamped: 32 << 20, inFlight: 2 }), false)
+  assert.equal(shouldRecycleCodexKernel({ wanted: 32 << 20, stamped: 32 << 20, inFlight: 1 }), false)
+  assert.equal(shouldRecycleCodexKernel({ wanted: 64 << 20, stamped: 0, inFlight: 1 }), false)
+})
+
+function holdProcess(exitOnTerm) {
+  const script = exitOnTerm
+    ? 'process.on("SIGTERM",()=>process.exit(0)); process.stdout.write("ready"); setInterval(()=>{},1e6)'
+    : 'process.on("SIGTERM",()=>{}); process.stdout.write("ready"); setInterval(()=>{},1e6)'
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] })
+  if (!child.pid) throw new Error('failed to spawn hold process')
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.stdout.once('data', () => resolve(child))
+  })
+}
+
+test('a child that ignores SIGTERM keeps the live socket', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-recycle-'))
+  const socket = path.join(dir, 'codex-kernel.sock')
+  fs.writeFileSync(socket, 'busy')
+  const child = await holdProcess(false)
+  try {
+    const gone = await finishCodexRecycle(child, socket, { termMs: 150, killMs: 0 })
+    assert.equal(gone.exited, false)
+    assert.equal(fs.readFileSync(socket, 'utf8'), 'busy')
+    assert.equal(child.exitCode, null)
+    assert.equal(child.signalCode, null)
+  } finally {
+    if (child.exitCode == null && child.signalCode == null) {
+      child.kill('SIGKILL')
+      await new Promise((resolve) => child.once('exit', resolve))
+    }
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the socket is removed only after the child exits', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-recycle-'))
+  const socket = path.join(dir, 'codex-kernel.sock')
+  fs.writeFileSync(socket, 'busy')
+  const child = await holdProcess(true)
+  try {
+    const gone = await finishCodexRecycle(child, socket, { termMs: 1000, killMs: 200 })
+    assert.equal(gone.exited, true)
+    assert.equal(fs.existsSync(socket), false)
+  } finally {
+    if (child.exitCode == null && child.signalCode == null) child.kill('SIGKILL')
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
 })
 
 test('writeCodexKernelConfig fail-closes proxy_required without a URL', () => {

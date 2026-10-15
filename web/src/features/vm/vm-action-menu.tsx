@@ -10,6 +10,8 @@ import {
   RefreshCw,
   RotateCcw,
   Trash2,
+  Undo2,
+  UserRoundPlus,
 } from 'lucide-react'
 import { canRefreshCredential, credTypeOf } from '@/lib/cred-type'
 import { cn } from '@/lib/utils'
@@ -24,6 +26,7 @@ import {
 import { meQueryOptions } from '@/features/auth/queries'
 import { restrictionTitle } from '@/features/vm/clear-restriction'
 import { useVmActions } from '@/features/vm/vm-actions-context'
+import { canReclaimVm } from '@/features/vm/vm-owner'
 import { VmPackageDialog } from '@/features/vm/vm-package-dialog'
 
 /** 无法刷新时给出原因，与详情页 refreshBlocked 文案一致。 */
@@ -94,6 +97,24 @@ export function VmActionMenu({
             <DropdownMenuItem onSelect={() => setPackOpen(true)}>
               <Download />
               打包 JSON
+            </DropdownMenuItem>
+          ) : null}
+          {admin && actions.openAssignOwner ? (
+            <DropdownMenuItem
+              disabled={actions.ownerBusyId === vm.id}
+              onSelect={() => actions.openAssignOwner?.(vm)}
+            >
+              <UserRoundPlus />
+              分配给租户
+            </DropdownMenuItem>
+          ) : null}
+          {admin && actions.reclaimOwner && canReclaimVm(vm) ? (
+            <DropdownMenuItem
+              disabled={actions.ownerBusyId === vm.id}
+              onSelect={() => actions.reclaimOwner?.(vm)}
+            >
+              <Undo2 />
+              收回
             </DropdownMenuItem>
           ) : null}
           <DropdownMenuSeparator />

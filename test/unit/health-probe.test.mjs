@@ -71,6 +71,9 @@ test('probe cache ships off and can be turned on', () => {
 test('normalize fills defaults and clamps', () => {
   const n = normalizeHealthProbeConfig({ interval_sec: 5, real: { outbound_mode: 'rewrite', max_tokens: 0 } })
   assert.equal(n.interval_sec, 30)
+  assert.equal(n.probe_all_slots, false)
+  assert.equal(n.concurrency, 2)
+  assert.equal(normalizeHealthProbeConfig({ probe_all_slots: true, concurrency: 99 }).concurrency, 8)
   assert.equal(n.real.outbound_mode, 'official')
   assert.equal(n.real.prompt, 'hello')
   assert.equal(n.real.max_tokens, 64)
@@ -351,6 +354,75 @@ test('selectHealthProbeTargets skips slots outside their working window', () => 
     selectHealthProbeTargets(vms, cfg, now).map((v) => v.id),
     ['vm-day'],
   )
+})
+
+test('probe_all_slots probes every target but snapshot uses first list success', async () => {
+  const probed = []
+  const monitor = createHealthProbeMonitor({
+    config: { enabled: true, probe_all_slots: true, concurrency: 2, run_on_start: false },
+    listTargets: () => [
+      { id: 'vm-a', schedulable: true, status: 'running', has_token: true },
+      { id: 'vm-b', schedulable: true, status: 'running', has_token: true },
+      { id: 'vm-c', schedulable: true, status: 'running', has_token: true },
+    ],
+    runChat: async (vm) => {
+      probed.push(vm.id)
+      return {
+        ok: true,
+        text: vm.id,
+        vm_id: vm.id,
+        status: 200,
+        model: 'claude-haiku-4-5',
+        body: {
+          id: `msg_${vm.id}`,
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-haiku-4-5',
+          content: [{ type: 'text', text: vm.id }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      }
+    },
+  })
+  await monitor.runRealProbe()
+  assert.deepEqual(probed.sort(), ['vm-a', 'vm-b', 'vm-c'])
+  assert.equal(monitor.rawSnapshot().vm_id, 'vm-a')
+  assert.equal(monitor.rawSnapshot().body.id, 'msg_vm-a')
+  monitor.stop()
+})
+
+test('default probe stops after first success', async () => {
+  const probed = []
+  const monitor = createHealthProbeMonitor({
+    config: { enabled: true, run_on_start: false },
+    listTargets: () => [
+      { id: 'vm-a', schedulable: true, status: 'running', has_token: true },
+      { id: 'vm-b', schedulable: true, status: 'running', has_token: true },
+    ],
+    runChat: async (vm) => {
+      probed.push(vm.id)
+      return {
+        ok: true,
+        text: 'ok',
+        vm_id: vm.id,
+        status: 200,
+        model: 'claude-haiku-4-5',
+        body: {
+          id: 'msg_first',
+          type: 'message',
+          role: 'assistant',
+          model: 'claude-haiku-4-5',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          usage: { input_tokens: 1, output_tokens: 1 },
+        },
+      }
+    },
+  })
+  await monitor.runRealProbe()
+  assert.deepEqual(probed, ['vm-a'])
+  monitor.stop()
 })
 
 test('monitor singleflight writes snapshot and fail_closed decides fail', async () => {

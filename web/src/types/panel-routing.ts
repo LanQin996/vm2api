@@ -210,6 +210,14 @@ export type NotifyTelegramConfig = {
   chat_id: string
 }
 
+export type NotifyWecomConfig = {
+  enabled: boolean
+  /** 企业微信群机器人 webhook 地址或 key；GET 永远为空，仅以 webhook_set 表示已配置。 */
+  webhook: string
+  webhook_set?: boolean
+  mention_all: boolean
+}
+
 /** `GET /routing -> notify` 与 `GET /notify -> config` 的脱敏通知配置。 */
 export type NotifyConfig = {
   enabled: boolean
@@ -221,6 +229,7 @@ export type NotifyConfig = {
   console_url: string
   events: NotifyEvents
   telegram: NotifyTelegramConfig
+  wecom: NotifyWecomConfig
   email?: Record<string, unknown>
 }
 
@@ -230,7 +239,12 @@ export type NotifyStatus = {
   last_events?: { type?: string; title?: string }[]
   last_error?: string | null
   last_run_at?: string | null
-  channels?: { email?: boolean; telegram?: boolean; any?: boolean }
+  channels?: {
+    email?: boolean
+    telegram?: boolean
+    wecom?: boolean
+    any?: boolean
+  }
 }
 
 export type BackupsPayload = {

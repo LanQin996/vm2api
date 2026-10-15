@@ -14,6 +14,7 @@ import { Field } from '@/features/vm/detail-section-primitives'
 import { VmEnvironmentCard } from '@/features/vm/environment-card'
 import { NodeChip } from '@/features/vm/node-chip'
 import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
+import { VmOwnerAdminCard } from '@/features/vm/vm-owner-admin-card'
 import { VmShellCard } from '@/features/vm/vm-shell-card'
 
 type VmOpsTabProps = {
@@ -54,6 +55,7 @@ export function VmOpsTab(props: VmOpsTabProps) {
   const remote = isRemoteVm(vm)
   return (
     <TabsContent value='ops' className='space-y-3 pt-4'>
+      <VmOwnerAdminCard vm={vm} />
       <Card>
         <CardHeader className='pb-2'>
           <CardTitle className='text-sm'>容器</CardTitle>

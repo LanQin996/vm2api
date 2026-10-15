@@ -495,6 +495,15 @@ export async function runCodexKernelHop({ hop, args = {}, onEvent, onReasoningFa
     !args.signal?.aborted &&
     attempts < CODEX_MAX_HOP_ATTEMPTS &&
     !/^(no_capacity|no_credential|upstream_auth|sticky_unavailable)$/.test(result?.body?.error?.code || '') &&
+    !(
+      Number(result?.status) === 503 &&
+      result?.body?.error?.code === 'server_error' &&
+      !args.body?.previous_response_id &&
+      !args.envelope?.session?.previous_response_id &&
+      result?.headers?.['retry-after'] == null &&
+      result?.headers?.['Retry-After'] == null &&
+      result?.body?.error?.headers?.['retry-after'] == null
+    ) &&
     CODEX_RETRY_STATUSES.has(Number(result?.status))
   ) {
     const delay = codexRetryDelay(result, retries)
@@ -679,6 +688,7 @@ export async function handleCodexProtocol({
         writeCfg(projectRoot, vm, {
           proxyUrl: boundProxyUrl(vm.proxy),
           proxyRequired: true,
+          routing,
         })
         const ready = await ensure(execFor(projectRoot, vm))
         if (!ready?.ok) {

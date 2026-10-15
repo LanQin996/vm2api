@@ -13,7 +13,7 @@ import {
   rustKernelReachable,
   rustKernelBusy,
 } from './rust-kernel-client.mjs'
-import { streamIdleTimeoutMs } from '../core/config.mjs'
+import { maxRequestBytes, streamIdleTimeoutMs } from '../core/config.mjs'
 import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
 import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
@@ -689,6 +689,8 @@ export function writeKernelConfig(
   const defaultCacheTtl = routing != null ? cacheTtlFromRouting(routing) : normalizeCacheTtl(previous.default_cache_ttl)
   const previousIdleSeconds = Number(previous.idle_timeout_seconds)
   const idleMs = routing == null && previousIdleSeconds > 0 ? previousIdleSeconds * 1000 : streamIdleTimeoutMs(routing)
+  const previousMax = Number(previous.max_request_bytes)
+  const requestBytes = routing == null && previousMax > 0 ? previousMax : maxRequestBytes(routing)
 
   const kind = runtimeKind(record)
   const config = {
@@ -703,7 +705,7 @@ export function writeKernelConfig(
     request_timeout_seconds: 0,
     first_byte_timeout_seconds: 600,
     idle_timeout_seconds: Math.ceil(idleMs / 1000),
-    max_request_bytes: 32 * 1024 * 1024,
+    max_request_bytes: requestBytes,
     max_response_bytes: 64 * 1024 * 1024,
     max_event_bytes: 32 * 1024 * 1024,
     runtime_kind: kind,

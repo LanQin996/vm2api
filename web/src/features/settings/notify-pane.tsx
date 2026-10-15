@@ -3,6 +3,7 @@ import type {
   NotifyConfig,
   NotifyEvents,
   NotifyTelegramConfig,
+  NotifyWecomConfig,
 } from '@/types/panel-routing'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
@@ -58,6 +59,12 @@ function notifyConfig(value: NotifyConfig | undefined): NotifyConfig {
       chat_id: '',
       ...(value?.telegram || {}),
     },
+    wecom: {
+      enabled: false,
+      webhook: '',
+      mention_all: false,
+      ...(value?.wecom || {}),
+    },
   }
 }
 
@@ -96,6 +103,7 @@ export function NotifyPane({
 }) {
   const config = notifyConfig(value)
   const telegram = config.telegram
+  const wecom = config.wecom
   const status = useQuery(notifyQueryOptions())
 
   const testTelegram = useMutation({
@@ -119,10 +127,32 @@ export function NotifyPane({
     onError: (error: Error) => toast.error(error.message),
   })
 
+  const testWecom = useMutation({
+    mutationFn: () => {
+      if (!wecom.webhook.trim() && !wecom.webhook_set) {
+        throw new Error('先填写 Webhook 地址')
+      }
+      return api('/api/panel/notify/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          channel: 'wecom',
+          wecom: { ...wecom, enabled: true },
+        }),
+      })
+    },
+    onSuccess: async () => {
+      toast.success('测试企业微信已发送')
+      await status.refetch()
+    },
+    onError: (error: Error) => toast.error(error.message),
+  })
+
   const patch = (next: Partial<NotifyConfig>) =>
     onChange({ ...config, ...next })
   const patchTelegram = (next: Partial<NotifyTelegramConfig>) =>
     patch({ telegram: { ...telegram, ...next } })
+  const patchWecom = (next: Partial<NotifyWecomConfig>) =>
+    patch({ wecom: { ...wecom, ...next } })
   const patchEvent = (key: keyof NotifyEvents, enabled: boolean) =>
     patch({ events: { ...config.events, [key]: enabled } })
 
@@ -154,6 +184,18 @@ export function NotifyPane({
                       key: 'telegram-missing',
                       cls: 'none',
                       text: 'Telegram 未就绪',
+                    }
+              }
+              variant='pill'
+            />
+            <StatusMark
+              tone={
+                status.data?.channels?.wecom
+                  ? { key: 'wecom-ready', cls: 'ok', text: '企业微信已就绪' }
+                  : {
+                      key: 'wecom-missing',
+                      cls: 'none',
+                      text: '企业微信未就绪',
                     }
               }
               variant='pill'
@@ -316,6 +358,59 @@ export function NotifyPane({
               onChange={(event) =>
                 patchTelegram({ chat_id: event.target.value })
               }
+            />
+          </SettingRow>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className='flex flex-row items-center justify-between gap-3'>
+          <CardTitle>企业微信群机器人</CardTitle>
+          <Button
+            variant='outline'
+            size='sm'
+            loading={testWecom.isPending}
+            onClick={() => testWecom.mutate()}
+          >
+            发送测试
+          </Button>
+        </CardHeader>
+        <CardContent className='divide-y'>
+          <SettingRow label='启用企业微信' desc='保存后纳入定时通知通道'>
+            <Switch
+              checked={wecom.enabled}
+              aria-label='启用企业微信'
+              onCheckedChange={(enabled) => patchWecom({ enabled })}
+            />
+          </SettingRow>
+          <SettingRow
+            label='Webhook'
+            desc={
+              wecom.webhook_set
+                ? '已保存；留空不会覆盖现有地址'
+                : '群设置 → 群机器人 → 复制 Webhook 地址（或只填 key），保存后不再回显'
+            }
+          >
+            <Input
+              aria-label='企业微信 Webhook'
+              className='w-full min-w-56 sm:w-80'
+              type='password'
+              autoComplete='new-password'
+              maxLength={500}
+              placeholder={
+                wecom.webhook_set
+                  ? '已保存，留空不改'
+                  : 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…'
+              }
+              value={wecom.webhook}
+              onChange={(event) => patchWecom({ webhook: event.target.value })}
+            />
+          </SettingRow>
+          <SettingRow label='@所有人' desc='通知消息提醒群内所有成员'>
+            <Switch
+              checked={wecom.mention_all}
+              aria-label='企业微信 @所有人'
+              onCheckedChange={(mention_all) => patchWecom({ mention_all })}
             />
           </SettingRow>
         </CardContent>
