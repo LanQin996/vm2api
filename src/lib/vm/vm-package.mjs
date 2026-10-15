@@ -17,10 +17,10 @@ import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { defaultSeedPolicy, standardSeedPolicy } from '../protocol/seed-policy.mjs'
 import {
   applyGeneratedFingerprint,
-  generateWorkstationFingerprint,
   takenFingerprintKeys,
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
+import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
 import { VM_ORIGIN, canBindProxyToVm, normalizeOwnerId } from '../admin/resource-owner.mjs'
 import { readCodexAccounts, writeCodexAccounts } from './codex-slot.mjs'
 import { hasBoundExit, isLocalEgressProxy } from './egress.mjs'
@@ -619,8 +619,9 @@ export async function commitVmPackage({
   let vm
   if (create) {
     const existing = listVms(projectRoot)
-    const generated = generateWorkstationFingerprint(
-      { id, kernel: spec.vm.kernel, timezone: spec.vm.timezone, locale: spec.vm.locale },
+    const generated = assignComputerFingerprint(
+      projectRoot,
+      { id, kernel: spec.vm.kernel, timezone: spec.vm.timezone, locale: spec.vm.locale, runtime: { type: 'docker' } },
       { taken: takenFingerprintKeys(existing) },
     )
     vm = {

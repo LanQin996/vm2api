@@ -133,10 +133,6 @@ export const HARD_POLICY_RULES = Object.freeze([
   { category: 'nsfw', source: String.raw`(?:生成|写一段|描述)(?:露骨|色情)(?:内容|小说|场景)` },
   {
     category: 'distill',
-    source: String.raw`\b(?:knowledge|model|teacher|student)\s+distill(?:ation|ing)?\b`,
-  },
-  {
-    category: 'distill',
     source: String.raw`\bdistill(?:ation|ing)?\s+(?:of\s+)?(?:(?:the|your|a|an|reusable|durable|rollout|hidden|internal|full|complete)\s+)?(?:reasoning(?:\s+traces?)?|chain[- ]of[- ]thoughts?|teacher(?:\s+model)?)\b`,
   },
   {
@@ -144,7 +140,7 @@ export const HARD_POLICY_RULES = Object.freeze([
     source: String.raw`\b(?:extract|export|dump|reveal|harvest|exfiltrate)(?:ing|ed|ion|s)?\s+(?:(?:the|your|a|an|full|hidden|internal|complete|raw|durable|entire)\s+){0,4}(?:chain[- ]of[- ]thoughts?|reasoning\s+traces?|hidden\s+reasoning|internal\s+reasoning|internal\s+monologues?)\b`,
   },
   { category: 'distill', source: String.raw`\b(?:chain[- ]of[- ]thought|reasoning\s+trace)\s+extraction\b` },
-  { category: 'distill', source: String.raw`(?:知识蒸馏|模型蒸馏|思维链蒸馏|推理蒸馏|思考链蒸馏)` },
+  { category: 'distill', source: String.raw`(?:思维链蒸馏|推理蒸馏|思考链蒸馏)` },
   {
     category: 'distill',
     source: String.raw`(?:提取|导出|抽取|蒸馏|收割|扒取)\s*(?:出|取)?\s*(?:你的|本人的|完整|全部|隐藏|内部)?\s*(?:的)?\s*(?:思维链|思考链|推理链)`,

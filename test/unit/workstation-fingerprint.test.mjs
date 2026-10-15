@@ -31,6 +31,15 @@ test('generateWorkstationFingerprint emits a coherent linux pack', () => {
   assert.equal(isHexDeviceId(pack.device_id), true)
 })
 
+test('computer names fit the hostname rule and stay at most 63 characters', () => {
+  assert.equal(isGeneratedHostname('macbookpro11-4-20bd08'), true)
+  assert.equal(HOSTNAME_RE.test('a'.repeat(63)), true)
+  assert.equal(HOSTNAME_RE.test('a'.repeat(64)), false)
+  assert.equal(HOSTNAME_RE.test('-macbook'), false)
+  assert.equal(HOSTNAME_RE.test('macbook-'), false)
+  assert.equal(HOSTNAME_RE.test('MacBook'), false)
+})
+
 test('debian family hostname and catalog kernel', () => {
   const pack = generateWorkstationFingerprint({ id: 'vm-10', kernel: 'debian-12' })
   assert.equal(pack.hostname.startsWith('debian-'), true)

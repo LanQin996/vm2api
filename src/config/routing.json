@@ -83,6 +83,8 @@
     "same_account_retry_delay_ms": 500,
     "total_retry_deadline_ms": 120000,
     "stream_idle_timeout_ms": 180000,
+    "queue_keepalive_delay_ms": 60000,
+    "session_queue_timeout_ms": 900000,
     "eager_tool_streaming": true
   },
   "inference": {

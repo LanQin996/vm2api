@@ -85,6 +85,8 @@ export function createKernelWatchdog({
   onFault = null,
   ensureTelemetry = null,
   telemetryEveryMs = TELEMETRY_HEAL_MS,
+  revive = null,
+  healBridges = null,
   now = () => Date.now(),
 } = {}) {
   let config = normalizeKernelWatchdogConfig(initial)
@@ -95,6 +97,22 @@ export function createKernelWatchdog({
   const restarts = new Map()
   // vmId -> next ms a telemetry sidecar check is due
   const telemetryDue = new Map()
+  // VMs under an operator power cycle: the watchdog must not restart them mid-cycle.
+  const held = new Set()
+  // vmId -> this tick's pending check/restart, so hold() can wait for it to settle.
+  const inflight = new Map()
+  let healingBridges = false
+
+  function healBridgesOffPath(vms) {
+    if (typeof healBridges !== 'function' || healingBridges) return
+    healingBridges = true
+    Promise.resolve()
+      .then(() => healBridges(vms))
+      .catch((error) => console.warn(`[kernel-watchdog] bridge heal failed: ${error?.message || error}`))
+      .finally(() => {
+        healingBridges = false
+      })
+  }
 
   async function healTelemetry(vm, at) {
     if (typeof ensureTelemetry !== 'function' || at < (telemetryDue.get(vm.id) || 0)) return
@@ -137,40 +155,62 @@ export function createKernelWatchdog({
     return true
   }
 
+  /** One VM's check. `held` is re-read after every await: an operator cycle may start mid-check. */
+  async function checkVm(vm, routing) {
+    const exec = {
+      vmId: vm.id,
+      vm,
+      homeDir: typeof homeDirFor === 'function' ? homeDirFor(vm) : null,
+    }
+    const current = await health(exec, { timeoutMs: 800 })
+    if (held.has(vm.id)) return
+    // cc-node is the crag worker. Restarting a live kernel SIGKILLs it.
+    if (dataplaneUsesCcNode(exec) && rustKernelProcessUp(current)) return
+    if (!rustKernelNeedsRestart(current)) {
+      // Healthy again after a fault means someone fixed it: start a fresh budget.
+      // Plain recovery keeps past attempts so a crash loop stays bounded by the window.
+      if (kernelFaults.delete(vm.id)) restarts.delete(vm.id)
+      // Config convergence, not a failure: outside the restart budget.
+      if (kernelSlotMismatch(exec)) await ensure(exec, { timeoutMs: config.timeout_ms })
+      return
+    }
+    const reason = current?.unhealthy_reason || current?.error || 'kernel process down'
+    if (!admitRestart(vm, reason, now())) return
+    console.warn(`[kernel-watchdog] ${vm.id} restarting container: ${reason}`)
+    const result = await ensure(exec, { timeoutMs: config.timeout_ms })
+    if (held.has(vm.id)) return
+    // The container itself is gone or exited: a kernel restart cannot help, a full boot can.
+    if (result?.reason === 'container_unavailable' && typeof revive === 'function' && vm.status === 'running') {
+      console.warn(`[kernel-watchdog] ${vm.id} container unavailable; booting slot`)
+      const revived = await revive(vm).catch((error) => ({ ok: false, error: error?.message || String(error) }))
+      if (!revived?.ok) console.warn(`[kernel-watchdog] ${vm.id} boot failed: ${revived?.error || revived?.code}`)
+    }
+  }
+
   async function tick() {
     if (inTick || !config.enabled) return
     inTick = true
     try {
-      const vms = typeof listTargets === 'function' ? listTargets() || [] : []
+      const vms = (typeof listTargets === 'function' ? listTargets() || [] : []).filter((vm) => !held.has(vm?.id))
+      // Bridges (kin-egress, cluster relays) are cheap host helpers, not containers: outside the restart budget.
+      healBridgesOffPath(vms)
       // Panel can change routing.inference.engine without restarting this process.
       const routing = typeof getRouting === 'function' ? getRouting() || {} : {}
       for (const vm of vms) {
+        if (held.has(vm.id)) continue
         // Telemetry sidecar heal is independent of kernel-restart targeting: a
         // missing sidecar costs telemetry, not inference. Off the tick's critical
         // path so a slow docker exec cannot delay container restarts. The due time
         // is set before the check runs, so a slot never has two checks in flight.
         if (isTelemetryHealTarget(vm)) void healTelemetry(vm, now())
         if (!isKernelWatchdogTarget(vm, routing)) continue
-        const exec = {
-          vmId: vm.id,
-          vm,
-          homeDir: typeof homeDirFor === 'function' ? homeDirFor(vm) : null,
+        const work = checkVm(vm, routing)
+        inflight.set(vm.id, work)
+        try {
+          await work
+        } finally {
+          if (inflight.get(vm.id) === work) inflight.delete(vm.id)
         }
-        const current = await health(exec, { timeoutMs: 800 })
-        // cc-node is the crag worker. Restarting a live kernel SIGKILLs it.
-        if (dataplaneUsesCcNode(exec) && rustKernelProcessUp(current)) continue
-        if (!rustKernelNeedsRestart(current)) {
-          // Healthy again after a fault means someone fixed it: start a fresh budget.
-          // Plain recovery keeps past attempts so a crash loop stays bounded by the window.
-          if (kernelFaults.delete(vm.id)) restarts.delete(vm.id)
-          // Config convergence, not a failure: outside the restart budget.
-          if (kernelSlotMismatch(exec)) await ensure(exec, { timeoutMs: config.timeout_ms })
-          continue
-        }
-        const reason = current?.unhealthy_reason || current?.error || 'kernel process down'
-        if (!admitRestart(vm, reason, now())) continue
-        console.warn(`[kernel-watchdog] ${vm.id} restarting container: ${reason}`)
-        await ensure(exec, { timeoutMs: config.timeout_ms })
       }
     } finally {
       inTick = false
@@ -194,5 +234,30 @@ export function createKernelWatchdog({
       timer = null
     },
     tick,
+    /** Keep the watchdog off a VM; resolves once any check/restart already running for it has settled. */
+    hold(vmId) {
+      held.add(vmId)
+      const pending = inflight.get(vmId)
+      if (!pending) return Promise.resolve()
+      return pending.then(
+        () => {},
+        () => {},
+      )
+    },
+    release(vmId) {
+      held.delete(vmId)
+    },
+    /** Operator recovery: drop the L5 fault and spent budget so the next failure starts fresh. */
+    reset(vmId) {
+      const faulted = kernelFaults.delete(vmId)
+      restarts.delete(vmId)
+      return { faulted }
+    },
+    restartsInWindow(vmId) {
+      const state = restarts.get(vmId)
+      if (!state) return 0
+      const at = now()
+      return state.attempts.filter((t) => at - t < config.restart_window_sec * 1000).length
+    },
   }
 }

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { TestModelsPayload, Vm } from '@/types/panel-vm'
 import { toast } from 'sonner'
-import { api } from '@/lib/api'
+import { api, isApiError } from '@/lib/api'
 import { isCodexVm } from '@/lib/vm-kind'
 import { testModelsQueryOptions } from '@/features/vm/queries'
 import type { TestChatResult } from '@/features/vm/test-chat-types'
@@ -51,7 +51,9 @@ export function useVmTestChat(vm: Vm) {
       if (data?.ok) {
         toast.success(`测试成功 · ${data.duration_ms ?? 0}ms`)
       } else {
-        toast.error(`测试失败：${data?.error?.message || '未知错误'}`)
+        const code = data?.error?.code
+        const msg = data?.error?.message || '未知错误'
+        toast.error(code ? `测试失败：[${code}] ${msg}` : `测试失败：${msg}`)
       }
     },
     onError: (error: Error) => {
@@ -59,9 +61,19 @@ export function useVmTestChat(vm: Vm) {
         ok: false,
         duration_ms: 0,
         log: [],
-        error: { message: error.message },
+        error: {
+          message: error.message,
+          ...(isApiError(error)
+            ? {
+                code: error.code || undefined,
+                status: error.status || undefined,
+                type: error.type,
+              }
+            : {}),
+        },
       })
-      toast.error(error.message)
+      const code = isApiError(error) ? error.code : ''
+      toast.error(code ? `测试失败：[${code}] ${error.message}` : error.message)
     },
   })
 

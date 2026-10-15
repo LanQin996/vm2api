@@ -75,6 +75,10 @@ curl -sS --noproxy '*' http://127.0.0.1:8787/health
 `bin/` 与 `share/wrap-cli` 由镜像入口写入挂载目录，`src/config` 缺文件时用镜像内默认值补齐。
 槽位系统镜像优先 `docker pull ghcr.io/dofastted/kin-os-*`，拉不到时在建槽阶段用仓内 Dockerfile 兜底构建（启动不阻塞）。
 
+**新建槽位的私有依赖**：控制面需单独安装可执行的 `kin-computer`，用 `KIN_COMPUTER_BIN` 指定绝对路径；默认查仓库根目录的 `local-src/kin-computer/dist/kin-computer`。源码仓库和公开镜像均不分发此二进制，容器部署须另行只读挂载并将该变量指向容器内路径。缺失时面板建槽返回 HTTP 400 `computer_service_missing`，生成失败返回 `computer_create_failed`。已有容器启动不会重新发布身份或改写主机名；部署前先验证新建槽位所需的二进制可用。
+
+集群节点已有目标槽镜像标签时跳过传输；仅在缺少云端基础系统时拉取它，母机只上传程序层。此优化不代表远端槽位已接入本机容器的全部计算机身份挂载。
+
 **源码模式（自己改代码时）：**
 
 ```bash

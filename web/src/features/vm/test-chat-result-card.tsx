@@ -1,8 +1,16 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import type { Vm } from '@/types/panel-vm'
+import { LifeBuoy } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { EmptyState } from '@/components/empty-state'
 import { StatusMark } from '@/components/status-mark'
+import { vmDiagnoseQueryOptions } from '@/features/vm/use-vm-recovery'
+import { VmRecoveryDialog } from '@/features/vm/vm-recovery-dialog'
+import { firstFailingCheck } from '@/features/vm/vm-recovery-types'
 import {
   type TestChatLogLine,
   type TestChatResult,
@@ -31,10 +39,23 @@ function fmtNum(n: unknown): string {
 export function TestChatResultCard({
   result,
   running,
+  vm,
 }: {
   result: TestChatResult | null
   running: boolean
+  vm: Vm
 }) {
+  const [recoveryOpen, setRecoveryOpen] = useState(false)
+  const status = result?.status
+  // 仅上游 5xx 才自动诊断；缺 status 的网络错不请求，避免误报槽位故障。
+  const shouldDiagnose =
+    !running &&
+    !!result &&
+    !result.ok &&
+    typeof status === 'number' &&
+    status >= 500
+  const diagnose = useQuery(vmDiagnoseQueryOptions(vm.id, shouldDiagnose))
+
   if (running) {
     return (
       <Card>
@@ -69,6 +90,28 @@ export function TestChatResultCard({
   const contentLine = (result.log || []).find((l) => l.level === 'content')
   const answer = result.text || contentLine?.message || ''
   const usage = result.usage
+  const httpStatus =
+    typeof result.status === 'number' && result.status > 0
+      ? result.status
+      : typeof result.error?.status === 'number' && result.error.status > 0
+        ? result.error.status
+        : undefined
+  const upstream =
+    typeof result.error?.upstream_message === 'string'
+      ? result.error.upstream_message
+      : ''
+  const fail = diagnose.data ? firstFailingCheck(diagnose.data) : null
+  const causeLine = !shouldDiagnose
+    ? null
+    : diagnose.isPending
+      ? '正在检查槽位服务…'
+      : diagnose.data?.ok
+        ? '槽位服务检查正常'
+        : fail
+          ? `可能原因：${fail.label} — ${fail.message}${
+              fail.code ? ` (${fail.code})` : ''
+            }`
+          : null
 
   return (
     <Card>
@@ -126,12 +169,23 @@ export function TestChatResultCard({
         ) : null}
 
         {!result.ok && result.error ? (
-          <div className='space-y-1 rounded-md border border-[color:var(--status-bad)]/40 bg-destructive/10 p-3'>
-            <p className='text-sm text-[color:var(--status-bad)]'>
-              {result.error.message || '未知错误'}
-            </p>
+          <div className='space-y-2 rounded-md border border-[color:var(--status-bad)]/40 bg-destructive/10 p-3'>
+            <div className='flex flex-wrap items-center gap-2'>
+              {result.error.code ? (
+                <Badge variant='destructive' className='font-mono'>
+                  {result.error.code}
+                </Badge>
+              ) : null}
+              {httpStatus ? (
+                <Badge variant='outline' className='font-mono'>
+                  HTTP {httpStatus}
+                </Badge>
+              ) : null}
+              <p className='text-sm text-[color:var(--status-bad)]'>
+                {result.error.message || '未知错误'}
+              </p>
+            </div>
             <p className='flex flex-wrap gap-2 text-xs text-muted-foreground'>
-              {result.error.code ? <span>code {result.error.code}</span> : null}
               {result.error.request_id ? (
                 <span className='font-mono'>
                   request_id {result.error.request_id}
@@ -140,7 +194,19 @@ export function TestChatResultCard({
               {result.error.retry_after != null ? (
                 <span>{result.error.retry_after}s 后可重试</span>
               ) : null}
+              {upstream ? <span className='break-all'>{upstream}</span> : null}
             </p>
+            {causeLine ? (
+              <p className='text-xs text-muted-foreground'>{causeLine}</p>
+            ) : null}
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => setRecoveryOpen(true)}
+            >
+              <LifeBuoy />
+              恢复服务
+            </Button>
           </div>
         ) : null}
 
@@ -178,6 +244,11 @@ export function TestChatResultCard({
           )}
         </div>
       </CardContent>
+      <VmRecoveryDialog
+        vm={vm}
+        open={recoveryOpen}
+        onOpenChange={setRecoveryOpen}
+      />
     </Card>
   )
 }

@@ -1287,6 +1287,120 @@ test('the fifth candidate is reached after four VMs fail', async () => {
   assert.deepEqual(seen, ['vm-01', 'vm-02', 'vm-03', 'vm-04', 'vm-05'])
 })
 
+test('session queue timeout defaults to 15 minutes and reloads over the default', () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({ scheduler })
+  assert.equal(runner.config.session_queue_timeout_ms, 900_000)
+  runner.reloadConfig({ total_retry_deadline_ms: 50 })
+  assert.equal(runner.config.session_queue_timeout_ms, 900_000)
+  runner.reloadConfig({ session_queue_timeout_ms: 0 })
+  assert.equal(runner.config.session_queue_timeout_ms, 0)
+})
+
+test('a same-session waiter times out without starting or overlapping the holder', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({ scheduler, config: { session_queue_timeout_ms: 40 } })
+  let release
+  let entered
+  const holderEntered = new Promise((resolve) => {
+    entered = resolve
+  })
+  let holderCalls = 0
+  let waiterCalls = 0
+  let followerCalls = 0
+  const holder = runner.run({
+    requestId: 'req-hold',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'shared-session',
+    callAttempt: () => {
+      holderCalls += 1
+      entered()
+      return new Promise((resolve) => {
+        release = () => resolve(success())
+      })
+    },
+  })
+  await holderEntered
+  const waiter = await runner.run({
+    requestId: 'req-wait',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'shared-session',
+    callAttempt: () => {
+      waiterCalls += 1
+      return success()
+    },
+  })
+  assert.equal(waiter.ok, false)
+  assert.equal(waiter.status, 529)
+  assert.equal(waiter.body.error.type, 'overloaded_error')
+  assert.equal(waiter.body.error.code, 'pool_overloaded')
+  assert.equal(waiter.body.error.details.reason, 'session_queue_timeout')
+  assert.equal(waiterCalls, 0)
+  assert.equal(holderCalls, 1)
+  let followerEntered = false
+  const follower = runner.run({
+    requestId: 'req-follow',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'shared-session',
+    callAttempt: () => {
+      followerEntered = true
+      followerCalls += 1
+      return success()
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 30))
+  assert.equal(followerEntered, false)
+  release()
+  const held = await holder
+  const followed = await follower
+  assert.equal(held.ok, true)
+  assert.equal(followed.ok, true)
+  assert.equal(followerCalls, 1)
+  assert.equal(waiterCalls, 0)
+  assert.equal(scheduler.selectCalls, 2)
+})
+
+test('session queue wait still aborts with the caller', async () => {
+  const scheduler = new Scheduler([candidate(1)])
+  const runner = new FailoverRunner({ scheduler, config: { session_queue_timeout_ms: 5_000 } })
+  let release
+  let entered
+  const holderEntered = new Promise((resolve) => {
+    entered = resolve
+  })
+  const holder = runner.run({
+    requestId: 'req-hold-abort',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'abort-session',
+    callAttempt: () => {
+      entered()
+      return new Promise((resolve) => {
+        release = () => resolve(success())
+      })
+    },
+  })
+  await holderEntered
+  const controller = new AbortController()
+  const pending = runner.run({
+    requestId: 'req-abort-wait',
+    canonicalBody: { model: 'claude-opus-test' },
+    model: 'claude-opus-test',
+    stickyKey: 'abort-session',
+    signal: controller.signal,
+    callAttempt: () => success(),
+  })
+  controller.abort()
+  const aborted = await pending
+  assert.equal(aborted.terminalState, 'cancelled')
+  assert.equal(aborted.status, 499)
+  release()
+  assert.equal((await holder).ok, true)
+})
+
 test('same sticky session requests execute serially', async () => {
   const scheduler = new Scheduler([candidate(1)])
   const runner = new FailoverRunner({ scheduler })

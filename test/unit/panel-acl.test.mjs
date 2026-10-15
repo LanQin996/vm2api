@@ -55,6 +55,10 @@ test('user can manage owned vm/proxy/key surfaces and nothing else', () => {
   assert.equal(authorizePanelRoute('GET', '/api/panel/database/metrics', 'user').ok, false)
   assert.equal(authorizePanelRoute('GET', '/api/panel/version', 'user').ok, false)
   assert.equal(authorizePanelRoute('POST', '/api/panel/update', 'user').ok, false)
+  assert.equal(authorizePanelRoute('GET', '/api/panel/vms/vm-01/diagnose', 'user').ok, true)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/vms/vm-01/recover', 'user').ok, true)
+  assert.equal(authorizePanelRoute('GET', '/api/panel/vms/vm-01/recover', 'user').ok, false)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/vms/vm-01/recover', 'super').ok, false)
 })
 
 test('user can query quota and redeem reset credits on owned vms and keys', () => {

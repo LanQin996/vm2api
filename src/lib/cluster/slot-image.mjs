@@ -149,6 +149,16 @@ export function slotImageSpec(projectRoot, kernel, { runtime } = {}) {
   }
 }
 
+/**
+ * Cloud OS stays on the registry. A node pulls `base` only when that image is
+ * missing. The mother uploads the payload layer only when the slot tag is missing.
+ */
+export function slotImageAction({ slotPresent, basePresent } = {}) {
+  if (slotPresent) return 'skip'
+  if (!basePresent) return 'pull-base'
+  return 'build-payload'
+}
+
 export function slotBuildContext(spec) {
   const runtime = spec.runtime === 'kvm' ? 'kvm' : 'docker'
   const entries = [

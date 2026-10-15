@@ -32,6 +32,8 @@ export type TestChatError = {
   param?: string
   request_id?: string
   retry_after?: number
+  status?: number
+  upstream_message?: string
   [key: string]: unknown
 }
 

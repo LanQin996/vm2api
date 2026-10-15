@@ -1,6 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createAnthropicStreamTracker, isRecoverableTruncation } from '../../src/lib/protocol/stream-truncation.mjs'
+import {
+  buildAnthropicSseError,
+  createAnthropicStreamTracker,
+  isRecoverableTruncation,
+} from '../../src/lib/protocol/stream-truncation.mjs'
 
 test('a cut tool call closes as max_tokens and a thinking block does not', () => {
   const tracker = createAnthropicStreamTracker()
@@ -21,6 +25,24 @@ test('a cut tool call closes as max_tokens and a thinking block does not', () =>
   thinking.observe('data: {"type":"message_start","message":{"usage":{"output_tokens":1}}}\n\n')
   thinking.observe('data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}\n\n')
   assert.equal(thinking.closingEvents(), null)
+})
+
+test('an unstarted stream reports that, and an error event names overloaded_error', () => {
+  const tracker = createAnthropicStreamTracker()
+  assert.equal(tracker.hasStarted(), false)
+  assert.equal(tracker.isFinished(), false)
+  const event = buildAnthropicSseError({
+    type: 'overloaded_error',
+    code: 'pool_overloaded',
+    message: '号池负载过高，稍后再试',
+    details: { reason: 'pool_deadline_exceeded' },
+  })
+  assert.match(event, /^event: error\ndata: /)
+  const payload = JSON.parse(event.split('\n')[1].slice(5).trim())
+  assert.equal(payload.type, 'error')
+  assert.equal(payload.error.type, 'overloaded_error')
+  assert.equal(payload.error.code, 'pool_overloaded')
+  assert.equal(payload.error.details, undefined)
 })
 
 test('a worker timeout is not closed as max_tokens', () => {

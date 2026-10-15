@@ -32,6 +32,7 @@ import { queryOpenaiQuota } from './lib/oauth/openai-quota.mjs'
 import { createCliNodeGuard } from './lib/vm/cli-node-guard.mjs'
 import { ensureTelemetrySidecar } from './lib/vm/slot-process-status.mjs'
 
+import { createSlotBridgeHealer, powerOnSlot, reviveDownSlots } from './lib/vm/slot-recovery.mjs'
 import { createUsageProbeMonitor, normalizeUsageProbeConfig } from './lib/oauth/usage-probe-monitor.mjs'
 import { createCatalogMonitor } from './lib/admin/catalog-monitor.mjs'
 import { normalizeOfficialCcConfig } from './lib/oauth/official-cc-bootstrap.mjs'
@@ -494,12 +495,17 @@ credentialRefreshMonitor = createCredentialRefreshMonitor({
       force: false,
     }),
 })
+function bootSlot(id) {
+  return powerOnSlot({ projectRoot: cfg.paths.project, id, proxyPool, routing: routingConfig })
+}
 kernelWatchdog = createKernelWatchdog({
   config: routingConfig.kernel_watchdog,
   listTargets: () => listVms(cfg.paths.project),
   getRouting: () => routingConfig,
   homeDirFor: (vm) => path.join(cfg.paths.project, 'vms', vm.id, 'cli-home'),
   ensureTelemetry: (vm) => ensureTelemetrySidecar({ projectRoot: cfg.paths.project, vm }),
+  revive: (vm) => bootSlot(vm.id),
+  healBridges: createSlotBridgeHealer({ projectRoot: cfg.paths.project }),
   onFault: (vm, reason) => {
     const title = `槽内核故障 ${vm.id}`
     dispatchNotify(routingConfig.notify, {
@@ -967,6 +973,9 @@ const handlePanel = createPanelHandler({
   get notifyMonitor() {
     return notifyMonitor
   },
+  get kernelWatchdog() {
+    return kernelWatchdog
+  },
   get runtimeRepo() {
     return runtimeRepo
   },
@@ -1296,6 +1305,12 @@ server.listen(cfg.port, cfg.host, () => {
     kernelWatchdog?.start?.({ immediate: true })
   } catch (e) {
     console.warn('[kernel-watchdog] start failed', e?.message || e)
+  }
+  // Boot fills what Docker's restart policy missed (removed or exited slot containers); off with the watchdog.
+  if (process.env.KIN_CRS_MOCK !== '1' && normalizeKernelWatchdogConfig(routingConfig.kernel_watchdog).enabled) {
+    reviveDownSlots({ vms: listVms(cfg.paths.project), powerOn: bootSlot, watchdog: kernelWatchdog }).catch((e) =>
+      console.warn('[slot-revive] boot pass failed', e?.message || e),
+    )
   }
   try {
     cliNodeGuard?.start?.({ immediate: true })

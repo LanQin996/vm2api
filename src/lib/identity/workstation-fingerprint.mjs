@@ -8,7 +8,7 @@ import path from 'node:path'
 import { US_TIMEZONES, validTimezone } from '../core/timezone.mjs'
 import { workstationFamily, workstationKernel, workstationSkuId } from './workstation-profile.mjs'
 
-export const HOSTNAME_RE = /^[a-z]+-[0-9a-f]{4}$/
+export const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 export const DEVICE_ID_RE = /^[0-9a-f]{64}$/i
 export const MACHINE_ID_RE = /^[0-9a-f]{32}$/i
 export const STANDARD_LOCALE = 'en_US.UTF-8'

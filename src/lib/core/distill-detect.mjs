@@ -81,7 +81,10 @@ function contentToText(content) {
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
     return content
-      .map((part) => contentToText(part))
+      .map((part) => {
+        if (part && part.type === 'tool_result') return ''
+        return contentToText(part)
+      })
       .filter(Boolean)
       .join('\n')
   }
@@ -140,8 +143,10 @@ function userTexts(body) {
   return out.filter(Boolean)
 }
 
-export function extractPrompt(inbound, body) {
+export function extractPrompt(inbound, body, opts = {}) {
   const users = [...userTexts(inbound), ...userTexts(body)]
+  const latestOnly = !!opts.latestOnly
+  const scanUsers = latestOnly && users.length ? [users[users.length - 1]] : users
   const systems = [
     systemText(inbound),
     systemText(body),
@@ -150,8 +155,8 @@ export function extractPrompt(inbound, body) {
   ].filter(Boolean)
   return {
     system: systems[0] || '',
-    user: users[0] || '',
-    joined: [...systems, ...users].join('\n'),
+    user: latestOnly ? scanUsers[0] || '' : users[0] || '',
+    joined: [...systems, ...scanUsers].join('\n'),
   }
 }
 
@@ -473,7 +478,7 @@ export function detectDistill(ctx = {}, rules) {
   const r = normalizeDistillRules(rules)
   if (!r.enabled) return { action: 'pass', hits: [] }
   if (isOpenaiPlatformModel(ctx.inbound, ctx.body)) return { action: 'pass', hits: [] }
-  const prompt = extractPrompt(ctx.inbound, ctx.body)
+  const prompt = extractPrompt(ctx.inbound, ctx.body, { latestOnly: true })
   const harvestNeedle = matchNeedles(prompt.joined, r.hard_needles)
   if (harvestNeedle) {
     return {

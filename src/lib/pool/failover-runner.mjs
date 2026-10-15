@@ -28,6 +28,10 @@ const DEFAULTS = {
   max_account_switches: 10,
   max_total_attempts: 12,
   total_retry_deadline_ms: 120000,
+  // Same-session serialization waits out the previous turn. Cap a wedged tail
+  // so the queue cannot sit forever. 0 disables the cap. Long enough that a
+  // normal generation still runs serially; keepalive covers the Cloudflare wait.
+  session_queue_timeout_ms: 900_000,
   delivery_mode: 'realtime',
   max_same_account_retries: 1,
   same_account_retry_delay_ms: 500,
@@ -259,23 +263,36 @@ function sleepWithSignal(ms, signal) {
   })
 }
 
-function waitForSessionTurn(previous, signal) {
-  if (!signal) return previous.catch(() => {})
-  if (signal.aborted)
+function waitForSessionTurn(previous, signal, timeoutMs) {
+  const timeout = Number(timeoutMs)
+  const bounded = Number.isFinite(timeout) && timeout > 0
+  if (signal?.aborted) {
     return Promise.reject(Object.assign(new Error('Request was cancelled'), { code: 'request_cancelled' }))
+  }
+  if (!signal && !bounded) return previous.catch(() => {})
   return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      cleanup()
-      reject(Object.assign(new Error('Request was cancelled'), { code: 'request_cancelled' }))
+    let settled = false
+    let timer = null
+    const finish = (fn, value) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener?.('abort', onAbort)
+      if (timer) clearTimeout(timer)
+      fn(value)
     }
-    const cleanup = () => signal.removeEventListener?.('abort', onAbort)
-    signal.addEventListener?.('abort', onAbort, { once: true })
-    previous
-      .catch(() => {})
-      .then(() => {
-        cleanup()
-        resolve()
-      })
+    const onAbort = () => {
+      finish(reject, Object.assign(new Error('Request was cancelled'), { code: 'request_cancelled' }))
+    }
+    const onTimeout = () => {
+      finish(reject, Object.assign(new Error('Session queue timed out'), { code: 'session_queue_timeout' }))
+    }
+    if (signal) signal.addEventListener('abort', onAbort, { once: true })
+    if (bounded) {
+      // Keep the timer referenced. An unref'd wait looks idle to the process,
+      // and the queued request is still in flight until it times out or runs.
+      timer = setTimeout(onTimeout, timeout)
+    }
+    previous.catch(() => {}).then(() => finish(resolve))
   })
 }
 
@@ -521,14 +538,27 @@ export class FailoverRunner {
     const tail = previous.catch(() => {}).then(() => turn)
     this.sessionTails.set(sessionKey, tail)
     try {
-      await waitForSessionTurn(previous, args.signal)
+      await waitForSessionTurn(previous, args.signal, this.config.session_queue_timeout_ms)
       return await this.runOnce(args)
     } catch (error) {
       if (error?.code === 'request_cancelled') return clientCancelledResult()
+      if (error?.code === 'session_queue_timeout') {
+        const retryMs = Number(this.config.session_queue_timeout_ms)
+        return poolOverloadedError({
+          reason: 'session_queue_timeout',
+          retry_after_ms: Number.isFinite(retryMs) && retryMs > 0 ? retryMs : 1000,
+        })
+      }
       throw error
     } finally {
       releaseTurn()
-      if (this.sessionTails.get(sessionKey) === tail) this.sessionTails.delete(sessionKey)
+      // Drop the chain only after this tail settles. A timeout or cancel
+      // releases our turn early, while the holder is still running; deleting
+      // immediately would let the next request overlap that holder.
+      const drop = () => {
+        if (this.sessionTails.get(sessionKey) === tail) this.sessionTails.delete(sessionKey)
+      }
+      tail.then(drop, drop)
     }
   }
 
@@ -739,6 +769,7 @@ export class FailoverRunner {
       }
       repairPending = false
       snapshotPins()
+      const attemptStickyBound = pinBaseline.get(stickyKey) || null
       lastSelected = selected
       pinnedSlot = selected.slotIndex ?? null
       if (selected.seatMoved) seatMovedTo = selected.vmId
@@ -771,6 +802,7 @@ export class FailoverRunner {
                 repaired,
                 attemptStartedAt: attemptStarted,
                 freshSlot,
+                stickyBound: attemptStickyBound,
               })
             : clone(requestBody)
         const wrappedAttempt =
@@ -785,7 +817,11 @@ export class FailoverRunner {
           outboundSessionAccountId = selected.accountId
           bindAll(
             { accountId: selected.accountId, vmId: selected.vmId, sessionId: outboundSessionId },
-            { countHit: false },
+            {
+              countHit: false,
+              // Prebinding moved the VM already; replace the previous VM's session.
+              replaceSession: !!attemptStickyBound?.vmId && attemptStickyBound.vmId !== selected.vmId,
+            },
           )
         }
         result = await callAttempt({

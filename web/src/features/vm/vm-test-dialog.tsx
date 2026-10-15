@@ -17,6 +17,7 @@ function TestBody({ vm }: { vm: Vm }) {
   return (
     <VmTestPanel
       {...chat}
+      vm={vm}
       credType={credTypeOf(vm)}
       isCodex={isCodexVm(vm)}
       dataplane={vm.resolved_dataplane}

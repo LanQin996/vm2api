@@ -7,6 +7,7 @@ export type VmActions = {
   openTest: (vm: Vm) => void
   openStats: (vm: Vm) => void
   openReauth: (vm: Vm) => void
+  openRecovery: (vm: Vm) => void
   refreshToken: (vm: Vm) => void
   recover: (vm: Vm) => void
   /** 正在刷新令牌 / 恢复状态的槽位 id，用于禁用重复点击。 */

@@ -4,6 +4,12 @@
  *   - official Claude Code ≥ 2.1.193: empty content_block_delta so the CLI
  *     parser does not treat comment/ping as a dead stream
  * Used only toward the client. Upstream idle is the worker interval timeout.
+ *
+ * `arm()` covers an upstream attempt: the first ping waits one interval so a
+ * fast failure can still return a real HTTP status and switch slots.
+ * `armAfter(delay)` covers the queue before that attempt. The first byte is
+ * held until the delay so a short seat wait can still finish as 429/529.
+ * After that byte, pings continue across retries until `stop()`.
  */
 
 export const CLAUDE_CODE_NOOP_DELTA_KEEPALIVE_MIN_VERSION = '2.1.193'
@@ -142,18 +148,32 @@ export function createDownstreamKeepalive({
   let state = { blockIndex: -1, deltaType: '', done: false }
   let lastWriteAt = 0
   let timer = null
+  let holdTimer = null
   let armed = false
+  let written = false
+  let attemptActive = false
+  // Queue delay elapsed. The first byte is allowed even between attempts.
+  let queueReleased = false
 
   const markWrite = () => {
     lastWriteAt = Date.now()
   }
 
+  const due = () => {
+    if (!armed || state.done || interval <= 0) return false
+    if (written) return Date.now() - lastWriteAt >= interval
+    // Inside an attempt the first ping still waits one interval: a fast
+    // upstream failure can change HTTP status and move to another slot.
+    if (attemptActive) return lastWriteAt > 0 && Date.now() - lastWriteAt >= interval
+    return queueReleased
+  }
+
   const beat = () => {
-    if (!armed || state.done || interval <= 0) return
-    if (Date.now() - lastWriteAt < interval) return
+    if (!due()) return
     if (typeof write !== 'function') return
     try {
       write(resolveKeepaliveChunk({ protocol, userAgent, state }))
+      written = true
       markWrite()
     } catch {
       stop()
@@ -171,18 +191,53 @@ export function createDownstreamKeepalive({
       clearInterval(timer)
       timer = null
     }
+    if (holdTimer) {
+      clearTimeout(holdTimer)
+      holdTimer = null
+    }
+    attemptActive = false
     state = { ...state, done: true }
   }
 
   const arm = () => {
     if (state.done || interval <= 0) return
+    attemptActive = true
     armed = true
-    markWrite()
+    if (!written) markWrite()
     start()
+  }
+
+  // The attempt ended. Keep pinging only after the queue delay has already
+  // produced a byte; until then a short failure can still be an HTTP status.
+  const endAttempt = () => {
+    attemptActive = false
+  }
+
+  /**
+   * Hold the first queue byte for delayMs. `0` writes immediately.
+   * Later idle pings use the same interval as an in-attempt keepalive.
+   */
+  const armAfter = (delayMs) => {
+    if (state.done || interval <= 0) return
+    const delay = Math.max(0, Number(delayMs) || 0)
+    armed = true
+    start()
+    if (delay === 0) {
+      queueReleased = true
+      beat()
+      return
+    }
+    holdTimer = setTimeout(() => {
+      holdTimer = null
+      queueReleased = true
+      beat()
+    }, delay)
+    holdTimer.unref?.()
   }
 
   const observeLine = (line) => {
     armed = true
+    written = true
     markWrite()
     const event = parseSseDataLine(line)
     if (event) {
@@ -191,5 +246,14 @@ export function createDownstreamKeepalive({
     }
   }
 
-  return { start, stop, arm, observeLine, beat, getState: () => ({ ...state, armed, lastWriteAt }) }
+  return {
+    start,
+    stop,
+    arm,
+    armAfter,
+    endAttempt,
+    observeLine,
+    beat,
+    getState: () => ({ ...state, armed, lastWriteAt, written, attemptActive, queueReleased }),
+  }
 }

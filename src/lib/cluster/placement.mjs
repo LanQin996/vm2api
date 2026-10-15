@@ -19,9 +19,9 @@ import { slotRuntimeOwner } from '../oauth/oauth-credentials.mjs'
 import { routingConfigFile } from '../core/config.mjs'
 import { normalizeVmConfig, slotMemory } from '../vm/machine-spec.mjs'
 import { runtimeKind } from '../vm/runtime-kind.mjs'
-import { buildImage, dockerInfo, imagePresent, sshDocker } from './docker-remote.mjs'
+import { buildImage, dockerInfo, ensureImage, imagePresent, sshDocker } from './docker-remote.mjs'
 import { runRemote, shellQuote } from './remote-fs.mjs'
-import { slotBuildContext, slotImageSpec } from './slot-image.mjs'
+import { slotBuildContext, slotImageAction, slotImageSpec } from './slot-image.mjs'
 import { ClusterError } from './ssh-link.mjs'
 
 const MIN_DISK_KB = 3 * 1024 * 1024
@@ -130,13 +130,13 @@ export function awaitSlotImageBuild(job) {
  * Build the self-contained slot image on the node. One job per node+kernel;
  * a second call while running returns the running job.
  */
-export function startSlotImageBuild(nodeId, kernel, { runtime } = {}) {
+export function startSlotImageBuild(nodeId, kernel, { runtime, connect } = {}) {
   const kind = runtimeKind({ runtime_type: runtime })
   const key = imageJobKey(nodeId, kernel, kind)
   const current = imageJobs.get(key)
   if (current?.status === 'running') return current
   const spec = slotImageSpec(state().projectRoot, kernel, { runtime: kind })
-  const client = clusterManager().client(nodeId)
+  const docker = connect || sshDocker(clusterManager().client(nodeId))
   const job = {
     status: 'running',
     ref: spec.ref,
@@ -149,31 +149,42 @@ export function startSlotImageBuild(nodeId, kernel, { runtime } = {}) {
   const append = (text) => {
     job.log = (job.log + text + (text.endsWith('\n') ? '' : '\n')).slice(-IMAGE_LOG_MAX)
   }
-  // Docker prints nothing until the whole context is uploaded; report the upload itself.
-  // A Transform, not a 'data' listener: a listener would switch the stream to flowing
-  // before dockerRequest pipes it, and every chunk emitted in between is lost.
-  let sent = 0
-  let reported = 0
-  const counter = new Transform({
-    transform(chunk, _enc, cb) {
-      sent += chunk.length
-      if (sent - reported >= 8 << 20) {
-        reported = sent
-        append(`上传构建上下文 ${(sent / 1024 ** 2).toFixed(0)} MiB`)
-      }
-      cb(null, chunk)
-    },
-  })
-  append(`构建 ${spec.ref}（基础镜像 ${spec.base}）`)
-  const done = buildImage(sshDocker(client), {
-    tag: spec.ref,
-    context: slotBuildContext(spec).pipe(counter),
-    onLog: append,
-  })
-    .then(() => {
+  append(`检查节点是否已有 ${spec.ref}`)
+  const done = (async () => {
+    const slotPresent = await imagePresent(docker, spec.ref)
+    if (slotImageAction({ slotPresent, basePresent: true }) === 'skip') {
+      append(`节点已有 ${spec.ref}，跳过传输`)
       job.status = 'done'
-      append('完成')
+      return
+    }
+    const baseHad = await imagePresent(docker, spec.base)
+    if (slotImageAction({ slotPresent: false, basePresent: baseHad }) === 'pull-base') {
+      append(`节点拉取云端系统 ${spec.base}`)
+      await ensureImage(docker, spec.base, { onLog: append })
+    } else {
+      append(`节点已有云端系统 ${spec.base}，不从母机传输`)
+    }
+    append('上传槽位程序层（不含系统镜像）')
+    let sent = 0
+    let reported = 0
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        sent += chunk.length
+        if (sent - reported >= 8 << 20) {
+          reported = sent
+          append(`上传构建上下文 ${(sent / 1024 ** 2).toFixed(0)} MiB`)
+        }
+        cb(null, chunk)
+      },
     })
+    await buildImage(docker, {
+      tag: spec.ref,
+      context: slotBuildContext(spec).pipe(counter),
+      onLog: append,
+    })
+    job.status = 'done'
+    append('完成')
+  })()
     .catch((err) => {
       job.status = 'failed'
       append(`失败：${err.message}`)

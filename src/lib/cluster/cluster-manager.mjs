@@ -443,6 +443,65 @@ export class ClusterManager {
     fs.rmSync(path.dirname(entry.paths.kernel), { recursive: true, force: true })
   }
 
+  /** Link, node docker bridge and this slot's relays, for diagnosis. Never connects. */
+  slotBridgeStatus(nodeId, vmId) {
+    const link = this.links.get(nodeId)
+    const relays = this.slotRelays.get(vmId)
+    return {
+      link: link ? link.snapshot() : null,
+      bridge: this.bridges.get(nodeId)?.snapshot() || null,
+      relays: relays?.nodeId === nodeId ? { kernel: relays.kernel.snapshot(), worker: relays.worker.snapshot() } : null,
+    }
+  }
+
+  /** Reconnect unless ready or already connecting, then wait for the outcome. Throws node_not_ready. */
+  async ensureLinkReady(nodeId, timeoutMs = 20_000) {
+    const link = this.links.get(nodeId)
+    if (!link) throw new ClusterError(404, 'node_not_found', '节点不存在')
+    if (link.state === 'ready' && link.client) return link.snapshot()
+    const settled = new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer)
+        link.off('state', onState)
+        resolve()
+      }
+      const onState = (state) => {
+        if (state === 'ready' || state === 'error' || state === 'backoff') done()
+      }
+      const timer = setTimeout(done, timeoutMs)
+      link.on('state', onState)
+    })
+    if (link.state !== 'connecting') link.reconnect()
+    await settled
+    if (link.state !== 'ready' || !link.client) {
+      const detail = link.error?.message ? `：${link.error.message}` : ''
+      throw new ClusterError(409, 'node_not_ready', `节点未连接（${link.state}）${detail}`)
+    }
+    return link.snapshot()
+  }
+
+  /**
+   * Restart the node docker bridge if it died and rebuild this slot's relays if
+   * missing or dead. `force` rebuilds the slot relays regardless (operator recovery).
+   * Returns which pieces were rebuilt.
+   */
+  async healSlotBridges(nodeId, vmId, { force = false } = {}) {
+    const healed = []
+    const bridge = this.bridges.get(nodeId)
+    if (bridge && !bridge.alive()) {
+      await bridge.restart()
+      healed.push('bridge')
+    }
+    const relays = this.slotRelays.get(vmId)
+    const relaysAlive = relays?.nodeId === nodeId && relays.kernel.alive() && relays.worker.alive()
+    if (force || !relaysAlive) {
+      await this.dropSlotRelays(vmId)
+      await this.ensureSlotRelays(nodeId, vmId)
+      healed.push('relay')
+    }
+    return healed
+  }
+
   /** Boot: relays exist before any link is ready so the scheduler's first health dial finds a socket. */
   async restoreSlotRelays() {
     for (const node of this.repo.list()) {

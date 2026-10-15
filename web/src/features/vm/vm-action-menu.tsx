@@ -4,6 +4,7 @@ import type { Vm } from '@/types/panel-vm'
 import {
   BarChart3,
   Download,
+  LifeBuoy,
   Link2,
   MoreHorizontal,
   Play,
@@ -38,7 +39,7 @@ export function refreshBlockedReason(vm: Vm): string {
 }
 
 /**
- * 行尾扩展菜单：测试链接 / 查看统计 / 重新授权 / 刷新令牌 / 恢复状态，
+ * 行尾扩展菜单：测试链接 / 查看统计 / 重新授权 / 刷新令牌 / 恢复状态 / 恢复服务，
  * 破坏性操作（重置、删除）收在分隔线之后。
  */
 export function VmActionMenu({
@@ -125,6 +126,10 @@ export function VmActionMenu({
           >
             <RotateCcw />
             恢复状态
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => actions.openRecovery(vm)}>
+            <LifeBuoy />
+            恢复服务
           </DropdownMenuItem>
           {actions.reset || actions.remove ? <DropdownMenuSeparator /> : null}
           {actions.reset ? (

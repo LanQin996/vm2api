@@ -18,6 +18,7 @@ import { assertCliHopAllowed, resolveOfficialCcInference } from './slot-engine.m
 import { ensureSlotClaudeOwnership, chownSlotRuntimeFile, replaceSlotOwnedFile } from '../oauth/oauth-credentials.mjs'
 import { materializeWrapCli } from './wrap-cli-runtime.mjs'
 import { ensureGuestMachineIdFile } from '../identity/workstation-fingerprint.mjs'
+import { ensureSlotComputer, rememberComputer } from '../identity/slot-computer.mjs'
 import { boundProxyUrl, ensureProxyEgress, isLocalEgressProxy, slotNetworkForVm } from './egress.mjs'
 import { socksProxyEndpoint } from './socks-address.mjs'
 import { assertProxyAllowed } from './proxy-policy.mjs'
@@ -590,9 +591,12 @@ function kvmMachineFields(vm) {
   }
 }
 
-function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares }) {
+function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, smbios }) {
   const m = kvmMachineFields(vm)
-  const s = m.smbios
+  // Current kin-kvm-entry requires these vars, then uses qemu-smbios.args for -smbios.
+  // A missing fingerprint field stays "-", never the OptiPlex default. smc_version and
+  // rom_hex have no device property, so they are not environment variables.
+  const s = smbios || m.smbios
   const slotName = displayName(vm.id)
   return [
     `KIN_VM_ID=${vm.id}`,
@@ -621,6 +625,87 @@ function kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares }
   ]
 }
 
+/** An existing container keeps the hostname and mounts it was created with. */
+export function shouldPublishComputer(existing) {
+  return !existing
+}
+
+function splitSmbios(body) {
+  const parts = []
+  let cur = ''
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] === ',' && body[i + 1] === ',') {
+      cur += ','
+      i++
+      continue
+    }
+    if (body[i] === ',') {
+      parts.push(cur)
+      cur = ''
+      continue
+    }
+    cur += body[i]
+  }
+  parts.push(cur)
+  return parts
+}
+
+function readFingerprintSmbios(kvmDir) {
+  let text
+  try {
+    text = fs.readFileSync(path.join(kvmDir, 'fingerprint', 'qemu-smbios.args'), 'utf8')
+  } catch {
+    return null
+  }
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  let uuid = ''
+  let type1 = ''
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === '-uuid' && lines[i + 1] && !lines[i + 1].startsWith('-')) uuid = lines[++i]
+    else if (lines[i] === '-smbios' && lines[i + 1]?.startsWith('type=1,')) type1 = lines[++i]
+  }
+  if (!type1 && !uuid) return null
+  const fields = {}
+  for (const part of splitSmbios(type1)) {
+    const eq = part.indexOf('=')
+    if (eq > 0) fields[part.slice(0, eq)] = part.slice(eq + 1)
+  }
+  const pick = (key) => {
+    const value = String(fields[key] || '').trim()
+    return value || '-'
+  }
+  return {
+    manufacturer: pick('manufacturer'),
+    product: pick('product'),
+    version: pick('version'),
+    family: pick('family'),
+    serial: pick('serial'),
+    uuid: String(fields.uuid || uuid || '-').trim() || '-',
+  }
+}
+
+/** Read-only persona mounts for a non-KVM kin-os container. */
+export function computerDockerArgs({ dir, mac, hostOf = (p) => p }) {
+  const etc = path.join(dir, 'system', 'etc')
+  return [
+    '--mac-address',
+    mac,
+    '-v',
+    `${hostOf(dir)}:/var/lib/kin-persona:ro`,
+    '-v',
+    `${hostOf(path.join(etc, 'hostname'))}:/etc/hostname:ro`,
+    '-v',
+    `${hostOf(path.join(etc, 'kin-computer'))}:/etc/kin-computer:ro`,
+    '-v',
+    `${hostOf(path.join(dir, 'system', 'dmi', 'id'))}:/etc/kin-dmi:ro`,
+    '-v',
+    `${hostOf(path.join(dir, 'system', 'hardware'))}:/etc/kin-hardware:ro`,
+  ]
+}
+
 /** Test seam: kvm `docker run` argv (including `docker`). */
 export function buildKvmRunArgs({
   vm,
@@ -644,7 +729,8 @@ export function buildKvmRunArgs({
   const mem = kvmContainerMemory(memory)
   const memMb = memoryMiB(memory)
   const machineId = String(vm.fingerprint?.guest_machine_id || vm.fingerprint?.machine_id || '').trim()
-  const env = kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares })
+  const smbios = readFingerprintSmbios(kvmDir)
+  const env = kvmEnvPairs(vm, { uid, gid, memMb, accel, hostName, machineId, shares, smbios })
   const capAdd = KVM_CAPS.flatMap((cap) => ['--cap-add', cap])
   const device = accel === 'kvm' ? ['--device', '/dev/kvm'] : []
   return [
@@ -716,7 +802,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing, acc
   const kvm = isKvmRuntime(vm)
   const name = containerName(vm.id)
   const slotName = displayName(vm.id)
-  const host = String(vm.fingerprint?.hostname || '').trim() || slotName
+  let host = String(vm.fingerprint?.hostname || '').trim() || slotName
   const kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
   vm.kernel = kernel
   const zone = validTimezone(vm.timezone)
@@ -805,6 +891,19 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing, acc
     runtimePatch(vm, inspectContainer(name), { ...workerRuntimeExtra(worker), memory: mem, routing: resolvedRouting })
     return { ok: true, action: 'started', runtime: vm.runtime }
   }
+
+  if (!shouldPublishComputer(existing)) {
+    return { ok: false, error: 'refusing to publish a new computer onto an existing container' }
+  }
+  let computer
+  try {
+    computer = ensureSlotComputer(projectRoot, vm)
+    rememberComputer(projectRoot, vm, computer)
+  } catch (e) {
+    return { ok: false, error: e.message || 'computer identity failed' }
+  }
+  if (!kvm && !computer?.mac) return { ok: false, error: 'computer MAC missing' }
+  host = computer.hostname
 
   const img = ensureSlotImage(kernel, { projectRoot, runtime: runtimeKind(vm) })
   if (!img.ok) return img
@@ -902,6 +1001,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing, acc
       ...(fs.existsSync(WORKER_BIN) ? ['-v', `${hostOf(WORKER_BIN)}:/usr/local/bin/kin-worker:ro`] : []),
       ...(mountKernel ? ['-v', `${hostOf(kernelBin)}:/usr/local/bin/kin-kernel:ro`] : []),
       ...machineMounts,
+      ...computerDockerArgs({ dir: computer.dir, mac: computer.mac, hostOf }),
       '-e',
       'HOME=/home/kincli',
       '-e',

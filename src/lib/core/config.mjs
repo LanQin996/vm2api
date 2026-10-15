@@ -26,6 +26,31 @@ export function streamIdleTimeoutMs(routing, fallbackMs = Number(process.env.KIN
   return Math.min(STREAM_IDLE_TIMEOUT_MAX_MS, Math.max(STREAM_IDLE_TIMEOUT_MIN_MS, Math.round(ms)))
 }
 
+/**
+ * How long a Claude stream may sit in the queue before the first downstream
+ * byte. Cloudflare returns 524 when the origin writes nothing for ~100s.
+ * The default is under that window and after one seat wait (fallback 30s,
+ * sticky 45s), so a short miss can still answer HTTP 429/529. Values above
+ * 90s are capped: the first byte has to land before the proxy gives up.
+ * `0` writes the first ping immediately.
+ */
+export const DEFAULT_QUEUE_KEEPALIVE_DELAY_MS = 60_000
+export const QUEUE_KEEPALIVE_DELAY_MAX_MS = 90_000
+
+export function queueKeepaliveDelayMs(routing, fallbackMs) {
+  const envRaw = process.env.KIN_QUEUE_KEEPALIVE_DELAY
+  const envMs = envRaw == null || String(envRaw).trim() === '' ? Number.NaN : Number(envRaw)
+  const fallback = Number.isFinite(Number(fallbackMs))
+    ? Number(fallbackMs)
+    : Number.isFinite(envMs) && envMs >= 0
+      ? envMs
+      : DEFAULT_QUEUE_KEEPALIVE_DELAY_MS
+  const raw = routing?.failover?.queue_keepalive_delay_ms
+  const ms = raw == null || raw === '' ? fallback : Number(raw)
+  const chosen = Number.isFinite(ms) && ms >= 0 ? ms : fallback >= 0 ? fallback : DEFAULT_QUEUE_KEEPALIVE_DELAY_MS
+  return Math.min(QUEUE_KEEPALIVE_DELAY_MAX_MS, Math.round(chosen))
+}
+
 export const DEFAULT_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 const MAX_REQUEST_MIB_MIN = 8
 const MAX_REQUEST_MIB_MAX = 128
@@ -169,6 +194,7 @@ export function loadConfig() {
       upstream_timeout_ms: Number(process.env.KIN_UPSTREAM_TIMEOUT || 600000),
       stream_idle_timeout_ms: streamIdleTimeoutMs(),
       stream_keepalive_ms: Number(process.env.KIN_STREAM_KEEPALIVE || 10000),
+      queue_keepalive_delay_ms: queueKeepaliveDelayMs(null),
       rate_capacity: Number(process.env.KIN_RATE_CAP || 60),
       rate_refill: Number(process.env.KIN_RATE_REFILL || 1),
       // POST /api/panel/login: KIN_TRUST_PROXY, KIN_LOGIN_MAX_INFLIGHT, KIN_LOGIN_IP_BURST / _PER_MIN, KIN_LOGIN_USER_BURST / _PER_MIN

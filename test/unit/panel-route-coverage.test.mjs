@@ -46,6 +46,8 @@ const PANEL_ROUTE_SAMPLES = [
   ['POST', '/api/panel/vms/vm-01/schedulable'],
   ['POST', '/api/panel/vms/vm-01/cooldown/clear'],
   ['POST', '/api/panel/vms/vm-01/circuit/reset'],
+  ['GET', '/api/panel/vms/vm-01/diagnose'],
+  ['POST', '/api/panel/vms/vm-01/recover'],
   ['POST', '/api/panel/vms/vm-01/reload'],
   ['POST', '/api/panel/vms/vm-01/collect-identity'],
   ['POST', '/api/panel/vms/vm-01/probe'],

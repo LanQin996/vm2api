@@ -109,3 +109,69 @@ test('keepalive start alone does not write before the first upstream event', asy
   keepalive.stop()
   assert.equal(writes.length, 0)
 })
+
+test('armAfter holds the first ping until the queue delay', async () => {
+  const writes = []
+  const keepalive = createDownstreamKeepalive({
+    intervalMs: 20,
+    userAgent: 'claude-cli/2.1.187 (external, cli)',
+    protocol: 'anthropic.messages',
+    write: (chunk) => writes.push(chunk),
+  })
+  keepalive.armAfter(70)
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(writes.length, 0)
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  keepalive.stop()
+  assert.ok(writes.some((chunk) => chunk.includes('event: ping')))
+})
+
+test('a fast attempt does not ping before the queue delay', async () => {
+  const writes = []
+  const keepalive = createDownstreamKeepalive({
+    intervalMs: 25,
+    userAgent: 'claude-cli/2.1.187 (external, cli)',
+    protocol: 'anthropic.messages',
+    write: (chunk) => writes.push(chunk),
+  })
+  keepalive.armAfter(80)
+  keepalive.arm()
+  keepalive.endAttempt()
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  assert.equal(writes.length, 0)
+  await new Promise((resolve) => setTimeout(resolve, 70))
+  keepalive.stop()
+  assert.ok(writes.some((chunk) => chunk.includes('event: ping')))
+})
+
+test('an active attempt still pings before the queue delay', async () => {
+  const writes = []
+  const keepalive = createDownstreamKeepalive({
+    intervalMs: 20,
+    userAgent: 'claude-cli/2.1.187 (external, cli)',
+    protocol: 'anthropic.messages',
+    write: (chunk) => writes.push(chunk),
+  })
+  keepalive.armAfter(400)
+  keepalive.arm()
+  await new Promise((resolve) => setTimeout(resolve, 70))
+  keepalive.stop()
+  assert.ok(writes.some((chunk) => chunk.includes('event: ping')))
+})
+
+test('pings continue between attempts after the first byte', async () => {
+  const writes = []
+  const keepalive = createDownstreamKeepalive({
+    intervalMs: 20,
+    userAgent: 'claude-cli/2.1.187 (external, cli)',
+    protocol: 'anthropic.messages',
+    write: (chunk) => writes.push(chunk),
+  })
+  keepalive.armAfter(0)
+  assert.ok(writes.some((chunk) => chunk.includes('event: ping')))
+  const first = writes.length
+  keepalive.endAttempt()
+  await new Promise((resolve) => setTimeout(resolve, 70))
+  keepalive.stop()
+  assert.ok(writes.length > first)
+})

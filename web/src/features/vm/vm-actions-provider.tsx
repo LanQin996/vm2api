@@ -17,11 +17,12 @@ import { VmAssignOwnerDialog } from '@/features/vm/vm-assign-owner-dialog'
 import { VmDetailCard } from '@/features/vm/vm-detail-card'
 import { canReclaimVm, patchVmOwner } from '@/features/vm/vm-owner'
 import { VmReauthDialog } from '@/features/vm/vm-reauth-dialog'
+import { VmRecoveryDialog } from '@/features/vm/vm-recovery-dialog'
 import { VmStatsDialog } from '@/features/vm/vm-stats-dialog'
 import { VmTestDialog } from '@/features/vm/vm-test-dialog'
 
 /**
- * 持有详情卡与测试 / 统计 / 重新授权弹窗的开关，行与卡片只发「打开哪台」。
+ * 持有详情卡与测试 / 统计 / 重新授权 / 恢复服务弹窗的开关，行与卡片只发「打开哪台」。
  * 弹窗内的 Vm 始终从列表缓存里按 id 取，轮询刷新后卡面数据同步更新。
  */
 export function VmActionsProvider({
@@ -43,6 +44,7 @@ export function VmActionsProvider({
   const [testId, setTestId] = useState<string | null>(null)
   const [statsId, setStatsId] = useState<string | null>(null)
   const [reauthId, setReauthId] = useState<string | null>(null)
+  const [recoveryId, setRecoveryId] = useState<string | null>(null)
   const [assignId, setAssignId] = useState<string | null>(null)
   const [reclaimTarget, setReclaimTarget] = useState<Vm | null>(null)
   const items = list.data?.items
@@ -108,6 +110,7 @@ export function VmActionsProvider({
       openTest: (vm) => setTestId(vm.id),
       openStats: (vm) => setStatsId(vm.id),
       openReauth: (vm) => setReauthId(vm.id),
+      openRecovery: (vm) => setRecoveryId(vm.id),
       refreshToken,
       recover: recoverState,
       refreshingId: refreshPending ? (refreshVars?.id ?? null) : null,
@@ -156,6 +159,11 @@ export function VmActionsProvider({
       <VmReauthDialog
         vm={byId(reauthId)}
         onOpenChange={(open) => !open && setReauthId(null)}
+      />
+      <VmRecoveryDialog
+        vm={byId(recoveryId)}
+        open={recoveryId != null}
+        onOpenChange={(open) => !open && setRecoveryId(null)}
       />
       {isAdmin ? (
         <>

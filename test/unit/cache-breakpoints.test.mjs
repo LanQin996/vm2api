@@ -433,7 +433,6 @@ test('a caller breakpoint on system reaches the wire through the official person
       homeDir: dir,
     })
     const hits = breakpoints(envelope.body)
-    assert.ok(hits.length >= 1, 'outbound body must carry at least one breakpoint')
     assert.ok(
       hits.some((h) => h.where.startsWith('system[')),
       'the system prefix must be cacheable',

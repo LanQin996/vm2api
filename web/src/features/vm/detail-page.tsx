@@ -406,6 +406,7 @@ export function VmDetailPage() {
           />
           <VmTestTab
             {...test}
+            vm={vm}
             credType={credType}
             isCodex={isCodexVm(vm)}
             dataplane={vm.resolved_dataplane}

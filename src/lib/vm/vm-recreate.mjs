@@ -22,6 +22,7 @@ import {
   takenFingerprintKeys,
   writeGuestMachineIdFile,
 } from '../identity/workstation-fingerprint.mjs'
+import { assignComputerFingerprint } from '../identity/slot-computer.mjs'
 
 export function wipeSlotHome(projectRoot, id) {
   if (!projectRoot || !id) return
@@ -108,7 +109,7 @@ export function buildRecreatedVmRecord(prev, generated) {
 export function recreateVmFiles(projectRoot, prev) {
   if (!projectRoot || !prev?.id) throw new Error('projectRoot and vm id required')
   wipeSlotHome(projectRoot, prev.id)
-  const generated = generateWorkstationFingerprint(prev, {
+  const generated = assignComputerFingerprint(projectRoot, prev, {
     taken: takenFingerprintKeys(listVms(projectRoot), { exceptId: prev.id }),
   })
   const vm = buildRecreatedVmRecord(prev, generated)

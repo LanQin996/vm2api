@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { buildKvmRunArgs } from '../../src/lib/vm/vm-runtime.mjs'
+import { buildKvmRunArgs, computerDockerArgs, shouldPublishComputer } from '../../src/lib/vm/vm-runtime.mjs'
 import { writeKernelConfig } from '../../src/lib/transport/rust-kernel-supervisor.mjs'
 
 const vm = {
@@ -85,6 +85,73 @@ test('kvm docker run attaches /dev/kvm only with accel kvm', () => {
   const tcg = argsFor('tcg')
   assert.equal(tcg.includes('--device'), false)
   assert.equal(tcg.includes('/dev/kvm'), false)
+})
+
+test('an existing container keeps its baked computer name', () => {
+  assert.equal(shouldPublishComputer({ running: true, id: 'old' }), false)
+  assert.equal(shouldPublishComputer({ running: false, id: 'stopped' }), false)
+  assert.equal(shouldPublishComputer(null), true)
+  assert.equal(shouldPublishComputer(undefined), true)
+})
+
+test('kvm env uses fingerprint SMBIOS and does not carry smc or rom', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kvm-fp-'))
+  const kvmDir = path.join(root, 'kvm')
+  fs.mkdirSync(path.join(kvmDir, 'fingerprint'), { recursive: true })
+  fs.writeFileSync(
+    path.join(kvmDir, 'fingerprint', 'qemu-smbios.args'),
+    [
+      '-uuid',
+      'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+      '-smbios',
+      'type=1,manufacturer=Framework,product=Laptop16,version=AB,serial=FW123,uuid=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,family=Laptop',
+      '',
+    ].join('\n'),
+  )
+  const args = buildKvmRunArgs({
+    vm,
+    name: 'kin-02',
+    image: 'ghcr.io/example/kin-kvm-ubuntu:24.04',
+    hostName: 'guest-02',
+    network: 'kin-eg-px',
+    memory: '1g',
+    accel: 'tcg',
+    uid: 10002,
+    gid: 987,
+    home: '/data/vms/vm-02/cli-home',
+    runDir: '/data/vms/vm-02/run',
+    kvmDir,
+    shares: 'home,run',
+  })
+  assert.ok(args.includes('KIN_KVM_SMBIOS_MANUFACTURER=Framework'))
+  assert.ok(args.includes('KIN_KVM_SMBIOS_PRODUCT=Laptop16'))
+  assert.equal(
+    args.some((arg) => String(arg).includes('OptiPlex')),
+    false,
+  )
+  assert.equal(
+    args.some((arg) => /smc_version|rom_hex/i.test(String(arg))),
+    false,
+  )
+  assert.ok(args.includes('KIN_KVM_MAC=52:54:00:11:22:33'))
+  assert.ok(args.includes('KIN_KVM_DISK_SERIAL=KIN123'))
+  assert.ok(args.includes('KIN_KVM_MEMORY_MB=1024'))
+  assert.ok(args.includes('KIN_KVM_VCPUS=2'))
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('docker computer mounts are read-only and use the persona MAC', () => {
+  const args = computerDockerArgs({
+    dir: '/data/vms/vm-02/kvm/fingerprint',
+    mac: '3c:22:fb:f9:50:9d',
+    hostOf: (p) => p,
+  })
+  assert.equal(args[args.indexOf('--mac-address') + 1], '3c:22:fb:f9:50:9d')
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint:/var/lib/kin-persona:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/hostname:/etc/hostname:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/etc/kin-computer:/etc/kin-computer:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/dmi/id:/etc/kin-dmi:ro'))
+  assert.ok(args.includes('/data/vms/vm-02/kvm/fingerprint/system/hardware:/etc/kin-hardware:ro'))
 })
 
 test('writeKernelConfig uses guest socket path and runtime_kind kvm', () => {

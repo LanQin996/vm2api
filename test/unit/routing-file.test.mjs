@@ -4,8 +4,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  DEFAULT_QUEUE_KEEPALIVE_DELAY_MS,
+  QUEUE_KEEPALIVE_DELAY_MAX_MS,
   inboundBodyLimit,
   maxRequestBytes,
+  queueKeepaliveDelayMs,
   readRoutingConfigFile,
   routingConfigFile,
   streamIdleTimeoutMs,
@@ -78,6 +81,24 @@ test('streamIdleTimeoutMs prefers the panel value, then the caller fallback', ()
   })
   withEnv('KIN_STREAM_IDLE_TIMEOUT', '240000', () => {
     assert.equal(streamIdleTimeoutMs(null), 240_000)
+  })
+})
+
+test('queueKeepaliveDelayMs stays under the Cloudflare window', () => {
+  withEnv('KIN_QUEUE_KEEPALIVE_DELAY', '', () => {
+    assert.equal(queueKeepaliveDelayMs(null), DEFAULT_QUEUE_KEEPALIVE_DELAY_MS)
+    assert.equal(queueKeepaliveDelayMs({ failover: {} }, 15_000), 15_000)
+    assert.equal(queueKeepaliveDelayMs({ failover: { queue_keepalive_delay_ms: 0 } }, 15_000), 0)
+    assert.equal(queueKeepaliveDelayMs({ failover: { queue_keepalive_delay_ms: 45_000 } }), 45_000)
+    assert.equal(
+      queueKeepaliveDelayMs({ failover: { queue_keepalive_delay_ms: 200_000 } }),
+      QUEUE_KEEPALIVE_DELAY_MAX_MS,
+    )
+    assert.equal(queueKeepaliveDelayMs({ failover: { queue_keepalive_delay_ms: -1 } }, 15_000), 15_000)
+  })
+  withEnv('KIN_QUEUE_KEEPALIVE_DELAY', '25000', () => {
+    assert.equal(queueKeepaliveDelayMs({ failover: {} }), 25_000)
+    assert.equal(queueKeepaliveDelayMs({ failover: { queue_keepalive_delay_ms: 5000 } }), 5_000)
   })
 })
 

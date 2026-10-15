@@ -34,8 +34,25 @@ export class SocketRelay {
     this.active = new Set()
   }
 
+  /** Listening and the socket file still there: a removed file strands every dialer. */
+  alive() {
+    return this.listening && fs.existsSync(this.socketPath)
+  }
+
   snapshot() {
-    return { socket_path: this.socketPath, listening: this.listening, error: this.error, active: this.active.size }
+    return {
+      socket_path: this.socketPath,
+      listening: this.listening,
+      alive: this.alive(),
+      error: this.error,
+      active: this.active.size,
+    }
+  }
+
+  async restart() {
+    await this.stop()
+    this.error = null
+    await this.start()
   }
 
   async start() {

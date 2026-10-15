@@ -77,6 +77,13 @@ export async function syncVmTimezoneFromProxy(
   return { ok: true, applied: true, timezone, reason: null }
 }
 
+/** A slot without a zone takes its exit's; a set zone (manual or already synced) stays. */
+export async function fillVmTimezoneFromExit(projectRoot, proxyPool, vmId) {
+  const vm = getVm(projectRoot, vmId)
+  if (!vm?.proxy?.id || validTimezone(vm.timezone)) return null
+  return syncVmTimezoneFromProxy(projectRoot, proxyPool, vmId, { force: true })
+}
+
 function skip(reason) {
   return { ok: false, applied: false, timezone: null, reason }
 }

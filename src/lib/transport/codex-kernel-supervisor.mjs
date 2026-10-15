@@ -215,6 +215,11 @@ export function stopCodexKernel(vmId) {
   return child || null
 }
 
+/** A child this process spawned for the VM that has not exited (it may still be starting or hung). */
+export function codexKernelTracked(vmId) {
+  return !childHasExited(starts.get(vmId))
+}
+
 export function stopAllCodexKernels() {
   for (const vmId of [...starts.keys()]) stopCodexKernel(vmId)
 }

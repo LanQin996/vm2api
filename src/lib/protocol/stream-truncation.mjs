@@ -14,6 +14,16 @@ function sse(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
 }
 
+/** Anthropic streaming error. `type` is what clients branch on (`overloaded_error`, …). */
+export function buildAnthropicSseError(error = {}) {
+  const body = {
+    type: String(error.type || 'api_error'),
+    message: String(error.message || 'An error occurred while processing the request'),
+  }
+  if (error.code) body.code = String(error.code)
+  return sse('error', { type: 'error', error: body })
+}
+
 export function createAnthropicStreamTracker() {
   let started = false
   let finished = false
@@ -54,6 +64,12 @@ export function createAnthropicStreamTracker() {
         default:
           break
       }
+    },
+    hasStarted() {
+      return started
+    },
+    isFinished() {
+      return finished
     },
     /** SSE text that ends the message as max_tokens, or null when it cannot be closed. */
     closingEvents() {

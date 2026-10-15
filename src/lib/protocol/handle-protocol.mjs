@@ -3,7 +3,11 @@
  * server wiring; this factory owns convert → pool → Go/Rust hop → client.
  */
 import { applyIntercept } from '../core/intercept.mjs'
-import { streamIdleTimeoutMs as idleTimeoutFromRouting, inboundBodyLimit } from '../core/config.mjs'
+import {
+  streamIdleTimeoutMs as idleTimeoutFromRouting,
+  inboundBodyLimit,
+  queueKeepaliveDelayMs,
+} from '../core/config.mjs'
 import { applyEagerToolStreaming } from './eager-tool-streaming.mjs'
 import {
   inboundRefusalDeviceId,
@@ -119,7 +123,7 @@ import {
   isClaudeCodeFamilyRequest,
 } from '../identity/claude-code-only.mjs'
 import { createDownstreamKeepalive } from './stream-keepalive.mjs'
-import { createAnthropicStreamTracker, isRecoverableTruncation } from './stream-truncation.mjs'
+import { buildAnthropicSseError, createAnthropicStreamTracker, isRecoverableTruncation } from './stream-truncation.mjs'
 import {
   hidePersonaUsageInSseLine,
   hidePersonaUsageOnMessage,
@@ -1081,6 +1085,9 @@ export function createHandleProtocol(deps) {
     const streamKeepaliveMs = Number(
       getRouting()?.failover?.stream_keepalive_ms ?? cfg.limits.stream_keepalive_ms ?? 15_000,
     )
+    // First downstream byte during a queue wait. Short misses stay HTTP 429/529;
+    // anything still waiting past this writes SSE so Cloudflare does not 524.
+    const queueKeepaliveDelay = queueKeepaliveDelayMs(getRouting(), cfg.limits?.queue_keepalive_delay_ms)
     const streamIdleTimeoutMs = idleTimeoutFromRouting(
       getRouting(),
       Number(cfg.limits.stream_idle_timeout_ms) || 180_000,
@@ -1108,6 +1115,26 @@ export function createHandleProtocol(deps) {
 
     const clientStream = isClientStream(inbound, req.headers)
     const streamTracker = clientStream && protocol === 'anthropic.messages' ? createAnthropicStreamTracker() : null
+    // One keepalive for the whole Claude stream, including session/seat queues
+    // and the gaps between failover attempts. OpenAI keeps its per-attempt one.
+    let activeAttemptCommit = null
+    const anthropicKeepalive =
+      clientStream && protocol === 'anthropic.messages' && streamKeepaliveMs > 0
+        ? createDownstreamKeepalive({
+            intervalMs: streamKeepaliveMs,
+            userAgent: req.headers['user-agent'] || req.headers['User-Agent'] || '',
+            protocol,
+            write: (chunk) => {
+              if (res.writableEnded || res.destroyed) return
+              if (!res.headersSent) writeSSEHeaders(res)
+              res.write(chunk)
+              // A queue ping commits the HTTP response only. The slot commits
+              // while an attempt is active, same as an in-attempt ping.
+              activeAttemptCommit?.()
+            },
+          })
+        : null
+    anthropicKeepalive?.armAfter(queueKeepaliveDelay)
     const upstreamStream = true
     const requestedDelivery = String(
       req.headers['x-kin-delivery'] || getRouting()?.failover?.delivery_mode || 'realtime',
@@ -1180,9 +1207,11 @@ export function createHandleProtocol(deps) {
           } catch {}
           const identity = loadVmIdentity(selected.exec)
           const attemptStartedAt = extra.attemptStartedAt ?? Date.now()
-          const keptSession = extra.freshSlot ? '' : stickyBound?.sessionId || ''
-          const keptAccount = extra.freshSlot ? '' : stickyBound?.accountId || ''
-          const keptVm = extra.freshSlot ? '' : stickyBound?.vmId || ''
+          // The runner snapshots after this session's queue turn, before VM prebinding.
+          const attemptBound = extra.stickyBound
+          const keptSession = extra.freshSlot ? '' : attemptBound?.sessionId || ''
+          const keptAccount = extra.freshSlot ? '' : attemptBound?.accountId || ''
+          const keptVm = extra.freshSlot ? '' : attemptBound?.vmId || ''
           const attemptSessionId = resolveOutboundSessionId(callerSession, {
             ...sessionContext,
             accountId: selected.accountId,
@@ -1304,9 +1333,9 @@ export function createHandleProtocol(deps) {
             officialClient: officialTraffic,
             sessionId: attemptSessionId,
             accountId: selected.accountId,
-            boundSessionId: stickyBound?.sessionId || '',
-            boundAccountId: stickyBound?.accountId || '',
-            boundVmId: stickyBound?.vmId || '',
+            boundSessionId: keptSession,
+            boundAccountId: keptAccount,
+            boundVmId: keptVm,
             vmId: selected.vmId,
             epoch: attemptStartedAt,
             mode: sessionMode,
@@ -1370,19 +1399,22 @@ export function createHandleProtocol(deps) {
           } else if (protocol === 'openai.responses') {
             state = createResponsesStreamState(inbound.model || body.model, candidate.vmId)
           }
-          const keepalive = createDownstreamKeepalive({
-            intervalMs: streamKeepaliveMs,
-            userAgent: req.headers['user-agent'] || req.headers['User-Agent'] || '',
-            protocol,
-            write: (chunk) => {
-              if (res.writableEnded || res.destroyed) return
-              if (!res.headersSent) writeSSEHeaders(res)
-              res.write(chunk)
-              // A ping is already a downstream byte. Commit so a later upstream
-              // failure cannot switch slots onto this socket.
-              onCommit()
-            },
-          })
+          const keepalive =
+            anthropicKeepalive ||
+            createDownstreamKeepalive({
+              intervalMs: streamKeepaliveMs,
+              userAgent: req.headers['user-agent'] || req.headers['User-Agent'] || '',
+              protocol,
+              write: (chunk) => {
+                if (res.writableEnded || res.destroyed) return
+                if (!res.headersSent) writeSSEHeaders(res)
+                res.write(chunk)
+                // A ping is already a downstream byte. Commit so a later upstream
+                // failure cannot switch slots onto this socket.
+                onCommit()
+              },
+            })
+          if (anthropicKeepalive) activeAttemptCommit = onCommit
           keepalive.arm()
           try {
             return await dispatchStreamInference({
@@ -1437,11 +1469,15 @@ export function createHandleProtocol(deps) {
               },
             })
           } finally {
-            keepalive.stop()
+            if (anthropicKeepalive) {
+              activeAttemptCommit = null
+              anthropicKeepalive.endAttempt()
+            } else keepalive.stop()
           }
         },
       })
     } finally {
+      anthropicKeepalive?.stop()
       clientAbort.settle()
       if (managedKey) {
         try {
@@ -1534,6 +1570,17 @@ export function createHandleProtocol(deps) {
         logBag.error_message = result?.body?.error?.message || 'Stream did not reach a verified terminal state'
         const closing = isRecoverableTruncation(result) && !res.writableEnded ? streamTracker?.closingEvents() : null
         if (closing) res.write(closing)
+        else if (
+          protocol === 'anthropic.messages' &&
+          !res.writableEnded &&
+          !streamTracker?.hasStarted() &&
+          !streamTracker?.isFinished()
+        ) {
+          // Headers already went out (queue ping or an in-attempt ping), so the
+          // status can no longer be 429/529/503. Close with the Anthropic event.
+          const mapped = mapProtocolClientError(result, logBag, logBag.error_code)
+          res.write(buildAnthropicSseError(mapped.body?.error || {}))
+        }
       }
       rememberRefusal({ inbound, body: ctx.body, headers: req.headers, result, logBag, requestId: logCtx.request_id })
       return res.end()

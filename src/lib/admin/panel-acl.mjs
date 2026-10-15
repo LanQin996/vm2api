@@ -166,6 +166,7 @@ function userVmPathAllowed(method, path) {
       rest === 'probe' ||
       rest === 'count-tokens' ||
       rest === 'test-chat' ||
+      rest === 'diagnose' ||
       rest === 'official-cc-bootstrap'
     )
   }
@@ -183,6 +184,7 @@ function userVmPathAllowed(method, path) {
       rest === 'count-tokens' ||
       rest === 'start' ||
       rest === 'stop' ||
+      rest === 'recover' ||
       rest === 'openai-quota/refresh' ||
       rest === 'openai-quota/reset' ||
       rest === 'claude-reset/query' ||
