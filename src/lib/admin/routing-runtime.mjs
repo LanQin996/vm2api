@@ -350,6 +350,7 @@ export function createRoutingRuntime(ctx) {
       match: { ...(prev.match || {}), ...(next.match || {}) },
     })
     getHealth()?.setConfig(routingConfig.health_probe)
+    ctx.modelTraceMonitor?.setConfig?.(routingConfig.health_probe.model_trace)
   }
 
   function applyUsageProbeRoutingBody(body, previous = null) {

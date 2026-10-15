@@ -11,6 +11,7 @@ import { isValidVmId } from '../vm/vm-file.mjs'
 import { activeHoursOf, evaluateActiveHours } from '../pool/active-hours.mjs'
 import { fromClaudeToOpenAIChat, fromClaudeToOpenAICompletions, fromClaudeToResponses } from '../protocol/convert.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
+import { normalizeModelTraceConfig } from './modeltrace/config.mjs'
 
 export const HEALTH_REAL_HEADER = 'x-kin-health-real'
 export const HEALTH_VIA_CACHE = 'health-cache'
@@ -44,6 +45,14 @@ export const DEFAULT_HEALTH_PROBE = Object.freeze({
     vm_ids: Object.freeze([]),
     // GPT snapshot for chat/responses on GPT models. Empty = no Codex probe.
     openai_model: '',
+  }),
+  model_trace: Object.freeze({
+    enabled: false,
+    interval_sec: 86400,
+    vm_id: '',
+    model: 'gpt-5.4',
+    max_tokens: 4096,
+    min_confidence: 0.55,
   }),
   match: Object.freeze({
     max_tokens: 32,
@@ -180,6 +189,7 @@ export function normalizeHealthProbeConfig(raw = {}) {
         .trim()
         .slice(0, 120),
     },
+    model_trace: normalizeModelTraceConfig(src.model_trace),
     match: {
       max_tokens: clampInt(matchSrc.max_tokens, 1, 4096, DEFAULT_HEALTH_PROBE.match.max_tokens),
       max_prompt_chars: clampInt(matchSrc.max_prompt_chars, 1, 256, DEFAULT_HEALTH_PROBE.match.max_prompt_chars),

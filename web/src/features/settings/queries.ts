@@ -110,10 +110,45 @@ export type HealthProbePayload = {
   } | null
 }
 
+export type ModelTraceSnapshot = {
+  ok: boolean
+  status: 'match' | 'mismatch' | 'uncertain' | 'incomplete' | 'error' | 'running' | 'interrupted'
+  at: string | null
+  phase?: 'updating_bank' | 'sampling' | null
+  progress?: { completed: number; total: number }
+  vm_id?: string | null
+  requested_model?: string | null
+  actual_model?: string | null
+  prediction?: string | null
+  prediction_name?: string | null
+  probability?: number | null
+  family_prediction_name?: string | null
+  family_probability?: number | null
+  bank_built_at?: string | null
+  bank_update_error?: string | null
+  error?: string | null
+  next_at?: string | null
+}
+
+export type ModelTracePayload = {
+  started?: boolean
+  config: Record<string, unknown>
+  snapshot: ModelTraceSnapshot | null
+  bank: { built_at: string | null; updated_at: string | null; model_count: number } | null
+}
+
 export function healthProbeQueryOptions() {
   return queryOptions({
     queryKey: ['panel', 'health-probe'] as const,
     queryFn: () => api<HealthProbePayload>('/api/panel/health-probe'),
     refetchInterval: 30_000,
+  })
+}
+
+export function modelTraceQueryOptions() {
+  return queryOptions({
+    queryKey: ['panel', 'model-trace'] as const,
+    queryFn: () => api<ModelTracePayload>('/api/panel/model-trace'),
+    refetchInterval: (query) => (query.state.data?.snapshot?.status === 'running' ? 3_000 : 30_000),
   })
 }

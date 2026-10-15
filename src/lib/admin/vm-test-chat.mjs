@@ -1050,6 +1050,7 @@ export async function runVmTestChat(opts = {}) {
     inbound = {
       model,
       input: codexTextInput(prompt),
+      max_output_tokens: maxTokens,
       stream: true,
       store: false,
     }

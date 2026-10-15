@@ -876,6 +876,7 @@ export function createPanelHandler(ctx) {
     ctx.routingConfig = previous
     setManualScheduleWins(ctx.routingConfig.pool?.manual_schedule_wins)
     ctx.healthMonitor?.setConfig(ctx.routingConfig.health_probe)
+    ctx.modelTraceMonitor?.setConfig(ctx.routingConfig.health_probe.model_trace)
     ctx.usageProbeMonitor?.setConfig(ctx.routingConfig.usage_probe)
     ctx.notifyMonitor?.setConfig(ctx.routingConfig.notify)
     if (ctx.routingConfig.logging) {
@@ -4395,6 +4396,30 @@ export function createPanelHandler(ctx) {
             config: ctx.healthMonitor.getConfig(),
             snapshot,
             snapshots: ctx.healthMonitor.getSnapshots?.() || null,
+          }),
+        )
+      }
+      if (req.method === 'GET' && p === '/api/panel/model-trace') {
+        return json(
+          res,
+          200,
+          panel.ok({
+            config: ctx.modelTraceMonitor?.getConfig?.() || ctx.routingConfig.health_probe?.model_trace || {},
+            snapshot: ctx.modelTraceMonitor?.getSnapshot?.() || null,
+            bank: ctx.modelTraceMonitor?.getBankStatus?.() || null,
+          }),
+        )
+      }
+      if (req.method === 'POST' && p === '/api/panel/model-trace') {
+        const run = ctx.modelTraceMonitor?.startRun?.()
+        return json(
+          res,
+          200,
+          panel.ok({
+            started: run?.started || false,
+            config: ctx.modelTraceMonitor?.getConfig?.() || {},
+            snapshot: run?.snapshot || ctx.modelTraceMonitor?.getSnapshot?.() || null,
+            bank: ctx.modelTraceMonitor?.getBankStatus?.() || null,
           }),
         )
       }

@@ -127,7 +127,7 @@ test('runVmTestChat Codex slot loopbacks /v1/responses and never /v1/messages', 
   assert.equal(calls[0].body.input[0].content[0].text, 'hello')
   assert.equal(calls[0].body.stream, true)
   assert.equal(calls[0].body.store, false)
-  assert.equal(calls[0].body.max_output_tokens, undefined)
+  assert.equal(calls[0].body.max_output_tokens, 64)
   assert.equal(calls[0].body.reasoning?.effort, 'medium')
   assert.equal(calls[0].body.messages, undefined)
   assert.ok(result.log.some((l) => /\/v1\/responses/.test(l.message)))

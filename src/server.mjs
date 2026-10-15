@@ -37,6 +37,7 @@ import { createCatalogMonitor } from './lib/admin/catalog-monitor.mjs'
 import { normalizeOfficialCcConfig } from './lib/oauth/official-cc-bootstrap.mjs'
 import { invalidateLiveCredentialCache } from './lib/admin/panel-live-credentials.mjs'
 import { normalizeHealthProbeConfig, createHealthProbeMonitor, HEALTH_REAL_HEADER } from './lib/admin/health-probe.mjs'
+import { createModelTraceMonitor } from './lib/admin/modeltrace/monitor.mjs'
 import { normalizeNotifyConfig, createNotifyMonitor, dispatchNotify } from './lib/admin/notify.mjs'
 import { runVmTestChat } from './lib/admin/vm-test-chat.mjs'
 import { StickyRouter } from './lib/pool/sticky-router.mjs'
@@ -163,6 +164,7 @@ if (vmSync.proxy_cli_repaired) {
 
 const routingConfigPath = routingConfigFile(cfg.paths.project)
 let healthMonitor = null
+let modelTraceMonitor = null
 let credentialRefreshMonitor = null
 let kernelWatchdog = null
 let cliNodeGuard = null
@@ -212,6 +214,9 @@ const routingRt = createRoutingRuntime({
   },
   get healthMonitor() {
     return healthMonitor
+  },
+  get modelTraceMonitor() {
+    return modelTraceMonitor
   },
   setHealthMonitor: (v) => {
     healthMonitor = v
@@ -452,6 +457,23 @@ healthMonitor = createHealthProbeMonitor({
       extraHeaders: { [HEALTH_REAL_HEADER]: '1' },
     }),
 })
+modelTraceMonitor = createModelTraceMonitor({
+  config: routingConfig.health_probe.model_trace,
+  projectRoot: cfg.paths.project,
+  dataDir,
+  listTargets: () => listVms(cfg.paths.project).map(attachSlotRuntime),
+  runChat: (vm, sample) =>
+    runVmTestChat({
+      projectRoot: cfg.paths.project,
+      vmId: vm.id,
+      model: sample.model,
+      prompt: sample.prompt,
+      max_tokens: sample.max_tokens,
+      timeoutMs: sample.timeout_ms,
+      baseUrl: `http://127.0.0.1:${cfg.port}`,
+      apiKey: cfg.api_key,
+    }),
+})
 credentialRefreshMonitor = createCredentialRefreshMonitor({
   config: normalizeCredentialRefreshConfig(routingConfig.credential_refresh),
   listTargets: () =>
@@ -570,6 +592,7 @@ backupService.onRestored((db) => {
     mutedErrorClasses: routingConfig.logging?.muted_error_classes,
   })
   healthMonitor?.setConfig(routingConfig.health_probe)
+  modelTraceMonitor?.setConfig(routingConfig.health_probe.model_trace)
   credentialRefreshMonitor?.setConfig(normalizeCredentialRefreshConfig(routingConfig.credential_refresh))
   kernelWatchdog?.setConfig(normalizeKernelWatchdogConfig(routingConfig.kernel_watchdog))
   usageProbeMonitor?.setConfig(routingConfig.usage_probe)
@@ -840,6 +863,9 @@ const { handleProtocol, handleSearch } = createHandleProtocol({
   get healthMonitor() {
     return healthMonitor
   },
+  get modelTraceMonitor() {
+    return modelTraceMonitor
+  },
   getFailoverRunner: () => failoverRunner,
   get failoverRunner() {
     return failoverRunner
@@ -931,6 +957,9 @@ const handlePanel = createPanelHandler({
   },
   get healthMonitor() {
     return healthMonitor
+  },
+  get modelTraceMonitor() {
+    return modelTraceMonitor
   },
   get usageProbeMonitor() {
     return usageProbeMonitor
@@ -1206,6 +1235,9 @@ function shutdown(signal) {
     healthMonitor?.stop?.()
   } catch {}
   try {
+    modelTraceMonitor?.stop?.()
+  } catch {}
+  try {
     credentialRefreshMonitor?.stop?.()
   } catch {}
   try {
@@ -1249,6 +1281,11 @@ server.listen(cfg.port, cfg.host, () => {
     healthMonitor?.start?.({ immediate: true })
   } catch (e) {
     console.warn('[health-probe] start failed', e?.message || e)
+  }
+  try {
+    modelTraceMonitor?.start?.({ immediate: true })
+  } catch (e) {
+    console.warn('[model-trace] start failed', e?.message || e)
   }
   try {
     credentialRefreshMonitor?.start?.({ immediate: true })
