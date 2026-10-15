@@ -1,11 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { api } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
-import { api } from '@/lib/api'
 import {
   healthProbeQueryOptions,
   modelTraceQueryOptions,
@@ -117,76 +117,182 @@ export function HealthPane(props: HealthPaneProps) {
       />
       <ModelTraceCard
         config={modelTrace}
-        onChange={(next) => setProbe({ model_trace: { ...modelTrace, ...next } })}
+        onChange={(next) =>
+          setProbe({ model_trace: { ...modelTrace, ...next } })
+        }
       />
       <SignatureRepairCard failover={failover} onChange={onFailoverChange} />
     </>
   )
 }
 
-function ModelTraceCard({ config, onChange }: { config: Obj; onChange: (patch: Obj) => void }) {
+function ModelTraceCard({
+  config,
+  onChange,
+}: {
+  config: Obj
+  onChange: (patch: Obj) => void
+}) {
   const queryClient = useQueryClient()
   const status = useQuery(modelTraceQueryOptions())
   const run = useMutation({
-    mutationFn: () => api<ModelTracePayload>('/api/panel/model-trace', { method: 'POST', body: '{}' }),
-    onSuccess: (data) => queryClient.setQueryData(['panel', 'model-trace'], data),
+    mutationFn: () =>
+      api<ModelTracePayload>('/api/panel/model-trace', {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: (data) =>
+      queryClient.setQueryData(['panel', 'model-trace'], data),
   })
   const snapshot = status.data?.snapshot
-  const statusText = snapshot?.status === 'match'
-    ? '与请求模型相符'
-    : snapshot?.status === 'mismatch'
-      ? '归因不一致'
-      : snapshot?.status === 'uncertain'
-        ? '无法确认'
-        : snapshot?.status === 'incomplete'
-          ? '采样不足'
-          : snapshot?.status === 'running'
-            ? '后台检测中'
-            : snapshot?.status === 'interrupted'
-              ? '检测已中断'
-          : snapshot?.error
-            ? '检测失败'
-            : '暂无结果'
-  const variant = snapshot?.status === 'mismatch' ? 'destructive' : snapshot?.status === 'match' ? 'default' : 'secondary'
+  const statusText =
+    snapshot?.status === 'match'
+      ? '与请求模型相符'
+      : snapshot?.status === 'mismatch'
+        ? '归因不一致'
+        : snapshot?.status === 'uncertain'
+          ? '无法确认'
+          : snapshot?.status === 'incomplete'
+            ? '采样不足'
+            : snapshot?.status === 'running'
+              ? '后台检测中'
+              : snapshot?.status === 'interrupted'
+                ? '检测已中断'
+                : snapshot?.error
+                  ? '检测失败'
+                  : '暂无结果'
+  const variant =
+    snapshot?.status === 'mismatch'
+      ? 'destructive'
+      : snapshot?.status === 'match'
+        ? 'default'
+        : 'secondary'
   return (
     <Card>
       <CardHeader>
         <CardTitle>GPT 模型归因检测</CardTitle>
-        <p className='text-xs text-muted-foreground'>基于 ModelTrace 数字指纹库采样归因，结果仅提示候选模型，不会自动停用槽位。</p>
+        <p className='text-xs text-muted-foreground'>
+          基于 ModelTrace
+          数字指纹库采样归因，结果仅提示候选模型，不会自动停用槽位。
+        </p>
       </CardHeader>
       <CardContent className='divide-y'>
-        <SettingRow label='自动检测' desc='每个周期对选定 GPT 槽发送 3 次较长采样请求，默认关闭。'>
-          <Switch checked={config.enabled === true} onCheckedChange={(enabled) => onChange({ enabled })} aria-label='启用 GPT 模型归因检测' />
+        <SettingRow
+          label='自动检测'
+          desc='每个周期对选定 GPT 槽发送 3 次较长采样请求，默认关闭。'
+        >
+          <Switch
+            checked={config.enabled === true}
+            onCheckedChange={(enabled) => onChange({ enabled })}
+            aria-label='启用 GPT 模型归因检测'
+          />
         </SettingRow>
         <SettingRow label='检测间隔' desc='秒，3600–604800'>
-          <Input className='w-28' type='number' min={3600} max={604800} value={Number(config.interval_sec ?? 86400)} onChange={(event) => onChange({ interval_sec: clampInt(event.target.value, 3600, 604800, 86400) })} aria-label='模型归因检测间隔' />
+          <Input
+            className='w-28'
+            type='number'
+            min={3600}
+            max={604800}
+            value={Number(config.interval_sec ?? 86400)}
+            onChange={(event) =>
+              onChange({
+                interval_sec: clampInt(event.target.value, 3600, 604800, 86400),
+              })
+            }
+            aria-label='模型归因检测间隔'
+          />
         </SettingRow>
         <SettingRow label='GPT 槽 ID' desc='留空自动选择一个可检测槽'>
-          <Input className='w-56' value={String(config.vm_id ?? '')} onChange={(event) => onChange({ vm_id: event.target.value })} aria-label='模型归因 GPT 槽 ID' />
+          <Input
+            className='w-56'
+            value={String(config.vm_id ?? '')}
+            onChange={(event) => onChange({ vm_id: event.target.value })}
+            aria-label='模型归因 GPT 槽 ID'
+          />
         </SettingRow>
         <SettingRow label='请求模型'>
-          <Input className='w-56' value={String(config.model ?? 'gpt-5.4')} onChange={(event) => onChange({ model: event.target.value })} aria-label='模型归因请求模型' />
+          <Input
+            className='w-56'
+            value={String(config.model ?? 'gpt-5.4')}
+            onChange={(event) => onChange({ model: event.target.value })}
+            aria-label='模型归因请求模型'
+          />
         </SettingRow>
         <SettingRow label='最低置信度' desc='低于此值显示“无法确认”，0.3–0.95'>
-          <Input className='w-28' type='number' min={0.3} max={0.95} step={0.05} value={Number(config.min_confidence ?? 0.55)} onChange={(event) => onChange({ min_confidence: Math.min(0.95, Math.max(0.3, Number(event.target.value) || 0.55)) })} aria-label='模型归因最低置信度' />
+          <Input
+            className='w-28'
+            type='number'
+            min={0.3}
+            max={0.95}
+            step={0.05}
+            value={Number(config.min_confidence ?? 0.55)}
+            onChange={(event) =>
+              onChange({
+                min_confidence: Math.min(
+                  0.95,
+                  Math.max(0.3, Number(event.target.value) || 0.55)
+                ),
+              })
+            }
+            aria-label='模型归因最低置信度'
+          />
         </SettingRow>
         <SettingRow label='最近结果'>
           <div className='flex max-w-full flex-col items-end gap-1 text-xs'>
             <div className='flex flex-wrap items-center justify-end gap-2'>
-              <span className='text-muted-foreground'>{snapshot?.vm_id || '—'} · {snapshot?.requested_model || '—'}</span>
-              <Badge variant={variant} title={snapshot?.error || undefined}>{statusText}</Badge>
+              <span className='text-muted-foreground'>
+                {snapshot?.vm_id || '—'} · {snapshot?.requested_model || '—'}
+              </span>
+              <Badge variant={variant} title={snapshot?.error || undefined}>
+                {statusText}
+              </Badge>
             </div>
-            {snapshot?.prediction && <span>候选：{snapshot.prediction_name || snapshot.prediction} · {Math.round((snapshot.probability || 0) * 100)}%</span>}
-            {snapshot?.status === 'running' && <span>进度：{snapshot.progress?.completed || 0}/{snapshot.progress?.total || 3} · {snapshot.phase === 'updating_bank' ? '更新指纹库' : '采样中'}</span>}
-            {snapshot?.status === 'interrupted' && <span className='text-muted-foreground'>{snapshot.error}</span>}
-            {snapshot?.at && <span className='text-muted-foreground'>{new Date(snapshot.at).toLocaleString()}</span>}
-            <span className='text-muted-foreground'>指纹库 {status.data?.bank?.model_count || 0} 个模型 · 更新 {status.data?.bank?.built_at || '尚未拉取'}</span>
-            {status.data?.bank?.updated_at && <span className='text-muted-foreground'>本地同步 {new Date(status.data.bank.updated_at).toLocaleString()}</span>}
+            {snapshot?.prediction && (
+              <span>
+                候选：{snapshot.prediction_name || snapshot.prediction} ·{' '}
+                {Math.round((snapshot.probability || 0) * 100)}%
+              </span>
+            )}
+            {snapshot?.status === 'running' && (
+              <span>
+                进度：{snapshot.progress?.completed || 0}/
+                {snapshot.progress?.total || 3} ·{' '}
+                {snapshot.phase === 'updating_bank' ? '更新指纹库' : '采样中'}
+              </span>
+            )}
+            {snapshot?.status === 'interrupted' && (
+              <span className='text-muted-foreground'>{snapshot.error}</span>
+            )}
+            {snapshot?.at && (
+              <span className='text-muted-foreground'>
+                {new Date(snapshot.at).toLocaleString()}
+              </span>
+            )}
+            <span className='text-muted-foreground'>
+              指纹库 {status.data?.bank?.model_count || 0} 个模型 · 更新{' '}
+              {status.data?.bank?.built_at || '尚未拉取'}
+            </span>
+            {status.data?.bank?.updated_at && (
+              <span className='text-muted-foreground'>
+                本地同步{' '}
+                {new Date(status.data.bank.updated_at).toLocaleString()}
+              </span>
+            )}
           </div>
         </SettingRow>
         <div className='flex justify-end pt-3'>
-          <Button type='button' size='sm' variant='outline' disabled={run.isPending || snapshot?.status === 'running'} onClick={() => run.mutate()}>
-            {run.isPending ? '正在启动…' : snapshot?.status === 'running' ? '后台检测中' : '立即检测'}
+          <Button
+            type='button'
+            size='sm'
+            variant='outline'
+            disabled={run.isPending || snapshot?.status === 'running'}
+            onClick={() => run.mutate()}
+          >
+            {run.isPending
+              ? '正在启动…'
+              : snapshot?.status === 'running'
+                ? '后台检测中'
+                : '立即检测'}
           </Button>
         </div>
       </CardContent>

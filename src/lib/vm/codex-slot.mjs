@@ -30,7 +30,11 @@ export function writeCodexAccounts(projectRoot, vmId, accounts) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   const next = Array.isArray(accounts) ? accounts : []
   const previous = codexCredentialVersion(readCodexAccounts(projectRoot, vmId))
-  atomicWriteJson(codexCredentialPath(projectRoot, vmId), { accounts: next.map(enrichCodexAccountIdentity) }, { mode: 0o600 })
+  atomicWriteJson(
+    codexCredentialPath(projectRoot, vmId),
+    { accounts: next.map(enrichCodexAccountIdentity) },
+    { mode: 0o600 },
+  )
   if (previous !== codexCredentialVersion(next)) persistCodexCredentialState(projectRoot, vmId, { state: 'unverified' })
 }
 
@@ -606,12 +610,7 @@ export function summarizeCodexSlot(projectRoot, vm = {}) {
     credential_retry_at: replaced ? null : vm.codex?.credential_retry_at || null,
     refresh_error: state === 'invalid' ? vm.codex?.refresh_error || 'oauth_invalid_grant' : null,
     credential_replaced: !!replaced,
-    email:
-      emailFromTokens(first.id_token, first.access_token) ||
-      first.email ||
-      vm.codex?.email ||
-      vm.email ||
-      null,
+    email: emailFromTokens(first.id_token, first.access_token) || first.email || vm.codex?.email || vm.email || null,
     expires_at: first.expires_at || vm.codex?.expires_at || null,
     chatgpt_account_id: first.chatgpt_account_id || vm.codex?.chatgpt_account_id || null,
     account_count: accounts.length,

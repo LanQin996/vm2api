@@ -14,15 +14,7 @@ export function normalizeCacheTtl(value) {
     .trim()
     .toLowerCase()
   if (!raw) return DEFAULT_CACHE_TTL
-  if (
-    raw === '1h' ||
-    raw === '1hr' ||
-    raw === '60m' ||
-    raw === '3600' ||
-    raw === 'hour' ||
-    raw === '1hour'
-  )
-    return '1h'
+  if (raw === '1h' || raw === '1hr' || raw === '60m' || raw === '3600' || raw === 'hour' || raw === '1hour') return '1h'
   if (raw === '5m' || raw === '5min' || raw === '300') return '5m'
   return DEFAULT_CACHE_TTL
 }

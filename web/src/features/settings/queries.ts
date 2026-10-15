@@ -112,7 +112,14 @@ export type HealthProbePayload = {
 
 export type ModelTraceSnapshot = {
   ok: boolean
-  status: 'match' | 'mismatch' | 'uncertain' | 'incomplete' | 'error' | 'running' | 'interrupted'
+  status:
+    | 'match'
+    | 'mismatch'
+    | 'uncertain'
+    | 'incomplete'
+    | 'error'
+    | 'running'
+    | 'interrupted'
   at: string | null
   phase?: 'updating_bank' | 'sampling' | null
   progress?: { completed: number; total: number }
@@ -134,7 +141,11 @@ export type ModelTracePayload = {
   started?: boolean
   config: Record<string, unknown>
   snapshot: ModelTraceSnapshot | null
-  bank: { built_at: string | null; updated_at: string | null; model_count: number } | null
+  bank: {
+    built_at: string | null
+    updated_at: string | null
+    model_count: number
+  } | null
 }
 
 export function healthProbeQueryOptions() {
@@ -149,6 +160,7 @@ export function modelTraceQueryOptions() {
   return queryOptions({
     queryKey: ['panel', 'model-trace'] as const,
     queryFn: () => api<ModelTracePayload>('/api/panel/model-trace'),
-    refetchInterval: (query) => (query.state.data?.snapshot?.status === 'running' ? 3_000 : 30_000),
+    refetchInterval: (query) =>
+      query.state.data?.snapshot?.status === 'running' ? 3_000 : 30_000,
   })
 }
