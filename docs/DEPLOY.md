@@ -75,7 +75,9 @@ curl -sS --noproxy '*' http://127.0.0.1:8787/health
 `bin/` 与 `share/wrap-cli` 由镜像入口写入挂载目录，`src/config` 缺文件时用镜像内默认值补齐。
 槽位系统镜像优先 `docker pull ghcr.io/dofastted/kin-os-*`，拉不到时在建槽阶段用仓内 Dockerfile 兜底构建（启动不阻塞）。
 
-**新建槽位的私有依赖**：控制面需单独安装可执行的 `kin-computer`，用 `KIN_COMPUTER_BIN` 指定绝对路径；默认查仓库根目录的 `local-src/kin-computer/dist/kin-computer`。源码仓库和公开镜像均不分发此二进制，容器部署须另行只读挂载并将该变量指向容器内路径。缺失时面板建槽返回 HTTP 400 `computer_service_missing`，生成失败返回 `computer_create_failed`。已有容器启动不会重新发布身份或改写主机名；部署前先验证新建槽位所需的二进制可用。
+**新建槽位的闭源依赖**：`kin-computer` 只分发编译后二进制，不公开源码。它由 `deploy/payload.json` 固定大小与 SHA256，随 Release 和控制面镜像交付；镜像入口自动安装到 `bin/kin-computer`，无需额外挂载私有源码目录。源码直接运行前执行 `npm run fetch:payload`；默认读取仓库的 `bin/kin-computer`，也可用 `KIN_COMPUTER_BIN` 指定绝对路径。二进制为 linux amd64，ARM64 控制面通过 QEMU 运行；Docker 身份生成还需 Bash 和 Python 3（控制面镜像已安装）。缺失时面板建槽返回 HTTP 400 `computer_service_missing`，生成失败返回 `computer_create_failed`。已有容器启动不会重新发布身份或改写主机名。
+
+`v1.3.176` 原镜像未包含该依赖；补传 Release 附件不会改变旧镜像。继续使用该镜像时，需将附件安装到挂载的 `bin/kin-computer`，在 `.env` 设置 `KIN_COMPUTER_BIN=/opt/vm2api/bin/kin-computer` 后重新创建控制面容器以载入环境变量（不要重建槽位容器）。
 
 集群节点已有目标槽镜像标签时跳过传输；仅在缺少云端基础系统时拉取它，母机只上传程序层。此优化不代表远端槽位已接入本机容器的全部计算机身份挂载。
 
@@ -87,7 +89,7 @@ cd /opt/vm2api && cp .env.example .env && chmod 600 .env
 docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 ```
 
-一键脚本对应 `--from-source`；目录里有 `.git` 时 `upgrade` 自动走源码分支。仓库只有源码：镜像构建内编控制台与 Go helper，并按 `deploy/payload.json` 从 payload Release 下载、校验 kernel / CLI，构建机要能访问 GitHub。镜像入口再把它们写进挂载的 `bin/` 与 `share/`。
+一键脚本对应 `--from-source`；目录里有 `.git` 时 `upgrade` 自动走源码分支。仓库只有源码：镜像构建内编控制台与 Go helper，并按 `deploy/payload.json` 从 payload Release 下载、校验 kernel / CLI / kin-computer，构建机要能访问 GitHub。镜像入口再把它们写进挂载的 `bin/` 与 `share/`。
 
 2026-10-11 起仓库历史已重写以移除构建产物，所有 tag 的提交号都变了。旧的源码安装用新版 `deploy/install.sh upgrade`（脚本已改为 `git fetch --force --tags`），不要用旧面板的一键更新做这次迁移。
 

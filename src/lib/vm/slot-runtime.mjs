@@ -22,8 +22,9 @@ import {
   reloadSlotWorker,
 } from './vm-runtime.mjs'
 import { inspectWrapCliDir, materializeWrapCli, wrapCliHomeDir } from './wrap-cli-runtime.mjs'
-import { boundProxyUrl, isLocalEgressProxy } from './egress.mjs'
-import { slotHost } from './slot-host.mjs'
+import { isLocalEgressProxy } from './egress.mjs'
+import { vmNodeId } from '../cluster/placement.mjs'
+import { hostProxyUrlForVm, slotHost } from './slot-host.mjs'
 
 export { runtimeKind }
 
@@ -38,7 +39,8 @@ export function startSlot(vm, projectRoot, opts = {}) {
 export async function startSlotReady(vm, projectRoot, opts = {}) {
   if (isCodexVm(vm)) {
     if (!slotHost(vm).supports('codex')) return unsupportedOnHost('codex')
-    const boot = await startSlot(vm, projectRoot, opts)
+    const boot = await (opts.ops?.startSlot || startSlot)(vm, projectRoot, opts)
+    if (!boot?.ok) return boot
     const kernel = await ensureSlotInferenceRuntime(vm, projectRoot, opts)
     if (!kernel.ok) return kernel
     return { ok: true, engine: 'codex', docker: boot, kernel }
@@ -99,9 +101,13 @@ export async function ensureSlotInferenceRuntime(vm, projectRoot, opts = {}) {
     const write = opts.ops?.writeCodexKernelConfig || writeCodexKernelConfig
     const start = opts.ops?.ensureCodexKernel || ensureCodexKernel
     const localExit = isLocalEgressProxy(vm?.proxy)
+    // Local egress on this host is the deployment proxy (empty URL). A node
+    // slot's local egress is the node's own route, reached through the
+    // control-plane forwarder; an empty URL would leave from here instead.
+    const proxyUrl = localExit && !vmNodeId(vm) ? '' : hostProxyUrlForVm(vm)
     write(projectRoot, vm, {
-      proxyUrl: localExit ? '' : boundProxyUrl(vm?.proxy),
-      proxyRequired: !localExit,
+      proxyUrl,
+      proxyRequired: !localExit || !!proxyUrl,
     })
     const kernel = await start(slotExec(projectRoot, vm), { timeoutMs: opts.timeoutMs })
     if (!kernel?.ok) {

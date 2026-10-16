@@ -28,19 +28,21 @@ import {
   proxyKey,
 } from '../vm/egress.mjs'
 import { OS_CATALOG } from '../vm/os-catalog.mjs'
-import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.mjs'
+import { resolveKernelDataplane } from '../vm/slot-engine.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
 import { slotMemory, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
 import { slotExecArgv, slotExecCmd } from '../vm/slot-exec.mjs'
 import {
+  CODEX_SLOT_ROLE,
   containerName,
   displayName,
   kvmBindChownArgv,
   normalizeTimezone,
   KVM_CAPS,
   STANDARD_LOCALE,
+  slotContainerCommand,
   writeWorkerFiles,
 } from '../vm/vm-runtime.mjs'
 import {
@@ -467,10 +469,11 @@ function kvmSlotContainerBody(vm, { image, network, remoteDir, routing, accel, s
   return body
 }
 
-function slotContainerBody(vm, { image, network, remoteDir, user, routing, accel }) {
+export function slotContainerBody(vm, { image, network, remoteDir, user, routing, accel }) {
   if (isKvmRuntime(vm)) return kvmSlotContainerBody(vm, { image, network, remoteDir, routing, accel, slotUser: user })
   const slotName = displayName(vm.id)
   const mem = parseMemoryBytes(slotMemory(vm, routing))
+  const codex = isCodexVm(vm)
   return {
     Image: image,
     Hostname: String(vm.fingerprint?.hostname || '').trim() || slotName,
@@ -485,7 +488,7 @@ function slotContainerBody(vm, { image, network, remoteDir, user, routing, accel
       `KIN_VM_NAME=${slotName}`,
       `KIN_VM_OS=${vm.kernel}`,
     ],
-    Cmd: [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
+    Cmd: slotContainerCommand(vm),
     Labels: {
       'kin.vm': '1',
       'kin.vm.id': vm.id,
@@ -493,6 +496,7 @@ function slotContainerBody(vm, { image, network, remoteDir, user, routing, accel
       'kin.vm.os': vm.kernel,
       'kin.vm.layout': SLOT_LAYOUT,
       'kin.vm.runtime': 'docker',
+      ...(codex ? { 'kin.vm.role': CODEX_SLOT_ROLE } : {}),
       'vm2api.cluster': '1',
     },
     HostConfig: {
@@ -573,9 +577,6 @@ async function ensureNodeSlotImage(session, nodeId, projectRoot, kernel, runtime
 }
 
 async function prepare(vm, projectRoot, routing) {
-  if (isCodexVm(vm)) {
-    return { fail: { ok: false, code: 'remote_unsupported', error: 'GPT 槽位暂不支持放到集群节点' } }
-  }
   if (resolveKernelDataplane(vm, routing || {}) === 'crag') {
     return { fail: { ok: false, code: 'remote_unsupported', error: 'crag 数据面暂不支持集群节点' } }
   }
@@ -608,6 +609,21 @@ async function prepare(vm, projectRoot, routing) {
 
 function runtimeLabelOf(info) {
   return info?.Config?.Labels?.['kin.vm.runtime'] || 'docker'
+}
+function roleLabelOf(info) {
+  return info?.Config?.Labels?.['kin.vm.role'] || ''
+}
+
+/**
+ * Docker GPT slots idle as PID 1. One still running kin-kernel crash-loops and
+ * must be recreated. KVM has no such label: its runner boots the guest, and the
+ * Codex kernel stays on the control plane, so requiring the role would remove
+ * a freshly built VM on every start.
+ */
+export function codexRoleMatches(info, vm) {
+  if (isKvmRuntime(vm) || runtimeLabelOf(info) === 'kvm') return true
+  const role = roleLabelOf(info)
+  return isCodexVm(vm) ? role === CODEX_SLOT_ROLE : role !== CODEX_SLOT_ROLE
 }
 
 async function startRemoteTelemetry(docker, vm, name) {
@@ -647,6 +663,7 @@ export async function startRemoteSlot(vm, projectRoot, { recreate = false, routi
       existing.HostConfig?.NetworkMode === eg.network &&
       existing.Config?.Labels?.['kin.vm.layout'] === SLOT_LAYOUT &&
       runtimeLabelOf(existing) === runtimeKind(vm) &&
+      codexRoleMatches(existing, vm) &&
       !recreate
     const common = {
       nodeId,
@@ -717,7 +734,8 @@ export async function reloadRemoteSlot(vm, projectRoot, { routing } = {}) {
       existing.Config?.Image !== image ||
       existing.HostConfig?.NetworkMode !== eg.network ||
       existing.Config?.Labels?.['kin.vm.layout'] !== SLOT_LAYOUT ||
-      runtimeLabelOf(existing) !== runtimeKind(vm)
+      runtimeLabelOf(existing) !== runtimeKind(vm) ||
+      !codexRoleMatches(existing, vm)
     ) {
       return startRemoteSlot(vm, projectRoot, { recreate: !!existing, routing })
     }

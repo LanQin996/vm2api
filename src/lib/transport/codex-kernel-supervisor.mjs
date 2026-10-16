@@ -7,6 +7,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { boundProxyUrl, isLocalEgressProxy, localEgressProxyUrl } from '../vm/egress.mjs'
+import { vmNodeId } from '../cluster/placement.mjs'
 import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { maxRequestBytes } from '../core/config.mjs'
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
@@ -60,9 +61,12 @@ export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxy
   if (!secret) secret = crypto.randomBytes(24).toString('hex')
   fs.writeFileSync(tokenPath, secret + '\n', { mode: 0o600 })
   const local = isLocalEgressProxy(vm?.proxy)
-  const proxy = local ? localEgressProxyUrl() : String(proxyUrl || boundProxyUrl(vm?.proxy) || '').trim()
+  // Only a slot on this host treats local egress as the deployment proxy.
+  // A node slot is handed that node's forwarder; replacing it would exit from here.
+  const hostLocal = local && !vmNodeId(vm)
+  const proxy = hostLocal ? localEgressProxyUrl() : String(proxyUrl || boundProxyUrl(vm?.proxy) || '').trim()
   // A configured deployment proxy is this slot's exit: fail closed instead of going direct.
-  const required = local ? !!proxy : proxyRequired == null ? !!proxy : !!proxyRequired
+  const required = hostLocal ? !!proxy : proxyRequired == null ? !!proxy : !!proxyRequired
   const deviceId = String(vm.device_id || vm.fingerprint?.device_id || vm.id).trim() || vm.id
   const config = {
     vm_id: vm.id,

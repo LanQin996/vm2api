@@ -13,8 +13,8 @@ checkout 本机构建。
 | Release 附件 | 无后缀：`kin-kernel`、`cli-node`、`kin-worker` 等 | `kin-worker-linux-arm64`、`kin-egress-linux-arm64` |
 
 无后缀附件保持 linux amd64，已部署的面板按原名下载 kernel / CLI。slot 内
-kernel、OAuth 与 CLI 只有 amd64，ARM64 主机经 QEMU 运行它们；只有控制面
-自身的 Go helper 有原生 ARM64 版本。
+kernel、OAuth、CLI 和控制面造机服务 `kin-computer` 只有 amd64，ARM64 主机
+经 QEMU 运行它们；只有控制面自身的 Go helper 有原生 ARM64 版本。
 
 版本参数可带架构后缀：`v1.2.3`、`v1.2.3-arm64`、`v1.2.3-aarch64` 都解析为
 版本 `v1.2.3`；后缀只用于核对，与宿主架构不一致时一键脚本和面板都会拒绝。

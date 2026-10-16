@@ -57,6 +57,7 @@ ENV NODE_ENV=production \
     KIN_EGRESS_BIN=/opt/vm2api/bin/kin-egress \
     KIN_WORKER_BIN=/opt/vm2api/bin/kin-worker \
     KIN_CODEX_KERNEL_BIN=/opt/vm2api/bin/kin-codex-kernel \
-    KIN_OAUTH_AUTH_BIN=/opt/vm2api/bin/kin-oauth-auth
+    KIN_OAUTH_AUTH_BIN=/opt/vm2api/bin/kin-oauth-auth \
+    KIN_COMPUTER_BIN=/opt/vm2api/bin/kin-computer
 EXPOSE 8787
 ENTRYPOINT ["/usr/local/bin/vm2api-entrypoint"]

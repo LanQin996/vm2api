@@ -39,6 +39,7 @@ ensure_bin kin-egress
 ensure_bin kin-worker
 ensure_bin kin-codex-kernel
 ensure_bin kin-oauth-auth
+ensure_bin kin-computer
 KERNEL="${KIN_KERNEL_BIN:-$ROOT/bin/kin-kernel}"
 if [ ! -x "$KERNEL" ]; then
   echo "vm2api: $KERNEL missing or not executable after image-bin copy. Rebuild with docker compose build, or put linux amd64 Release files in $ROOT/bin." >&2

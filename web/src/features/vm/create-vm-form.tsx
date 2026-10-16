@@ -142,11 +142,10 @@ export interface CreateVmDraft {
   kvmAvail: KvmAvailability
   /** 本机不支持 KVM：选项禁用，草稿回落容器。 */
   kvmBlocked: boolean
-  remoteGpt: boolean
   exit: CreateExit
   wantsExit: boolean
   create: UseMutationResult<CreateVmResult, Error, void>
-  /** 预检未过 / 远端 GPT / KVM 仍在检测：提交按钮禁用。 */
+  /** 预检未过 / KVM 仍在检测：提交按钮禁用。 */
   blocked: boolean
   placementChecks: PreflightCheck[]
 }
@@ -207,7 +206,6 @@ export function useCreateVmDraft({
     preferredRuntime === 'kvm' && kvmBlocked ? 'docker' : preferredRuntime
   const kvmPending =
     runtimeType === 'kvm' && !placement.nodeId && kvmAvail.status === 'loading'
-  const remoteGpt = !!placement.nodeId && platform === 'openai'
   const exit = useCreateExit(placement.nodeId)
   const wantsExit = after !== 'idle'
 
@@ -302,11 +300,10 @@ export function useCreateVmDraft({
     placement,
     kvmAvail,
     kvmBlocked,
-    remoteGpt,
     exit,
     wantsExit,
     create,
-    blocked: placement.blocked || remoteGpt || kvmPending,
+    blocked: placement.blocked || kvmPending,
     placementChecks: preflightChecksFromError(create.error),
   }
 }
@@ -683,7 +680,6 @@ export function CreateVmForm({
           <PlacementField
             placement={d.placement}
             kernel={d.kernel}
-            gptBlocked={d.remoteGpt}
             runtimeType={d.runtimeType}
           />
         </Section>

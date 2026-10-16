@@ -35,7 +35,7 @@ const HINTS: Record<string, string> = {
   node_not_found: '目标节点不存在：可能已被移除，请刷新后重选。',
   placement_preflight_failed: '目标节点预检未通过：按下方检查项修复后重试。',
   remote_unsupported:
-    '远端节点暂不支持该操作（如 GPT / Codex 槽只能建在本机）。',
+    '远端节点暂不支持该操作（官方 CC 初装、wrap 修复与推理引擎切换只能在本机）。',
   kvm_unavailable: '当前宿主或节点无法创建 KVM 虚拟机。',
 }
 

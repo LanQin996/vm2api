@@ -174,6 +174,19 @@ test('local egress hands the kernel the deployment proxy and fails closed on it'
   assert.equal(cfg.proxy_url, 'http://proxy.test:8443')
   assert.equal(cfg.proxy_required, true)
 })
+test('a node slot on local egress keeps the node forwarder instead of this host proxy', (t) => {
+  setEnv(t, { HTTPS_PROXY: 'http://proxy.test:8443' })
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const written = writeCodexKernelConfig(
+    root,
+    { ...LOCAL_CODEX, node_id: 'node-a' },
+    { token: 'secret', proxyUrl: 'socks5h://127.0.0.1:19001', proxyRequired: true },
+  )
+  const cfg = JSON.parse(fs.readFileSync(written.configPath, 'utf8'))
+  assert.equal(cfg.proxy_url, 'socks5h://127.0.0.1:19001')
+  assert.equal(cfg.proxy_required, true)
+})
 
 test('codex kernel starts without inherited proxy variables', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-'))

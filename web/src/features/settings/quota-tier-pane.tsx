@@ -18,6 +18,7 @@ import {
   ServerCog,
   type LucideIcon,
 } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import { isCodexVm } from '@/lib/vm-kind'
 import { Button } from '@/components/ui/button'
 import {
@@ -998,7 +999,12 @@ export function QuotaTierPane({
       >
         <DialogContent
           showCloseButton={!saving}
-          className='flex max-h-[90dvh] flex-col overflow-hidden sm:max-w-2xl'
+          className={cn(
+            'max-h-[90dvh] overflow-hidden sm:max-w-2xl',
+            dialog === 'gates' && platform === 'claude'
+              ? 'grid h-[90dvh] grid-rows-[auto_minmax(0,1fr)_auto]'
+              : 'flex flex-col'
+          )}
         >
           <DialogHeader>
             <DialogTitle>{title}</DialogTitle>

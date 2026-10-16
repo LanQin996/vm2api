@@ -40,7 +40,7 @@ for name in ('kin-worker', 'kin-egress'):
     elf(root / 'cluster-bin-amd64' / name, 62, static=True)
 elf(Path('/usr/local/bin/docker'), 183, static=True)
 subprocess.run(['docker', '--version'], check=True, timeout=10)
-for name in ('kin-kernel', 'kin-codex-kernel', 'kin-oauth-auth'):
+for name in ('kin-kernel', 'kin-codex-kernel', 'kin-oauth-auth', 'kin-computer'):
     elf(root / 'image-bin' / name, 62)
 for name in ('kin-kernel', 'kin-codex-kernel'):
     loaded = subprocess.run(['/usr/lib64/ld-linux-x86-64.so.2', '--list', str(root / 'image-bin' / name)],
@@ -74,6 +74,27 @@ try:
     for name in ('kin-worker', 'kin-egress'):
         elf(root / 'bin' / name, 183, static=True)
         assert (root / 'bin' / name).read_bytes() == (root / 'image-bin' / name).read_bytes()
+    subprocess.run(['node', '--input-type=module', '-e', r"""
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { ensureSlotComputer } from './src/lib/identity/slot-computer.mjs'
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'computer-smoke-'))
+try {
+  for (const type of ['docker', 'kvm']) {
+    const vm = { id: `vm-smoke-${type}`, runtime: { type } }
+    const first = ensureSlotComputer(root, vm)
+    const second = ensureSlotComputer(root, vm)
+    assert.equal(first.created, true)
+    assert.equal(second.created, false)
+    assert.equal(second.hostname, first.hostname)
+    assert.equal(second.guest_machine_id, first.guest_machine_id)
+  }
+} finally {
+  fs.rmSync(root, { recursive: true, force: true })
+}
+"""], cwd=root, check=True, timeout=120)
 finally:
     server.terminate()
     try:
@@ -81,7 +102,7 @@ finally:
     except subprocess.TimeoutExpired:
         server.kill()
         server.wait(timeout=5)
-print('PASS: native control plane, amd64 cluster helpers, QEMU CLI, entrypoint refresh, health and console')
+print('PASS: native control plane, amd64 cluster helpers, QEMU CLI/computer, stable Docker/KVM identities, entrypoint refresh, health and console')
 '''
 
 

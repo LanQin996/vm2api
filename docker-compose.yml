@@ -22,6 +22,7 @@ services:
       KIN_WORKER_BIN: /opt/vm2api/bin/kin-worker
       KIN_CODEX_KERNEL_BIN: /opt/vm2api/bin/kin-codex-kernel
       KIN_OAUTH_AUTH_BIN: /opt/vm2api/bin/kin-oauth-auth
+      KIN_COMPUTER_BIN: ${KIN_COMPUTER_BIN:-/opt/vm2api/bin/kin-computer}
       KIN_AUTO_SYNC_WRAP: ${KIN_AUTO_SYNC_WRAP:-1}
       # 自省容器名；VM2API_HOST_ROOT 可显式覆盖宿主安装目录。
       VM2API_CONTAINER_NAME: ${VM2API_CONTAINER_NAME:-vm2api}

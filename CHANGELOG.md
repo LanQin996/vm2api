@@ -1,11 +1,29 @@
 # Changelog
 
 ## 未发布
+- 集群节点可以创建 GPT 槽。节点容器只保留身份和出口（`sleep infinity`，标签 `kin.vm.role=codex`），Codex kernel 仍在控制面监听 `vms/<id>/run/codex-kernel.sock`。节点选「本机出口」时 kernel 走该节点的转发，不再从控制面直连。旧的节点 GPT 容器（PID 1 仍是 kin-kernel）在下次启动或重载时重建。KVM 不使用该标签，新建后再次启动不会被重建。crag 数据面、官方 CC 初装、wrap 修复和推理引擎切换仍只在本机。
 
-- 新槽位由私有 `kin-computer` 生成主机名和 machine-id；新建本机容器发布对应身份，已有容器启动时不改写主机名。控制面需单独安装该二进制并可用 `KIN_COMPUTER_BIN` 指定路径；公开镜像不包含它，缺失时建槽返回 `computer_service_missing`。（#452）
-- 集群槽镜像已存在时跳过传输；缺少云端基础系统时才拉取，母机只上传程序层。（#452）
-- 蒸馏检测器只扫描最新用户正文并跳过工具回传；移除误伤学术知识蒸馏讨论的内置硬规则，保留套取思维链等收割规则。（#453、#456，同一 head）
-- Codex 诊断仅在 socket 不存在或无人监听、且没有本进程跟踪的存活子进程时显示空闲警告；超时、HTTP 错误、权限错误及已跟踪子进程不响应仍报故障。（#459）
+## 1.3.178 — 2026-10-16
+
+- 补齐 `kin-computer` 二进制交付：加入校验固定的 payload、Release 附件及控制面镜像，入口自动安装到 `bin/kin-computer`，默认不再依赖私有 `local-src/`。源码仍不公开，`KIN_COMPUTER_BIN` 可覆盖路径。二进制按 Debian 12 基线构建，避免新版 glibc 导致启动失败；不改已有槽位身份。
+
+已部署机升级：更新控制面镜像，或更新 Node 控制面并执行 `npm run fetch:payload` 安装 `bin/kin-computer`，重启一次 Node。无迁移、无新依赖，不必 `wrap-cli/sync`，不必重建槽位容器。已有计算机身份不变；不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.177 — 2026-10-16
+
+- 调试日志容量按 `OCTET_LENGTH` 字节统计，避免多字节正文误算与同步清理读入全文。（#462）
+- 修复 Claude 配额闸线弹窗在短视口下无法滚到底部（明确高度 + grid 三行布局）。（#465）
+
+已部署机升级：更新 Node 控制面与 `web/dist`，重启一次；无迁移、无新依赖，不必 `wrap-cli/sync`；不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.176 — 2026-10-15
+
+- 修复 Codex 槽在 Node 重启后内核按需未拉起时误报故障：仅当 socket 无监听且本进程无跟踪子进程时诊断为警告 `codex_kernel_idle`（ENOENT/ECONNREFUSED）；超时、HTTP 错误、权限错误及已跟踪子进程不响应仍为 error `codex_kernel_down`。（#459）
+- 蒸馏检测器只扫描最新用户正文并跳过工具回传；移除误伤学术知识蒸馏讨论的内置硬规则，保留套取思维链等收割规则。（#453、#456）
+- 新槽位由私有 `kin-computer` 生成主机名和 machine-id；新建本机容器发布对应身份，已有容器启动时不改写主机名。控制面需单独安装该二进制并可用 `KIN_COMPUTER_BIN` 指定路径；公开镜像不包含它，缺失时建槽返回 `computer_service_missing`。集群槽镜像已存在时跳过传输；缺少云端基础系统时才拉取，母机只上传程序层。（#452）
+- 修复 Claude 流式请求在 session/席位排队过久被 Cloudflare 524：延迟后下发 SSE ping 保活（短失败仍可 HTTP 429/529），已提交流用 Anthropic error 事件收尾；同会话串行增加超时上限，避免卡住占队。（#458）
+
+已部署机升级：更新 Node 控制面，重启一次 Node。无迁移、无新依赖、无 `web/dist` 变更，不必 `wrap-cli/sync`，不必重建槽位容器。新建槽需本机已安装 `kin-computer`（可用 `KIN_COMPUTER_BIN`）；不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.175 — 2026-10-15
 

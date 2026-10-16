@@ -140,13 +140,10 @@ function NodeOption({ node }: { node: ClusterApiNode }) {
 export function PlacementField({
   placement,
   kernel,
-  gptBlocked,
   runtimeType = 'docker',
 }: {
   placement: Placement
   kernel: string
-  /** GPT 槽只能建在本机：选了远端时直接提示，不等后端 400。 */
-  gptBlocked: boolean
   runtimeType?: RuntimeType
 }) {
   const { visible, nodes, nodeId, setNodeId, preflight } = placement
@@ -172,11 +169,6 @@ export function PlacementField({
       </Select>
       {nodeId ? (
         <div className='space-y-2 rounded-md border p-2'>
-          {gptBlocked ? (
-            <p className='text-xs text-[color:var(--status-bad)]'>
-              远端节点暂不支持 GPT 槽，请改选本机。
-            </p>
-          ) : null}
           <div className='flex items-center justify-between gap-2'>
             <span className='text-xs text-muted-foreground'>
               {preflight.isFetching

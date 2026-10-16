@@ -21,6 +21,12 @@
       "sha256": "fe64b4ea20ca694863f9041fd02fd2c0c4e6d30cce99e273ee693d7d730a8095"
     },
     {
+      "path": "bin/kin-computer",
+      "asset": "kin-computer",
+      "size": 6347536,
+      "sha256": "ed8664a1bd8f735eb1332d7d96d442622efbf64b887b4d694529bb3dd3b16df3"
+    },
+    {
       "path": "share/wrap-cli/cli-node",
       "asset": "cli-node",
       "size": 27172732,

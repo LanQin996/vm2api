@@ -18,7 +18,7 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 export function computerBin() {
   const fromEnv = String(process.env.KIN_COMPUTER_BIN || '').trim()
   if (fromEnv) return fromEnv
-  return path.join(REPO_ROOT, 'local-src', 'kin-computer', 'dist', 'kin-computer')
+  return path.join(REPO_ROOT, 'bin', 'kin-computer')
 }
 
 export function fingerprintDir(projectRoot, vmId) {
