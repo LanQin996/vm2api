@@ -124,6 +124,50 @@ test('unsigned and empty thinking blocks are stripped before hop', () => {
     { type: 'text', text: 'answer' },
   ])
 })
+test('preserves omitted signed and redacted thinking blocks', () => {
+  const body = prepareAnthropicRequest({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'sig_omitted_12345678901234567890' },
+          { type: 'redacted_thinking', data: 'encrypted-thinking' },
+          { type: 'text', text: 'answer' },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'thinking', thinking: '', signature: 'sig_omitted_12345678901234567890' },
+    { type: 'redacted_thinking', data: 'encrypted-thinking' },
+    { type: 'text', text: 'answer' },
+  ])
+})
+
+test('panel preservation creates a missing thinking signature field', () => {
+  const body = prepareAnthropicRequest(
+    {
+      model: 'claude-opus-5',
+      thinking: { type: 'adaptive' },
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'opaque' },
+            { type: 'text', text: 'answer' },
+          ],
+        },
+      ],
+    },
+    { preserveThinkingBlocks: true },
+  )
+  assert.deepEqual(body.messages[0].content, [
+    { type: 'thinking', thinking: 'opaque', signature: '' },
+    { type: 'text', text: 'answer' },
+  ])
+})
 
 test('existing context_management is not overwritten', () => {
   const body = prepareAnthropicRequest({

@@ -551,7 +551,7 @@ test('signature 400 is not repaired when signature_repair is off', async () => {
   assert.equal(calls, 1)
 })
 
-test('cli-hop rust slot repairs signature 400 even when signature_repair is off', async () => {
+test('cli-hop signature 400 is not repaired when signature_repair is off', async () => {
   const scheduler = new Scheduler([
     {
       ...candidate(1),
@@ -576,27 +576,19 @@ test('cli-hop rust slot repairs signature 400 even when signature_repair is off'
       ],
     },
     model: 'claude-opus-test',
-    callAttempt: ({ body }) => {
+    callAttempt: () => {
       calls++
-      if (calls === 1) {
-        return {
-          ok: false,
-          status: 400,
-          terminalState: 'rejected',
-          body: { error: { message: 'Invalid `signature` in `thinking` block' } },
-        }
+      return {
+        ok: false,
+        status: 400,
+        terminalState: 'rejected',
+        body: { error: { message: 'Invalid `signature` in `thinking` block' } },
       }
-      assert.equal(body.thinking, undefined)
-      assert.deepEqual(body.messages[0].content, [
-        { type: 'text', text: 'x' },
-        { type: 'text', text: 'keep' },
-      ])
-      return success('repaired')
     },
   })
-  assert.equal(result.ok, true)
-  assert.equal(result.attemptCount, 2)
-  assert.equal(calls, 2)
+  assert.equal(result.ok, false)
+  assert.equal(result.status, 400)
+  assert.equal(calls, 1)
 })
 
 test('thinking-only hop moves to the next slot and returns the later text', async () => {

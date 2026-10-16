@@ -1227,11 +1227,18 @@ export function createHandleProtocol(deps) {
           const credMode = credentialModeFromOauth(selected.vm?.claude || {})
           const modeOverride = slotPersonaModeOverride(selected.vm)
           const routingNow = getRouting()
+          const repaired = extra.repaired === true
+          const preserveThinkingBlocks =
+            !repaired &&
+            routingNow?.failover?.signature_repair !== true &&
+            (!keptAccount || keptAccount === selected.accountId)
+          // cli-node receives the cleaned body after this boundary. Keep every
+          // thinking block on the first hop and only let a repaired retry strip it.
+          const preserveCliHopThinkingBlocks = !repaired
           const officialPassthrough = officialTraffic && officialCcPassthroughFromRouting(routingNow)
           const cliHop = resolveOfficialCcInference(selected.vm, routingNow) === 'cli-hop'
           let hopBody = body
           if (cliHop) {
-            const repaired = extra.repaired === true
             const resolvedPersona = resolveSlotPersonaPreset(selected.vm, routingNow)
             // Classifier keeps its own system. Official family keeps its inbound
             // system only when the protocol tab turns passthrough on.
@@ -1242,6 +1249,7 @@ export function createHandleProtocol(deps) {
               cacheTtl: requestedCacheTtl,
               requestContext,
               preserveSystem: officialPassthrough,
+              preserveThinkingBlocks: preserveCliHopThinkingBlocks,
             })
             hopBody = await materializeRemoteImageSources(hopBody)
             if (panelRewrite) {
@@ -1348,6 +1356,7 @@ export function createHandleProtocol(deps) {
             toolNameRewrite: openaiCompat ? false : getRouting()?.compatibility?.tool_name_rewrite !== false,
             cacheTtl,
             cacheBreakpoints,
+            preserveThinkingBlocks,
             reqHeaders: req.headers,
             homeDir: selected.exec?.homeDir || '',
             credentialMode: credMode,

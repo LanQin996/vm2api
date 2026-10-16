@@ -44,6 +44,7 @@ import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import { OpenaiQuotaPanel } from '@/features/vm/openai-quota-panel'
 import { proxyHealthOf } from '@/features/vm/proxy-health'
 import { RuntimeChip } from '@/features/vm/runtime-chip'
+import { VmMemoryBlock } from '@/features/vm/vm-memory-block'
 import { VmSchedulingBlock } from '@/features/vm/vm-scheduling'
 import { telemetryView } from './telemetry-policy'
 import { telemetryStatusLabel } from './telemetry-status'
@@ -374,8 +375,9 @@ export function VmStatusBoard(props: Props) {
                 {proxyNamedLabel(proxy)}
               </span>
             </Field>
-            <div className='py-2'>
+            <div className='space-y-2 py-2'>
               <VmSchedulingBlock vm={vm} conc={conc} rpm={rpm} />
+              <VmMemoryBlock vm={vm} />
             </div>
             {isCodexVm(vm) ? null : (
               <>

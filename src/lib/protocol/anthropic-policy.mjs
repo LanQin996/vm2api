@@ -128,7 +128,7 @@ export function alignSamplingWithThinking(body = {}) {
 }
 
 /** Drop history thinking blocks Anthropic would reject (empty / unsigned / dummy). */
-export function stripInvalidThinkingBlocks(body = {}) {
+export function stripInvalidThinkingBlocks(body = {}, { preserveThinkingBlocks = false } = {}) {
   if (!Array.isArray(body.messages)) return body
   const keepSigned = thinkingModeEnabled(body)
   let changed = false
@@ -139,13 +139,23 @@ export function stripInvalidThinkingBlocks(body = {}) {
     for (const block of message.content) {
       const type = block?.type
       if (type === 'thinking' || type === 'redacted_thinking') {
-        if (keepSigned && message.role === 'assistant') {
-          if (type === 'thinking' && !String(block.thinking || '').trim()) {
-            changed = true
-            filteredThis = true
+        if ((keepSigned || preserveThinkingBlocks) && message.role === 'assistant') {
+          // Omitted thinking keeps empty text; redacted thinking keeps encrypted data.
+          if (preserveThinkingBlocks) {
+            if (type === 'thinking' && !Object.hasOwn(block, 'signature')) {
+              changed = true
+              filteredThis = true
+              content.push({ ...block, signature: '' })
+            } else {
+              content.push(block)
+            }
             continue
           }
-          if (hasUsableThinkingSignature(block.signature)) {
+          if (type === 'redacted_thinking' && String(block.data || '').trim()) {
+            content.push(block)
+            continue
+          }
+          if (type === 'thinking' && hasUsableThinkingSignature(block.signature)) {
             content.push(block)
             continue
           }
@@ -314,6 +324,7 @@ export function prepareAnthropicRequest(
     cacheBreakpoints = null,
     cacheTtl = DEFAULT_CACHE_TTL,
     inbound = null,
+    preserveThinkingBlocks = false,
   } = {},
 ) {
   let out = clone(body)
@@ -335,7 +346,7 @@ export function prepareAnthropicRequest(
       content: cleanContent(normalizeImageContentBlocks(message?.content)),
     }))
   }
-  const stripped = stripInvalidThinkingBlocks(out)
+  const stripped = stripInvalidThinkingBlocks(out, { preserveThinkingBlocks })
   if (stripped.messages) out.messages = stripped.messages
   out = ensureClearThinkingContextManagement(out)
   out = alignSamplingWithThinking(out)

@@ -198,9 +198,8 @@ function priorAuth401Stamp(selected) {
   return selected?.vm?.claude?.oauth_401_generation ?? selected?.state?.worker_status?.oauth_401_generation ?? null
 }
 
-function signatureRepairEnabled(config, selected) {
-  if (config.signature_repair === true) return true
-  return resolveOfficialCcInference(selected?.vm) === 'cli-hop'
+function signatureRepairEnabled(config) {
+  return config.signature_repair === true
 }
 
 function selectedUsage(selected, accountQuota = null) {
@@ -857,7 +856,7 @@ export class FailoverRunner {
             model,
             repaired,
             oauth401CooldownMs: this.config.oauth_401_cooldown_ms,
-            signatureRepair: signatureRepairEnabled(this.config, selected),
+            signatureRepair: signatureRepairEnabled(this.config),
           },
           this.scheduler?.accountQuota,
         )
@@ -1004,7 +1003,7 @@ export class FailoverRunner {
             model,
             repaired,
             oauth401CooldownMs: this.config.oauth_401_cooldown_ms,
-            signatureRepair: signatureRepairEnabled(this.config, selected),
+            signatureRepair: signatureRepairEnabled(this.config),
           },
           this.scheduler?.accountQuota,
         )

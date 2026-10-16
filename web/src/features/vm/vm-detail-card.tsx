@@ -56,6 +56,7 @@ import {
 import { VmUsagePanel } from '@/features/vm/usage-windows'
 import { refreshBlockedReason } from '@/features/vm/vm-action-menu'
 import { useVmActions } from '@/features/vm/vm-actions-context'
+import { VmMemoryBlock } from '@/features/vm/vm-memory-block'
 import {
   canReclaimVm,
   resolveOwnerUsername,
@@ -135,6 +136,7 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
       </section>
 
       <VmSchedulingBlock vm={vm} />
+      <VmMemoryBlock vm={vm} />
 
       <div className='grid gap-2 sm:grid-cols-2'>
         <Section title='今日'>

@@ -173,7 +173,14 @@ function stabilizeMessageBudgets(body) {
  */
 export function prepareCliHopBody(
   canonicalBody,
-  { stream = true, repaired = false, cacheTtl = DEFAULT_CACHE_TTL, requestContext = null, preserveSystem = false } = {},
+  {
+    stream = true,
+    repaired = false,
+    cacheTtl = DEFAULT_CACHE_TTL,
+    requestContext = null,
+    preserveSystem = false,
+    preserveThinkingBlocks = false,
+  } = {},
 ) {
   if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
   let body = officialMessagesBody(canonicalBody, { stream })
@@ -196,7 +203,7 @@ export function prepareCliHopBody(
     body = ensureUnofficialEffortHigh(body)
     body = ensureClearThinkingContextManagement(body)
   }
-  body = stripInvalidThinkingBlocks(body)
+  body = stripInvalidThinkingBlocks(body, { preserveThinkingBlocks })
   body = applyModelRequestRules(body)
   body = ensureOutputConfigSchema(body)
   body = alignSamplingWithThinking(body)
@@ -224,6 +231,7 @@ export function prepareOutboundAttempt({
   toolNameRewrite = true,
   cacheTtl = null,
   cacheBreakpoints = null,
+  preserveThinkingBlocks = false,
   reqHeaders = {},
   officialClient,
   sessionId: sessionIdOverride,
@@ -294,6 +302,7 @@ export function prepareOutboundAttempt({
     cacheBreakpoints: keepCallerSession ? null : cacheBreakpoints,
     cacheTtl: cacheTtl || undefined,
     inbound,
+    preserveThinkingBlocks,
   })
   cleaned = stripIllegalCacheControlFields(cleaned)
   if (cacheTtl) cleaned = applyCacheTtlToBody(cleaned, cacheTtl)
@@ -324,6 +333,7 @@ export function prepareOutboundEnvelope({
   toolNameRewrite = true,
   cacheTtl = null,
   cacheBreakpoints = null,
+  preserveThinkingBlocks = false,
   reqHeaders = {},
   homeDir = '',
   officialClient,
@@ -356,6 +366,7 @@ export function prepareOutboundEnvelope({
     toolNameRewrite,
     cacheTtl,
     cacheBreakpoints,
+    preserveThinkingBlocks,
     reqHeaders,
     officialClient,
     sessionId,

@@ -191,6 +191,7 @@ import { commitVmPackage, exportVmPackage, parseVmPackage } from '../vm/vm-packa
 import { preflightNode } from '../cluster/placement.mjs'
 import { probeLocalKvm } from '../vm/kvm-host.mjs'
 import { normalizeVmConfig, resolveMachineSpec, validateVmConfigPatch } from '../vm/machine-spec.mjs'
+import { raiseDockerSlotMemory } from '../vm/docker-slot-memory.mjs'
 import { RUNTIME_KVM } from '../vm/runtime-kind.mjs'
 import { hostProxyUrlForVm, slotHost } from '../vm/slot-host.mjs'
 import { syncIpv6ProxyEgress } from '../vm/proxy-policy-runtime.mjs'
@@ -2408,6 +2409,13 @@ export function createPanelHandler(ctx) {
         const hasActiveHours = body && Object.prototype.hasOwnProperty.call(body, 'active_hours')
         const hasTimezone = body && Object.prototype.hasOwnProperty.call(body, 'timezone')
         const hasWeight = body && Object.prototype.hasOwnProperty.call(body, 'weight')
+        const hasMemory =
+          body &&
+          (Object.prototype.hasOwnProperty.call(body, 'memory') ||
+            (body.machine &&
+              typeof body.machine === 'object' &&
+              !Array.isArray(body.machine) &&
+              Object.prototype.hasOwnProperty.call(body.machine, 'memory')))
         // `timezone_follow_proxy: true` re-attaches the slot to its exit node's
         // zone, undoing an earlier hand-pinned value.
         const followProxyTz = body?.timezone_follow_proxy === true || body?.timezoneFollowProxy === true
@@ -2430,13 +2438,14 @@ export function createPanelHandler(ctx) {
           !hasActiveHours &&
           !hasTimezone &&
           !hasWeight &&
+          !hasMemory &&
           !followProxyTz
         ) {
           return json(res, 400, {
             ok: false,
             error: {
               message:
-                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, active_hours, timezone, weight or timezone_follow_proxy required',
+                'max_concurrency, max_rpm, max_sessions, session_slots, quota_override, allowed_models, auth_scheme, inference_engine, persona_preset, schedule_level, active_hours, timezone, weight, machine.memory or timezone_follow_proxy required',
             },
           })
         }
@@ -2637,6 +2646,43 @@ export function createPanelHandler(ctx) {
           }))
           if (!vm) return json(res, 404, { ok: false, error: { message: 'vm not found' } })
         }
+        let memoryRaiseResult = null
+        if (hasMemory) {
+          const requestedMemory =
+            body.machine && typeof body.machine === 'object' && !Array.isArray(body.machine)
+              ? body.machine.memory
+              : body.memory
+          const liveVm = getVm(cfg.paths.project, id) || currentVm
+          const raiseMemory = ctx.raiseDockerSlotMemory || raiseDockerSlotMemory
+          const raised = raiseMemory(cfg.paths.project, liveVm, requestedMemory, {
+            routing: ctx.routingConfig,
+          })
+          if (!raised.ok) {
+            const status =
+              raised.code === 'vm_not_found'
+                ? 404
+                : raised.code === 'invalid_memory' ||
+                    raised.code === 'memory_not_increased' ||
+                    raised.code === 'kvm_memory_raise_forbidden'
+                  ? 400
+                  : 502
+            return json(res, status, {
+              ok: false,
+              error: {
+                code: raised.code,
+                message: raised.message,
+                requested: raised.requested ?? requestedMemory ?? null,
+                container_memory: raised.container_memory ?? null,
+                current: raised.current ?? null,
+              },
+            })
+          }
+          memoryRaiseResult = {
+            previous: raised.previous,
+            memory: raised.memory,
+            container_memory: raised.container_memory,
+          }
+        }
         const detail = await panel.buildVmDetail({
           cfg,
           accountQuota,
@@ -2658,6 +2704,7 @@ export function createPanelHandler(ctx) {
           }
         }
         if (timezoneSync && detail?.data) detail.data.timezone_sync = timezoneSync
+        if (memoryRaiseResult && detail?.data) detail.data.memory_raise = memoryRaiseResult
         return json(res, 200, detail)
       }
       // POST /api/panel/vms/:id/probe

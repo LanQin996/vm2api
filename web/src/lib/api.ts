@@ -146,6 +146,9 @@ export type VmPatch = {
   schedule_level?: number | 'auto' | null
   /** null = 清除工作时段，恢复 24h 接单。 */
   active_hours?: VmActiveHours | null
+  /** Docker 槽在线提升内存（仅上调）。 */
+  memory?: string
+  machine?: { memory?: string }
 }
 
 export function patchVm<T = unknown>(id: string, body: VmPatch) {

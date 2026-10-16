@@ -103,7 +103,7 @@ test('prepareCliHopBody does not overwrite caller thinking disabled', () => {
   assert.equal(body.context_management, undefined)
 })
 
-test('prepareCliHopBody strips unsigned empty dummy and short thinking history', () => {
+test('prepareCliHopBody strips unsigned dummy and short thinking history', () => {
   const body = prepareCliHopBody({
     model: 'claude-sonnet-5',
     max_tokens: 256,
@@ -127,7 +127,33 @@ test('prepareCliHopBody strips unsigned empty dummy and short thinking history',
   assert.equal(body.temperature, 1)
   assert.deepEqual(body.messages[1].content, [
     { type: 'thinking', thinking: 'keep-me', signature: 'sig_real_1234567890abcdef' },
+    { type: 'thinking', thinking: '', signature: 'sig_empty_text_still_long_enough' },
     { type: 'text', text: 'hello' },
+  ])
+})
+test('prepareCliHopBody keeps existing signatures and fills missing ones', () => {
+  const body = prepareCliHopBody(
+    {
+      model: 'claude-sonnet-5',
+      max_tokens: 256,
+      thinking: { type: 'adaptive' },
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'existing', signature: 'abc' },
+            { type: 'thinking', thinking: 'missing' },
+            { type: 'text', text: 'hello' },
+          ],
+        },
+      ],
+    },
+    { preserveThinkingBlocks: true },
+  )
+  assert.deepEqual(body.messages[1].content, [
+    { type: 'thinking', thinking: 'existing', signature: 'abc' },
+    { type: 'thinking', thinking: 'missing', signature: '' },
+    { type: 'text', text: 'hello', cache_control: { type: 'ephemeral', ttl: '1h' } },
   ])
 })
 
