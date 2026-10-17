@@ -123,9 +123,14 @@ function protocolHarness({ routing, body, healthMonitor }) {
     requestLog: { start: () => ({ request_id: 'cc-only-test' }), finish() {} },
     stickyRouter: {},
     accountQuota: {},
-    apiKeyStore: {},
+    apiKeyStore: { acquire: () => ({ ok: true }), release() {} },
     apiScheduler: {
       pick: () => {
+        throw REACHED
+      },
+    },
+    failoverRunner: {
+      run: async () => {
         throw REACHED
       },
     },
@@ -138,13 +143,25 @@ function protocolHarness({ routing, body, healthMonitor }) {
   return { handler, response }
 }
 
-async function runProtocol({ routing, body, headers, protocol = 'anthropic.messages', healthMonitor }) {
+async function runProtocol({
+  routing,
+  body,
+  headers,
+  protocol = 'anthropic.messages',
+  healthMonitor,
+  apiKeyKind = 'managed',
+  apiKeyRecord = { category: 'api' },
+}) {
   const { handler, response } = protocolHarness({ routing, body, healthMonitor })
   const req = {
     method: 'POST',
     url: '/v1/messages',
-    headers: { authorization: 'Bearer master', 'x-kin-backend': 'api', ...headers },
-    apiKeyKind: 'master',
+    headers:
+      apiKeyKind === 'master'
+        ? { authorization: 'Bearer master', ...headers }
+        : { authorization: 'Bearer sk-vm-api', ...headers },
+    apiKeyKind,
+    apiKeyRecord: apiKeyKind === 'managed' ? apiKeyRecord : undefined,
     once() {},
     off() {},
   }
@@ -205,7 +222,12 @@ test('switch on: official Claude Code and its own quota probe reach the schedule
 })
 
 test('switch on: master-key pinned panel diagnostics are not inbound clients', async () => {
-  const result = await runProtocol({ routing: ON, body: THIRD_PARTY_BODY, headers: { ...AXIOS, 'x-kin-vm': 'vm-01' } })
+  const result = await runProtocol({
+    routing: ON,
+    body: THIRD_PARTY_BODY,
+    headers: { ...AXIOS, 'x-kin-vm': 'vm-01' },
+    apiKeyKind: 'master',
+  })
   assert.equal(result.reached, true)
 })
 

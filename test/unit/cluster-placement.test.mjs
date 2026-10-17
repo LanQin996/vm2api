@@ -16,7 +16,7 @@ import {
   startSlotImageBuild,
   unbindPlacement,
 } from '../../src/lib/cluster/placement.mjs'
-import { remoteIptablesScript, slotEgressNames } from '../../src/lib/cluster/remote-slot.mjs'
+import { remoteIptablesScript, slotContainerBody, slotEgressNames } from '../../src/lib/cluster/remote-slot.mjs'
 import {
   pullSlotCredentials,
   pushSlotCredentials,
@@ -283,6 +283,14 @@ test('slot image tag follows payload bytes only; a VERSION bump keeps the image'
   fs.chmodSync(process.env.KIN_CODEX_KERNEL_BIN, 0o755)
 
   const a = slotImageSpec(root, 'ubuntu-24.04')
+  const container = slotContainerBody(
+    { id: 'vm-03', platform: 'anthropic', node_id: 'node-a', kernel: 'ubuntu-24.04' },
+    { image: a.ref, network: 'test-net', remoteDir: '/home/node/vms/vm-03', user: '1000:1000', routing: {} },
+  )
+  const entry = a.files.find((file) => `/${file.name}` === container.Cmd[0])
+  assert.ok(entry, 'the remote Claude command must name a file baked into its slot image')
+  assert.equal(entry.mode, 0o755)
+  assert.match(entry.body.toString(), /^#!\/bin\/sh/)
   assert.match(a.ref, /^vm2api\/kin-slot-ubuntu-24\.04:[0-9a-f]{12}$/)
   const kvm = slotImageSpec(root, 'ubuntu-24.04', { runtime: 'kvm' })
   assert.match(kvm.ref, /^vm2api\/kin-slot-kvm-ubuntu-24\.04:[0-9a-f]{12}$/)

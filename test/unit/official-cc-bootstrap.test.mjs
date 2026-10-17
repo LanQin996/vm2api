@@ -229,7 +229,7 @@ test('normalizeOfficialCcConfig fills defaults and clamps', () => {
   const okTimeout = normalizeOfficialCcConfig({ timeout_ms: 60000, memory: '4g' })
   assert.equal(okTimeout.timeout_ms, 60000)
   assert.equal(okTimeout.memory, '4g')
-  assert.equal(normalizeOfficialCcConfig({}).sync_telemetry, true)
+  assert.equal(normalizeOfficialCcConfig({}).sync_telemetry, false)
   assert.equal(normalizeOfficialCcConfig({ sync_telemetry: false }).sync_telemetry, false)
   assert.equal(normalizeOfficialCcConfig({}).resident, false)
   assert.equal(normalizeOfficialCcConfig({}).inference, 'cli-hop')
@@ -264,7 +264,7 @@ test('applyOfficialCcConfig prefers explicit opts over routing', () => {
   assert.equal(o.memory, '1g')
   assert.equal(o.resident, false)
 
-  assert.equal(o.syncTelemetry, true)
+  assert.equal(o.syncTelemetry, false)
   assert.equal(applyOfficialCcConfig({}, { sync_telemetry: false }).syncTelemetry, false)
 })
 
@@ -282,8 +282,18 @@ test('loadOfficialCcConfig reads routing.json official_cc', () => {
   assert.equal(cfg.hello_prompt, 'ping')
   assert.equal(cfg.memory, '4g')
   assert.equal(cfg.wipe, true)
-  assert.equal(cfg.sync_telemetry, true)
+  assert.equal(cfg.sync_telemetry, false)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('settings persist keeps sync_telemetry explicit on and off', () => {
+  const on = normalizeOfficialCcConfig({ enabled: true, wipe: true })
+  assert.equal(on.sync_telemetry, false)
+  const off = normalizeOfficialCcConfig({ ...on, sync_telemetry: false })
+  assert.equal(off.sync_telemetry, false)
+  const back = normalizeOfficialCcConfig({ ...off, sync_telemetry: true, wipe: false })
+  assert.equal(back.sync_telemetry, true)
+  assert.equal(back.wipe, false)
 })
 
 test('schedule skips when auto init is disabled', () => {
@@ -494,7 +504,7 @@ test('finalize without official IDs keeps sidecar off', async () => {
 
 test('settings persist keeps sync_telemetry explicit on and off', () => {
   const on = normalizeOfficialCcConfig({ enabled: true, wipe: true })
-  assert.equal(on.sync_telemetry, true)
+  assert.equal(on.sync_telemetry, false)
   const off = normalizeOfficialCcConfig({ ...on, sync_telemetry: false })
   assert.equal(off.sync_telemetry, false)
   const back = normalizeOfficialCcConfig({ ...off, sync_telemetry: true, wipe: false })
@@ -506,7 +516,7 @@ test('repo routing.json and the Vite console expose init telemetry sync', () => 
   const here = path.dirname(fileURLToPath(import.meta.url))
   const gw = path.resolve(here, '../..')
   const routing = JSON.parse(fs.readFileSync(path.join(gw, 'src/config/routing.json'), 'utf8'))
-  assert.equal(routing.official_cc.sync_telemetry, true)
+  assert.equal(routing.official_cc.sync_telemetry, false)
   assert.equal(routing.official_cc.resident, false)
   assert.equal(routing.official_cc.inference, 'cli-hop')
   assert.equal(routing.official_cc.memory, '500m')

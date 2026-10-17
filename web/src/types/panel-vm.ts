@@ -146,12 +146,46 @@ export type VmSmbios = {
 /** 创建时固化到槽位的机器规格。旧槽可能缺省。 */
 export type VmMachine = {
   memory?: string
+  /** Optional Docker hard CPU quota. Missing/zero = unlimited; separate from KVM vcpus. */
+  docker_cpus?: number
   vcpus?: number
   disk_gb?: number
   cpu_model?: string
   mac?: string
   smbios?: VmSmbios
   disk_serial?: string
+}
+
+/** `GET /vms/:id` 的脱敏客户机特征。不含 machine-id / token / 代理账密。 */
+export type VmPhysicalDmi = {
+  manufacturer?: string | null
+  product?: string | null
+  version?: string | null
+  family?: string | null
+  serial?: string | null
+  uuid?: string | null
+}
+
+export type VmPhysicalFeatures = {
+  observed_at?: string | null
+  runtime_type?: RuntimeType | string | null
+  hostname?: string | null
+  os_id?: string | null
+  os_pretty?: string | null
+  kernel_release?: string | null
+  arch?: string | null
+  machine_id_present?: boolean
+  timezone?: string | null
+  locale?: string | null
+  cpu_model?: string | null
+  cpu_cores?: number | null
+  memory_bytes?: number | null
+  root_disk?: string | null
+  mac?: string | null
+  dmi?: VmPhysicalDmi | null
+  shell?: string | null
+  package_managers?: string | null
+  runtimes?: string | null
 }
 
 export type Vm = {
@@ -205,8 +239,8 @@ export type Vm = {
   circuit?: VmCircuit | null
   cooldown_until?: number
   cooldown_reason?: string
-  utilization_5h?: number
-  utilization_7d?: number
+  utilization_5h?: number | null
+  utilization_7d?: number | null
   utilization_7d_oi?: number
   utilization_7d_sonnet?: number
   status_5h?: string
@@ -218,12 +252,12 @@ export type Vm = {
   codex_usage?: {
     windows?: Array<{
       id?: string
-      used_percent?: number
+      used_percent?: number | null
       reset_at?: string | null
     }>
     quota?: {
-      utilization_5h?: number
-      utilization_7d?: number
+      utilization_5h?: number | null
+      utilization_7d?: number | null
     }
   } | null
   /** Raw OpenAI `plan_type` from wham/usage (GPT slots only). */
@@ -272,6 +306,8 @@ export type Vm = {
   runtime_type?: RuntimeType | null
   /** 创建时固化的机器规格；旧槽可能缺省。 */
   machine?: VmMachine | null
+  /** 观测到的客户机特征；列表也可能带上。缺省按未采集展示。 */
+  physical_features?: VmPhysicalFeatures | null
 
   region?: string
   /** 槽位环境时区（容器 `TZ` + persona `# Environment`）。 */

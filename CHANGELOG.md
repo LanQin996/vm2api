@@ -1,7 +1,37 @@
 # Changelog
 
 ## 未发布
+
+## 1.3.182 — 2026-10-17
+
+- 代理地理可选 `KIN_PROXY_GEO_V6_LOOKUP_MODE=control-plane`：IPv6 探针仍经代理取真实出口，元数据查询走控制面默认路由；修正默认 IPv6 指定地址 URL（`/json/{ip}`）；仅显式开启且默认主查询传输失败时回退，并校验服务商返回 IP 与已验证 IPv6 一致（含缩写/展开）；默认 `proxy` 两阶段仍经代理。启用方式见 `docs/PANEL_API.md`。（#492、#307）
+- 远程 Claude Docker 槽改用镜像烘焙 kernel 入口（`/opt/kin/kin-kernel`，`REMOTE_KERNEL_ENTRY`），不改 GPT 与本机/KVM 命令；新建或重建容器后生效。（#489、#496）
+- 修复 Codex 返回配额耗尽（如 `usage_limit_reached`）且无利用率响应头时仍展示过期低用量：作废该槽未达上限窗口的过期利用率缓存，面板显示为未测量（`—`），保留新鲜测量与已封顶窗口；通用限流与成功无头响应行为不变。（#474、#487）
+- `docker/kin-kvm/fetch-cloud.py` 在调用 `qemu-img` 前校验源路径为常规文件且非符号链接，收紧路径处理（CWE-78 防御加深）。（#471）
+- 用量探测可选 `usage_probe.reset_delay_sec` / `reset_jitter_sec`（各 0–3600，默认 0）：在已知 Extra 5h reset 后，将已到期的周期探测推迟到 `reset + delay + 按账号稳定偏移`；不改官方退避、手动/事件探测与 Messages 健康监视；快照暴露待探测的 `next_probe_at`。（#488、#497）
+- 内核看门狗在容器级恢复/重建前先对槽位所在 Docker 主机做有界观测（运行/缺失/已停/Restarting/暂停/unknown）；HTTP/权限/传输失败或观测超时视为 unknown，不消耗重启预算、不盲重启；确认 missing/stopped/restarting 且槽位仍为运行意图时才 revival/recreate，运行中容器仍走既有 kernel 重启；远程 Restarting 崩溃循环纳入看门狗重建；单槽异常与 tick 级 promise 拒绝互不影响。（#491）
+- Docker 槽创建可选 `machine.docker_cpus`（`0` 或省略不限；`0.01`–`16` 为 CPU 时间上限）：写入槽位记录并在容器创建/重建时生效（本地 `--cpus`、集群 `NanoCpus`），KVM 与非法值拒绝；不提供在线 PATCH 或把 `vcpus` 隐式映射为 Docker 上限；损坏落盘值在 reload/恢复/重建前拒绝。（#490）
+- 修复通知监控在冷却/无事件轮询时误清 `last_error`：仅在实际投递成功时清除，保留上次投递失败；解析 `dispatchNotify` 的 `ok: false` 与部分通道失败，同批次任一失败优先于成功事件。（#483）
+
+已部署机升级：更新 Node 控制面；涉及代理地理 / 用量探测配置见 PANEL_API 与 routing。远程 Claude 烘焙 kernel 入口须新建或重建容器后生效。无新依赖，不必 wrap-cli/sync。不要覆盖 routing.json、vms/、data/、.env。
+
+## 1.3.181 — 2026-10-17
+
+- 采集客户机 CPU、内存、磁盘、MAC、DMI、Shell 与工具链，写入槽位特征并展示于运维页；终端启动打印实时系统特征。
+- 采集后同步 worker.json 遥测配置至本机或节点，sidecar 热加载，无需重启；官方初装自动开启遥测默认关闭。
+- 代理出口地理查询经 SOCKS5 时由代理端解析目标域名（查询路径内将 `socks5://` 规范为 `socks5h:`），避免依赖控制面本地 DNS；IPv4 与 IPv6 两阶段探测一致，不修改已保存代理 URI，HTTP(S) 代理与本地直连行为不变。（#482）
+- 修复 KVM / Docker 槽容器处于 `Restarting` 崩溃循环时被当成运行中：`inspectContainer()` 读取 `State.Restarting`，崩溃循环的容器视为未运行，启动和重载改为重建，不再 `already-running` 短路或对重启中的容器 `docker exec`。新建槽位容器前先 `docker pull` 浮动 tag（`kin-kvm-*` / `kin-os-*`），拉取失败才用本地镜像，旧 runner 镜像可随重建更新；`docker/kin-*/build.mjs --pull` / `--pull-only` 也会刷新已存在的镜像。`kin-kvm-entry` 降权前对容器内 `/dev/kvm` 节点执行 `chmod g+rw`，兼容宿主 `0600` 权限。（#484）
+
+已部署机升级：更新 Node 控制面、Go worker 与 web/dist；新建槽位默认关闭遥测，已有显式开关保留。无需 wrap-cli/sync 或重建槽位容器；遥测 sidecar 下次启动使用新 worker。首次从 1.3.179 升级须先安装 croner@10.0.1。不要覆盖 routing.json、vms/、data/、.env。
+## 1.3.180 — 2026-10-17
+
+- 测试链接按槽位定时真实对话（延续 #467 / REQ-0466）：面板结构化调度（每小时/每天/每周 + IANA 时区，无 Cron 文本框），SettingsRepo 持久化，到点 `runVmTestChat`；全局默认模板与「同步调度时间到全部/所选槽」（仅覆盖调度字段）。依赖 `croner@10.0.1`。（#466）
 - 已有 Docker 槽可通过面板 `PATCH /api/panel/vms/:id`（`machine.memory`）或槽位详情「内存 → 提升」在线上调容器内存：先 `docker update --memory … --memory-swap …`，读回 `HostConfig.Memory` 一致后才写入 `machine.memory` / `runtime.memory`；失败不写配置。不支持降配或 KVM。（#441）
+- 面板新增 admin 专用 Anthropic 控制台（`POST /api/panel/anthropic/messages`，与 VM 测试分离；经控制面转发上游，浏览器不直连）；推理路由收紧：仅 managed 且 category 为 `api` 的协议密钥走已配置的 API 上游，master key 与 `x-kin-backend=api` 不再强制 API 后端（改走 OAuth/VM）。（#478）
+- 修复槽位开机成功后仍保留旧 PID、启动时间或停止标记：保存普通槽与 Codex 启动返回的运行信息，并保留等待就绪期间已写入的运行字段，避免在线升内存后 `runtime.memory` 被旧启动快照覆盖；凭证调度规则不变。（#479）
+- 修复检查更新失败时被误判为「已是最新」：发布查询失败返回 `check_status: 'failed'`，`latest` / `latest_tag` / `update_available` 为 `null`；关于页显示失败标记并禁用自动升级，自动升级在发现失败时返回 502 `release_check_failed`（显式指定版本仍可用）。外部调用方需区分 `null` 与 `false`。（#480）
+
+已部署机升级：更新 Node 控制面与 `web/dist`，安装新依赖 `croner@10.0.1`（`npm ci`），重启一次 Node。无迁移，不必 `wrap-cli/sync`。注意 #478 推理路由收紧：master key 与 `x-kin-backend=api` 不再强制 API 后端，只有 managed 且 category 为 `api` 的协议密钥走 API 上游；面板 API 变化见 `docs/PANEL_API.md`。#480 后 `/api/panel` 版本检查字段可能为 `null`。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
 
 ## 1.3.179 — 2026-10-16
 

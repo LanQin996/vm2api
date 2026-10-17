@@ -130,6 +130,16 @@ test('super can schedule VMs but cannot touch credentials or delete', () => {
   assert.equal(authorizePanelRoute('POST', '/api/panel/update', 'super').ok, false)
 })
 
+test('user can manage owned vm test schedules; default template write is admin-only', () => {
+  assert.equal(authorizePanelRoute('GET', '/api/panel/vms/vm-01/test-schedule', 'user').ok, true)
+  assert.equal(authorizePanelRoute('PUT', '/api/panel/vms/vm-01/test-schedule', 'user').ok, true)
+  assert.equal(authorizePanelRoute('DELETE', '/api/panel/vms/vm-01/test-schedule', 'user').ok, true)
+  assert.equal(authorizePanelRoute('GET', '/api/panel/test-schedule/default', 'user').ok, true)
+  assert.equal(authorizePanelRoute('PUT', '/api/panel/test-schedule/default', 'user').ok, false)
+  assert.equal(authorizePanelRoute('POST', '/api/panel/test-schedule/sync', 'user').ok, true)
+  assert.equal(authorizePanelRoute('PUT', '/api/panel/test-schedule/default', 'admin').ok, true)
+})
+
 test('admin is unrestricted', () => {
   assert.equal(authorizePanelRoute('DELETE', '/api/panel/vms/vm-01', 'admin').ok, true)
   assert.equal(authorizePanelRoute('POST', '/api/panel/users', 'admin').ok, true)

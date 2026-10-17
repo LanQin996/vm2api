@@ -154,7 +154,8 @@ func TestRunReloadsTelemetryWithoutRestart(t *testing.T) {
 	id1 := strings.Repeat("ab", 32)
 	id2 := strings.Repeat("cd", 32)
 	write := func(enabled bool, device string) {
-		raw := fmt.Sprintf(`{"telemetry":{"enabled":%t,"betas":"thinking-binding-controls-2026-08-01","identity":{"user_id":%q,"platform":"linux","cli_version":"2.1.278","env":{"version":"2.1.278","platform":"linux","shell":"zsh"}}}}`, enabled, device)
+		cpu := "CPU-" + device[:2]
+		raw := fmt.Sprintf(`{"telemetry":{"enabled":%t,"betas":"thinking-binding-controls-2026-08-01","identity":{"user_id":%q,"platform":"linux","cli_version":"2.1.278","env":{"version":"2.1.278","platform":"linux","shell":"zsh","cpu_model":%q,"cpu_cores":8,"memory_bytes":8589934592}}}}`, enabled, device, cpu)
 		if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -210,5 +211,8 @@ func TestRunReloadsTelemetryWithoutRestart(t *testing.T) {
 	}
 	if strings.Contains(got, "2.1.241") {
 		t.Fatalf("stale version in %s", got)
+	}
+	if !strings.Contains(got, `"cpu_model":"CPU-cd"`) || !strings.Contains(got, `"memory_bytes":8589934592`) {
+		t.Fatalf("reloaded body missing hardware: %s", got)
 	}
 }

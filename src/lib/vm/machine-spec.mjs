@@ -1,6 +1,6 @@
 /**
  * Global `routing.vm` defaults and the per-slot `vm.machine` record.
- * Docker slots only consume memory; KVM uses the full spec. Invalid values
+ * Docker slots consume memory and an optional explicit CPU quota; KVM uses its own spec. Invalid values
  * never persist through normalize (defaults) or a PUT/create patch (400).
  */
 import crypto from 'node:crypto'
@@ -238,13 +238,27 @@ function randomDiskSerial() {
   return `KIN${crypto.randomBytes(8).toString('hex')}`.slice(0, 20)
 }
 
+/** Explicit per-slot Docker quota. Missing/zero preserves the historic unlimited CPU policy. */
+export function slotDockerCpus(vm) {
+  const machine = vm?.machine
+  if (!machine || !Object.hasOwn(machine, 'docker_cpus')) return 0
+  const value = machine.docker_cpus
+  if (typeof value !== 'number' || !Number.isFinite(value) || (value !== 0 && (value < 0.01 || value > 16))) {
+    throw invalidMachine('docker_cpus must be 0 (unlimited) or a number from 0.01 to 16')
+  }
+  return value
+}
+
 export function resolveMachineSpec({ config, overrides, runtime } = {}) {
-  void runtime
   const base = normalizeVmConfig(config)
   if (overrides != null && !isPlainObject(overrides)) {
     throw invalidMachine('machine 必须是对象')
   }
   if (isPlainObject(overrides)) {
+    if (Object.hasOwn(overrides, 'docker_cpus')) {
+      if (runtime === 'kvm') throw invalidMachine('docker_cpus is only supported for Docker slots; use vcpus for KVM')
+      base.docker_cpus = slotDockerCpus({ machine: overrides })
+    }
     const patch = {}
     for (const key of OVERRIDE_KEYS) {
       if (Object.prototype.hasOwnProperty.call(overrides, key)) patch[key] = overrides[key]
@@ -258,6 +272,7 @@ export function resolveMachineSpec({ config, overrides, runtime } = {}) {
   const brand = randomSmbios()
   return {
     memory: base.memory,
+    ...(Object.hasOwn(base, 'docker_cpus') ? { docker_cpus: base.docker_cpus } : {}),
     vcpus: base.vcpus,
     disk_gb: base.disk_gb,
     cpu_model: base.cpu_model,

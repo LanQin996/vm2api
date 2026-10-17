@@ -24,6 +24,7 @@ test('watchdog restarts only a dead kernel or one that gave up on its CLI', asyn
   const ensured = []
   let now = 0
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     now: () => now,
     listTargets: () => [
       { id: 'vm-up', inference_engine: 'rust' },
@@ -63,6 +64,7 @@ test('container restarts are bounded, spaced out, then the VM is faulted until h
   const ensured = []
   const faults = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     config: { restart_backoff_sec: [60, 300], restart_window_sec: 3600 },
     listTargets: () => [{ id: 'vm-loop', inference_engine: 'rust' }],
     homeDirFor: () => '/tmp/vm-loop',
@@ -120,6 +122,7 @@ test('watchdog does not restart a live crag slot', async () => {
   fs.writeFileSync(path.join(run, 'kernel.json'), JSON.stringify({ dataplane: 'crag' }))
   const ensured = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     listTargets: () => [{ id: 'vm-crag', inference_engine: 'rust' }],
     homeDirFor: () => home,
     health: async () => ({ ok: true, engine: 'rust', ready_slots: 0, cli_pid: 0 }),
@@ -137,6 +140,7 @@ test('telemetry sidecar is checked once per window on every running slot', async
   let now = 0
   const checked = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     now: () => now,
     telemetryEveryMs: 600_000,
     listTargets: () => [
@@ -168,6 +172,7 @@ test('inherited rust slot reaches the restart ladder after CLI budget is spent',
   const faults = []
   let now = 0
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     now: () => now,
     getRouting: () => ({ inference: { engine: 'rust' } }),
     listTargets: () => [{ id: 'vm-inherit' }],
@@ -211,6 +216,7 @@ test('watchdog rereads routing each tick; Codex stays out of the restart path', 
   let routingCalls = 0
   let routing = { inference: { engine: 'rust' } }
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     getRouting: () => {
       routingCalls += 1
       return routing
@@ -237,6 +243,7 @@ test('a missing container is booted, not just kernel-restarted, inside the same 
   let now = 0
   const revived = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'missing' }),
     listTargets: () => [
       { id: 'vm-gone', status: 'running', inference_engine: 'rust' },
       { id: 'vm-planned', status: 'planned', inference_engine: 'rust' },
@@ -262,6 +269,7 @@ test('a held slot is left alone; reset gives a faulted slot a fresh budget', asy
   const probed = []
   const bridged = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     config: { restart_backoff_sec: [60] },
     listTargets: () => [
       { id: 'vm-held', inference_engine: 'rust' },
@@ -309,6 +317,7 @@ test('a hold taken while the health probe is pending stops the restart and the b
   const probe = deferred()
   const actions = []
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     config: { restart_backoff_sec: [10] },
     listTargets: () => [{ id: 'vm-race', status: 'running', inference_engine: 'rust' }],
     health: () => probe.promise,
@@ -336,6 +345,7 @@ test('hold waits for a restart already in flight, and the boot after it is skipp
   const actions = []
   let at = 0
   const wd = createKernelWatchdog({
+    observeRuntime: async () => ({ state: 'running' }),
     config: { restart_backoff_sec: [10] },
     listTargets: () => [{ id: 'vm-busy', status: 'running', inference_engine: 'rust' }],
     health: async () => null,

@@ -199,6 +199,26 @@ curl -sS http://127.0.0.1:8787/v1/usage -H "Authorization: Bearer $KEY"
 
 
 
+### 周期额度查询的重置后错峰
+
+`PUT /api/panel/routing` 可设置（沿用面板鉴权；不是手动 `/probe` 请求体）：
+
+```json
+{
+  "usage_probe": {
+    "enabled": true,
+    "reset_delay_sec": 120,
+    "reset_jitter_sec": 600
+  }
+}
+```
+
+两项均默认 `0`、范围 `0`–`3600` 秒，省略时保留旧行为。对已到期且带有效重置时间的 Extra `5h` 窗口，周期查询的最早时间为 `reset + reset_delay_sec + 每账号稳定偏移`；偏移在 `0`–`reset_jitter_sec` 内，由账号身份和该轮 reset 确定，重复 tick、进程重启及列表重排不会重新抽签。上例为重置后 120–720 秒；实际执行仍受 `interval_sec` 的 tick 粒度、并发、单飞及退避限制，不保证每个账号不同秒执行。等待项在 `GET /api/panel/usage-probe` 的快照中显示 `reason: "reset_probe_delay"` 和 `next_probe_at`（最早时间，不是预约保证）。
+
+这只调整**周期额度探测链路的执行时间**，不新增探测：现有链路以官方 `GET /api/oauth/usage` 查询为主，满足套餐复核条件时仍可能执行现有 Fable Messages 探测；本改动不改变这些条件。没有有效已到期 5h reset 的未采样账号、仅 7d 到期或无有效 5h reset 的账号保留原逻辑；已有 `last_probe.ok === true` 且探测时间不早于本轮 reset 的账号不再被旧 reset 延迟，仅由真实流量更新的 `headers.sampled_at` 不触发该豁免。官方 usage 退避优先，主动/过期样本和套餐复核路径不会绕过等待。主动调用 `POST /api/panel/usage-probe` 同样运行周期规则；手动 `POST /api/panel/probe`、事件 `probeNow`、真实用户流量及独立 Messages 健康检查不受此延迟影响。
+
+因此，这些设置**不保证上游 5h 计费/额度窗口错开**：官方 usage GET 是否会开启窗口没有得到验证，既有 Fable Messages、真实流量及独立 Messages 健康检查也可能触发新窗口。延迟会让面板/额度恢复信息更晚刷新；需要即时查询时使用手动 `/probe`。当前仅提供 routing/API 配置，不新增面板控件。
+
 ## 健康
 
 ```bash

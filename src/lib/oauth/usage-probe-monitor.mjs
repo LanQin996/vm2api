@@ -9,6 +9,7 @@
  * wipe would otherwise pin the panel at 0 while usage_logs keep growing.
  * Those slots get one /usage hop, then back off.
  */
+import { createHash } from 'node:crypto'
 import { shouldProbeFable, usageProbeBackoffRemainingMs } from './crs-usage-probe.mjs'
 import { hasRefreshPresence } from './oauth-credentials.mjs'
 import { vmHasProxyPath } from './credential-refresh-monitor.mjs'
@@ -17,6 +18,9 @@ export const DEFAULT_USAGE_PROBE = Object.freeze({
   enabled: false,
   interval_sec: 60,
   stale_sec: 300,
+  // Opt-in: defer the first periodic hop after an Extra 5h reset.
+  reset_delay_sec: 0,
+  reset_jitter_sec: 0,
   run_on_start: true,
   concurrency: 2,
   timeout_ms: 60_000,
@@ -45,6 +49,8 @@ export function normalizeUsageProbeConfig(raw = {}) {
     enabled: asBool(src.enabled, DEFAULT_USAGE_PROBE.enabled),
     interval_sec: clampInt(src.interval_sec, 30, 3600, DEFAULT_USAGE_PROBE.interval_sec),
     stale_sec: clampInt(src.stale_sec, 60, 86_400, DEFAULT_USAGE_PROBE.stale_sec),
+    reset_delay_sec: clampInt(src.reset_delay_sec, 0, 3600, DEFAULT_USAGE_PROBE.reset_delay_sec),
+    reset_jitter_sec: clampInt(src.reset_jitter_sec, 0, 3600, DEFAULT_USAGE_PROBE.reset_jitter_sec),
     run_on_start: asBool(src.run_on_start, DEFAULT_USAGE_PROBE.run_on_start),
     concurrency: clampInt(src.concurrency, 1, 8, DEFAULT_USAGE_PROBE.concurrency),
     timeout_ms: clampInt(src.timeout_ms, 10_000, 180_000, DEFAULT_USAGE_PROBE.timeout_ms),
@@ -146,6 +152,27 @@ export function isUsageProbeDue(account = {}, opts = {}) {
     return { due: false, reason: 'probed_recently' }
   }
   return { due: true, reason: 'extra_window_elapsed' }
+}
+
+/** A stable deadline, not a sleep or a fresh random draw on each timer tick.
+ * Only gates an already-due periodic hop; never creates extra requests or delays
+ * real traffic, manual probeNow, or the separate Messages health monitor.
+ */
+function resetProbeAt(account, vm, config, now) {
+  if (!config.reset_delay_sec && !config.reset_jitter_sec) return null
+  const unified = account?.unified || {}
+  const reset = parseResetMs(unified.headers?.['5h']?.reset)
+  if (!Number.isFinite(reset) || reset > now) return null
+  const probe = account?.last_probe || unified.last_probe
+  const probed = Date.parse(probe?.at || probe?.probed_at || '')
+  if (probe?.ok === true && Number.isFinite(probed) && probed >= reset) return null
+  const id = String(account?.account_id || vm.claude?.account_uuid || vm.account_uuid || vm.id)
+  const hash = createHash('sha256')
+    .update(JSON.stringify([id, reset]))
+    .digest()
+    .readUInt32BE(0)
+  const jitter = hash % (config.reset_jitter_sec + 1)
+  return reset + (config.reset_delay_sec + jitter) * 1000
 }
 
 /** Queued probes beyond the running `concurrency` workers; more are dropped, never blocked on. */
@@ -272,6 +299,17 @@ export function createUsageProbeMonitor(opts = {}) {
             ok: true,
             reason: 'reconcile_extra',
             source: null,
+          })
+          continue
+        }
+        const nextProbeAt = resetProbeAt(account, vm, config, nowFn())
+        if (nextProbeAt != null && nextProbeAt > nowFn()) {
+          items.push({
+            vm_id: vm.id,
+            ok: true,
+            reason: 'reset_probe_delay',
+            source: null,
+            next_probe_at: new Date(nextProbeAt).toISOString(),
           })
           continue
         }

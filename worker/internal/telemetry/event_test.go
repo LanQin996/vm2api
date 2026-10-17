@@ -176,3 +176,72 @@ func TestEventUsesConfiguredEnvAndOmitsBetas(t *testing.T) {
 		t.Fatalf("appVersion=%v", attrs["appVersion"])
 	}
 }
+
+func TestSanitizeEnvKeepsObservedHardwareAndDropsSecrets(t *testing.T) {
+	ev := InitEvent(Identity{
+		Env: map[string]any{
+			"platform":         "linux",
+			"cpu_model":        "Intel(R) Xeon(R) CPU",
+			"cpu_cores":        float64(4),
+			"memory_bytes":     float64(4294967296),
+			"root_disk":        "/dev/vda2",
+			"mac":              "52:54:00:11:22:33",
+			"dmi_manufacturer": "Dell Inc.",
+			"dmi_product":      "OptiPlex 7090",
+			"dmi_version":      "1.0",
+			"dmi_family":       "OptiPlex",
+			"dmi_serial":       "ABC123",
+			"dmi_uuid":         "11111111-2222-3333-4444-555555555555",
+			"node_version":     "v1",
+			"authorization":    "secret",
+			"hostname":         "guest-01",
+			"machine_id":       "should-drop",
+		},
+	}, time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC))
+	env, _ := ev.EventData["env"].(map[string]any)
+	if env["cpu_model"] != "Intel(R) Xeon(R) CPU" {
+		t.Fatalf("cpu_model=%v", env["cpu_model"])
+	}
+	if env["cpu_cores"] != float64(4) || env["memory_bytes"] != float64(4294967296) {
+		t.Fatalf("numeric hardware=%v", env)
+	}
+	if env["dmi_product"] != "OptiPlex 7090" || env["mac"] != "52:54:00:11:22:33" {
+		t.Fatalf("dmi/mac=%v", env)
+	}
+	for _, drop := range []string{"node_version", "authorization", "hostname", "machine_id"} {
+		if _, ok := env[drop]; ok {
+			t.Fatalf("leaked %s in %v", drop, env)
+		}
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ContainsForbidden(raw) {
+		t.Fatalf("forbidden field leaked: %s", raw)
+	}
+}
+
+func TestEnvBlockFallbackUsesIdentityHardware(t *testing.T) {
+	ev := InitEvent(Identity{
+		Platform:        "linux",
+		CPUModel:        "AMD EPYC",
+		CPUCores:        8,
+		MemoryBytes:     8589934592,
+		RootDisk:        "/dev/vda1",
+		MAC:             "52:54:00:aa:bb:cc",
+		DMIManufacturer: "QEMU",
+		DMIProduct:      "Standard PC",
+		DMIUUID:         "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+	}, time.Date(2026, 8, 23, 1, 0, 0, 0, time.UTC))
+	env, _ := ev.EventData["env"].(map[string]any)
+	if env["cpu_model"] != "AMD EPYC" {
+		t.Fatalf("cpu_model=%v", env["cpu_model"])
+	}
+	if env["cpu_cores"] != int64(8) || env["memory_bytes"] != int64(8589934592) {
+		t.Fatalf("numeric=%v", env)
+	}
+	if env["dmi_manufacturer"] != "QEMU" || env["mac"] != "52:54:00:aa:bb:cc" {
+		t.Fatalf("dmi/mac=%v", env)
+	}
+}

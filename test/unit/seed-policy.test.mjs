@@ -9,18 +9,9 @@ import {
   LEGACY_SCRIPT_ENV_KEYS,
 } from '../../src/lib/protocol/seed-policy.mjs'
 
-test('standardSeedPolicy is telemetry on; defaultSeedPolicy stays off for omitted field', () => {
-  assert.equal(defaultSeedPolicy().telemetry_disabled, true)
-  assert.equal(defaultSeedPolicy().disable_nonessential_traffic, false)
-  assert.equal(defaultSeedPolicy().grove_enabled, false)
-  assert.equal(standardSeedPolicy().telemetry_disabled, false)
-  assert.equal(standardSeedPolicy().disable_nonessential_traffic, true)
-  assert.equal(standardSeedPolicy().grove_enabled, false)
-  assert.equal(standardSeedPolicy().do_not_track, false)
-  assert.equal(standardSeedPolicy({ telemetry_disabled: true }).telemetry_disabled, true)
-  assert.equal(standardSeedPolicy({ telemetry_disabled: true }).disable_nonessential_traffic, false)
-  assert.equal(standardSeedPolicy({ telemetry_disabled: true }).do_not_track, true)
-  assert.equal(standardSeedPolicy({ grove_enabled: true }).grove_enabled, false)
+test('explicit opt-in removes telemetry kill switches; omitted policy retains them', () => {
+  assert.equal(buildSlotSettingsEnv(standardSeedPolicy()).DISABLE_TELEMETRY, '1')
+  assert.equal(buildSlotSettingsEnv(standardSeedPolicy({ telemetry_disabled: false })).DISABLE_TELEMETRY, undefined)
   const contradicted = defaultSeedPolicy({
     telemetry_disabled: false,
     disable_nonessential_traffic: false,

@@ -14,7 +14,7 @@ const EP_COLS = [
   'created_at',
   'updated_at',
 ]
-const KEY_COLS = ['id', 'endpoint_id', 'api_key', 'proxy_url', 'disabled', 'cooldown_until', 'created_at']
+const KEY_COLS = ['id', 'endpoint_id', 'api_key', 'proxy_url', 'proxy_id', 'disabled', 'cooldown_until', 'created_at']
 const MODEL_COLS = ['id', 'endpoint_id', 'sort', 'upstream_name', 'alias', 'image', 'thinking_levels_json']
 
 function bool01(v) {
@@ -52,6 +52,7 @@ function rowKey(row) {
     endpoint_id: row.endpoint_id,
     api_key: row.api_key,
     proxy_url: row.proxy_url || '',
+    proxy_id: row.proxy_id || '',
     disabled: !!row.disabled,
     cooldown_until: row.cooldown_until || null,
     created_at: row.created_at,
@@ -100,7 +101,7 @@ export class ApiEndpointsRepo {
     this._delModelsEp = db.prepare('DELETE FROM api_endpoint_models WHERE endpoint_id = ?')
     this._cool = db.prepare('UPDATE api_endpoint_keys SET cooldown_until = ? WHERE id = ?')
     this._updKey = db.prepare(
-      'UPDATE api_endpoint_keys SET api_key = ?, proxy_url = ?, disabled = ?, cooldown_until = ? WHERE id = ?',
+      'UPDATE api_endpoint_keys SET api_key = ?, proxy_url = ?, proxy_id = ?, disabled = ?, cooldown_until = ? WHERE id = ?',
     )
   }
 
@@ -167,6 +168,7 @@ export class ApiEndpointsRepo {
       rec.endpoint_id,
       rec.api_key,
       rec.proxy_url || '',
+      rec.proxy_id || '',
       bool01(rec.disabled),
       rec.cooldown_until || null,
       rec.created_at,
@@ -186,10 +188,17 @@ export class ApiEndpointsRepo {
       if (next.length >= 4) rec.api_key = next
     }
     if (patch.proxy_url != null) rec.proxy_url = String(patch.proxy_url).trim()
+    if (patch.proxy_id != null) rec.proxy_id = String(patch.proxy_id).trim()
     if (patch.disabled != null) rec.disabled = !!patch.disabled
     if (patch.cooldown_until !== undefined) rec.cooldown_until = patch.cooldown_until || null
-    this._updKey.run(rec.api_key, rec.proxy_url || '', bool01(rec.disabled), rec.cooldown_until, rec.id)
-    return rowKey(this._getKey.get(id))
+    this._updKey.run(
+      rec.api_key,
+      rec.proxy_url || '',
+      rec.proxy_id || '',
+      bool01(rec.disabled),
+      rec.cooldown_until,
+      rec.id,
+    )
   }
 
   setKeyCooldown(id, untilIso) {

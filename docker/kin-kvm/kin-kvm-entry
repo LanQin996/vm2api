@@ -323,6 +323,9 @@ log "starting qemu accel=$KIN_KVM_ACCEL cpu=$CPU_MODEL mem=${KIN_KVM_MEMORY_MB}m
 if [ "$UID_NUM" != 0 ]; then
   groups=(--clear-groups)
   if [ "$KIN_KVM_ACCEL" = kvm ]; then
+    # Hosts may ship /dev/kvm as 0600; the dropped uid then has no access via the group.
+    # --device gives the container its own node, so this does not touch the host's.
+    chmod g+rw /dev/kvm || log "chmod g+rw /dev/kvm failed; qemu may get Permission denied"
     groups=("--groups=$(stat -Lc %g /dev/kvm)")
   fi
   setpriv --reuid="$UID_NUM" --regid="$GID_NUM" "${groups[@]}" -- "${QEMU[@]}" &

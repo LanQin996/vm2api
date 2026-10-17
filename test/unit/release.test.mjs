@@ -175,7 +175,7 @@ test('buildUpdateStatus reports an available GitHub release and the one-click co
   }
 })
 
-test('buildUpdateStatus stays on current when GitHub is unreachable', async () => {
+test('buildUpdateStatus reports unknown latest when GitHub is unreachable', async () => {
   clearReleaseCache()
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vm2api-release-'))
   try {
@@ -189,8 +189,10 @@ test('buildUpdateStatus stays on current when GitHub is unreachable', async () =
       },
     })
     assert.equal(status.current, '1.2.6')
-    assert.equal(status.latest, '1.2.6')
-    assert.equal(status.update_available, false)
+    assert.equal(status.latest, null)
+    assert.equal(status.latest_tag, null)
+    assert.equal(status.update_available, null)
+    assert.equal(status.check_status, 'failed')
     assert.equal(status.source_error, 'network down')
     assert.equal(status.changelog[0].version, '1.2.7')
   } finally {

@@ -11,6 +11,7 @@ export type ViewId =
   | 'system'
   | 'keys'
   | 'api'
+  | 'anthropic'
   | 'logs'
   | 'statistics'
   | 'database'
@@ -31,6 +32,7 @@ export const VIEW_TITLES: Record<ViewId, string> = {
   system: 'system提示词',
   keys: '密钥',
   api: 'API',
+  anthropic: 'Anthropic',
   logs: '日志',
   statistics: '统计',
   database: '数据库',

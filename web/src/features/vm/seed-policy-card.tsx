@@ -17,7 +17,7 @@ type SeedPolicy = Record<string, boolean>
 
 export const SEED_PRESETS: Record<string, SeedPolicy> = {
   standard: {
-    ...telemetrySeedFlags(true),
+    ...telemetrySeedFlags(false),
     reject_client_settings: true,
     reject_client_metadata_identity: true,
   },
@@ -34,7 +34,7 @@ export const SEED_PRESETS: Record<string, SeedPolicy> = {
 }
 
 const PRESET_LABELS: [string, string, string][] = [
-  ['standard', '标准', '拒客户端覆写，遥测开，非必要流量=1'],
+  ['standard', '标准', '拒客户端覆写，遥测关；需手动开启'],
   ['open', '开放', '不拒客户端；遥测开，非必要流量=1'],
   ['strict', '关闭遥测', '关遥测 + DNT；非必要流量=0'],
 ]
@@ -72,7 +72,7 @@ export function SeedPolicyCard({
   policy,
   onSave,
   saving,
-  syncTelemetry = true,
+  syncTelemetry = false,
 }: {
   policy: Record<string, unknown>
   onSave: (next: SeedPolicy) => void

@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { READ_IDENTITY, readGuestIdentity } from '../../src/lib/vm/guest-identity-reader.mjs'
+import { READ_IDENTITY, parseGuestHardware, readGuestIdentity } from '../../src/lib/vm/guest-identity-reader.mjs'
 import { collectSlotIdentity } from '../../src/lib/vm/guest-identity.mjs'
 
 const guestOutput = [
@@ -131,4 +131,95 @@ test('reports stopped containers, timeouts and incomplete output as failures', a
   }
   const invalid = await readGuestIdentity({ vmId: 'vm-01' }, '', { run: async () => ({ stdout: 'partial' }) })
   assert.equal(invalid.body.error.code, 'guest_identity_invalid')
+})
+
+const hardwareJson = JSON.stringify({
+  cpu_model: 'Intel(R) Xeon(R) CPU',
+  cpu_cores: 4,
+  memory_bytes: 4294967296,
+  root_disk: '/dev/vda2',
+  mac: '52:54:00:11:22:33',
+  dmi: {
+    manufacturer: 'Dell Inc.',
+    product: 'OptiPlex 7090',
+    version: '1.0',
+    family: 'OptiPlex',
+    serial: 'ABC123',
+    uuid: '11111111-2222-3333-4444-555555555555',
+  },
+  shell: 'bash',
+  package_managers: 'apt',
+  runtimes: 'node,python',
+})
+
+const guestOutputWithHardware = [
+  'guest-01',
+  'ubuntu',
+  'Ubuntu "24.04" LTS',
+  '6.8.0',
+  'aarch64',
+  'guest-machine',
+  'UTC',
+  'en_US.UTF-8',
+  hardwareJson,
+  '',
+].join('\0')
+
+test('parses optional hardware JSON and ignores invalid extra field', () => {
+  const hw = parseGuestHardware(hardwareJson)
+  assert.equal(hw.cpu_model, 'Intel(R) Xeon(R) CPU')
+  assert.equal(hw.cpu_cores, 4)
+  assert.equal(hw.memory_bytes, 4294967296)
+  assert.equal(hw.dmi.product, 'OptiPlex 7090')
+  assert.equal(hw.package_managers, 'apt')
+  assert.equal(parseGuestHardware(''), null)
+  assert.equal(parseGuestHardware('{'), null)
+})
+
+test('collects guest hardware JSON without breaking required identity fields', async () => {
+  const result = await readGuestIdentity({ vmId: 'vm-01', vm: { runtime: { type: 'docker' } } }, '', {
+    run: async () => ({ stdout: guestOutputWithHardware }),
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.body.identity.hostname, 'guest-01')
+  assert.equal(result.body.identity.hardware.cpu_model, 'Intel(R) Xeon(R) CPU')
+  assert.equal(result.body.identity.hardware.cpu_cores, 4)
+  assert.equal(result.body.identity.hardware.mac, '52:54:00:11:22:33')
+  assert.equal(result.body.identity.hardware.dmi.manufacturer, 'Dell Inc.')
+  assert.equal(result.body.identity.hardware.shell, 'bash')
+  assert.ok(result.body.identity.hardware.observed_at)
+})
+
+test('invalid optional hardware JSON does not fail identity collection', async () => {
+  const stdout = [
+    'guest-01',
+    'ubuntu',
+    'Ubuntu 24.04',
+    '6.8.0',
+    'x86_64',
+    'guest-machine',
+    'UTC',
+    'en_US.UTF-8',
+    '{',
+    '',
+  ].join('\0')
+  const result = await readGuestIdentity({ vmId: 'vm-01' }, '', { run: async () => ({ stdout }) })
+  assert.equal(result.ok, true)
+  assert.equal(result.body.identity.hostname, 'guest-01')
+  assert.equal(result.body.identity.hardware, undefined)
+})
+
+test('READ_IDENTITY hardware probes survive missing optional commands', async () => {
+  const script = `hostname() { return 127; }\nnproc() { return 127; }\n${READ_IDENTITY}`
+  const result = await readGuestIdentity({ vmId: 'vm-04', vm: { runtime: { type: 'docker' } } }, '', {
+    run: (_command, args, opts) => {
+      assert.equal(args.at(-1), READ_IDENTITY)
+      return promisify(execFile)('sh', ['-c', script], opts)
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.ok(result.body.identity.hostname)
+  assert.equal(typeof result.body.identity.hardware, 'object')
+  assert.ok(result.body.identity.hardware.memory_bytes > 0)
+  assert.ok(result.body.identity.hardware.cpu_cores > 0)
 })

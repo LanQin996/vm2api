@@ -68,6 +68,7 @@ import {
 import { SeedPolicyCard } from '@/features/vm/seed-policy-card'
 import { usePoolSeatStream } from '@/features/vm/use-pool-seat-stream'
 import { useVmTestChat } from '@/features/vm/use-vm-test-chat'
+import { VmTestSchedule } from '@/features/vm/vm-test-schedule'
 
 function postVm<T = unknown>(id: string, path: string, body?: unknown) {
   return api<T>(`/api/panel/vms/${encodeURIComponent(id)}${path}`, {
@@ -185,7 +186,7 @@ export function VmDetailPage() {
     (seed.data?.seed_policy as Record<string, unknown> | undefined) || {}
   const syncTelemetry =
     (routing.data?.official_cc as { sync_telemetry?: boolean } | undefined)
-      ?.sync_telemetry !== false
+      ?.sync_telemetry === true
   const quotaSrc = {
     utilization_5h: acc.utilization_5h ?? vm.utilization_5h,
     utilization_7d: acc.utilization_7d ?? vm.utilization_7d,
@@ -410,6 +411,7 @@ export function VmDetailPage() {
             credType={credType}
             isCodex={isCodexVm(vm)}
             dataplane={vm.resolved_dataplane}
+            schedule={<VmTestSchedule vm={vm} {...test} />}
           />
           <VmOpsTab
             vm={vm}

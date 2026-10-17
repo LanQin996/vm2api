@@ -16,9 +16,10 @@ export type ChangelogEntry = {
 export type ReleaseStatus = {
   current: string
   current_tag: string
-  latest: string
-  latest_tag: string
-  update_available: boolean
+  latest: string | null
+  latest_tag: string | null
+  update_available: boolean | null
+  check_status: 'ok' | 'failed'
   html_url: string
   published_at: string | null
   name: string | null

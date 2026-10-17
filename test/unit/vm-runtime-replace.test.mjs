@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   shouldReplaceSlotContainer,
+  ensureSlotImage,
   proxyEndpointFromUrl,
   proxyEndpointFromVm,
   readWorkerProxyEndpoint,
@@ -151,6 +152,32 @@ test('kvm runner on the wrong egress network is recreated', (t) => {
   assert.equal(slotWorkerNeedsRecreate(existing, vm, paths), true)
 })
 
+test('crash-looping kvm runner is replaced and recreated on reload even on the right network', (t) => {
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-reload-kvm-loop-'))
+  t.after(() => fs.rmSync(runDir, { recursive: true, force: true }))
+  const vm = { id: 'vm-08', runtime: { type: 'kvm' }, proxy: { id: 'px-a' } }
+  const paths = { kernelSocket: path.join(runDir, 'kernel.sock') }
+  const existing = { running: false, restarting: true, networkMode: 'kin-eg-px-a', runtime: 'kvm', image: 'img' }
+  assert.equal(slotWorkerNeedsRecreate(existing, vm, paths), true)
+  assert.equal(
+    shouldReplaceSlotContainer({ existing, recreate: false, network: 'kin-eg-px-a', image: 'img', runtime: 'kvm' }),
+    true,
+  )
+})
+
+test('ensureSlotImage refreshes a cached tag and falls back to it when the registry is unreachable', () => {
+  const calls = []
+  const registry = (pullOk) => (argv) => {
+    calls.push(argv.slice(0, 3).join(' '))
+    return { ok: argv[1] === 'pull' ? pullOk : true }
+  }
+  assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(true) }).action, 'pulled')
+  assert.deepEqual(calls, ['docker pull ghcr.io/dofastted/kin-kvm-debian:12'])
+  calls.length = 0
+  assert.equal(ensureSlotImage('debian-12', { runtime: 'kvm', run: registry(false) }).action, 'present')
+  assert.deepEqual(calls, ['docker pull ghcr.io/dofastted/kin-kvm-debian:12', 'docker image inspect'])
+})
+
 test('unbound slot does not recreate for a missing desired network', (t) => {
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-reload-nopx-'))
   t.after(() => fs.rmSync(runDir, { recursive: true, force: true }))
@@ -171,7 +198,7 @@ test('reloadSlotWorker recreates on network mismatch before the KVM restart path
   )
   assert.match(reload, /slotWorkerNeedsRecreate\(existing, vm, paths\)/)
   assert.ok(
-    reload.indexOf('slotWorkerNeedsRecreate') < reload.indexOf('isKvmRuntime(vm)'),
+    reload.indexOf('slotWorkerNeedsRecreate') < reload.indexOf('if (isKvmRuntime(vm)) {'),
     'network recreate must run before systemctl restart',
   )
 })

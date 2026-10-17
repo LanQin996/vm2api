@@ -66,7 +66,7 @@ export const DEFAULT_OFFICIAL_CC_CONFIG = Object.freeze({
   wipe: true,
   apply_seed: true,
   reconcile_fingerprint: true,
-  sync_telemetry: true,
+  sync_telemetry: false,
   hello_prompt: DEFAULT_HELLO_PROMPT,
   timeout_ms: 4 * 60 * 1000,
   memory: '500m',
@@ -88,7 +88,7 @@ export function normalizeOfficialCcConfig(raw = {}) {
     wipe: src.wipe !== false,
     apply_seed: src.apply_seed !== false,
     reconcile_fingerprint: src.reconcile_fingerprint !== false,
-    sync_telemetry: src.sync_telemetry !== false,
+    sync_telemetry: src.sync_telemetry === true,
     hello_prompt: hello || DEFAULT_HELLO_PROMPT,
     timeout_ms:
       Number.isFinite(timeout) && timeout >= 30_000 && timeout <= 15 * 60 * 1000

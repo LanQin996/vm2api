@@ -873,7 +873,8 @@ export function createNotifyMonitor(opts = {}) {
     inflight = (async () => {
       const started = nowFn()
       lastRunAt = started
-      lastError = null
+      let deliveryError = null
+      let delivered = false
       const next = typeof opts.snapshot === 'function' ? await opts.snapshot() : null
       const prev = snapshot
       snapshot = next
@@ -892,13 +893,29 @@ export function createNotifyMonitor(opts = {}) {
           try {
             const result = await sendFn(message, event)
             lastSent.set(event.type, started)
+            const failedChannels = Array.isArray(result?.results)
+              ? result.results.filter((row) => row?.ok === false)
+              : []
+            if (result?.ok === false || failedChannels.length) {
+              deliveryError = String(
+                failedChannels.map((row) => row.error || 'notify_delivery_failed').join('; ') ||
+                  result?.error ||
+                  'notify_delivery_failed',
+              ).slice(0, 180)
+            } else {
+              delivered = true
+            }
             dispatched.push({ type: event.type, ok: result?.ok !== false, result })
           } catch (err) {
-            lastError = String(err?.message || err).slice(0, 180)
-            dispatched.push({ type: event.type, ok: false, error: lastError })
+            deliveryError = String(err?.message || err).slice(0, 180)
+            dispatched.push({ type: event.type, ok: false, error: deliveryError })
           }
         }
       }
+      // A quiet/cooldown-suppressed check is not proof of delivery recovery.
+      // Any failure in this batch takes precedence over successful events.
+      if (deliveryError !== null) lastError = deliveryError
+      else if (delivered) lastError = null
       return { snapshot: next, events, dispatched, prev }
     })().finally(() => {
       inflight = null

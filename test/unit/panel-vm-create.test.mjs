@@ -37,6 +37,52 @@ function makeCreateHandler(project, body, proxyPool, accountQuota, extra = {}) {
   return { handlePanel, response }
 }
 
+test('Docker create persists only an explicitly requested CPU quota, never legacy vcpus', async () => {
+  for (const machine of [{ vcpus: 4 }, { docker_cpus: 0 }, { docker_cpus: 0.5 }]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-cpu-'))
+    try {
+      const { handlePanel, response } = makeCreateHandler(root, {
+        runtime_type: 'docker',
+        machine,
+        start: false,
+        auto_allocate_proxy: false,
+      })
+      await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+      assert.equal(response.status, 200, JSON.stringify(response.body))
+      const vm = response.body.data.vm
+      const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${vm.id}.json`), 'utf8'))
+      assert.equal(saved.machine.docker_cpus, machine.docker_cpus)
+      assert.equal(Object.hasOwn(saved.machine, 'docker_cpus'), Object.hasOwn(machine, 'docker_cpus'))
+      assert.equal(saved.status, 'stopped')
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test('Docker create rejects invalid CPU quotas before persisting a slot', async () => {
+  for (const docker_cpus of [-1, 0.001, 17, '0.5', null]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-cpu-invalid-'))
+    try {
+      const { handlePanel, response } = makeCreateHandler(root, {
+        runtime_type: 'docker',
+        machine: { docker_cpus },
+        start: false,
+        auto_allocate_proxy: false,
+      })
+      await handlePanel({ method: 'POST' }, {}, new URL('http://localhost/api/panel/vms/create'))
+      assert.equal(response.status, 400)
+      assert.equal(response.body.error.code, 'invalid_machine')
+      assert.deepEqual(
+        fs.readdirSync(path.join(root, 'vms')).filter((name) => name.endsWith('.json')),
+        [],
+      )
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
 test('import-style create succeeds without seed_policy or SOCKS5', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-create-'))
   try {
@@ -53,7 +99,6 @@ test('import-style create succeeds without seed_policy or SOCKS5', async () => {
     assert.ok(vm?.id, 'created vm id')
     assert.equal(vm.status, 'stopped')
     const saved = JSON.parse(fs.readFileSync(path.join(root, 'vms', `${vm.id}.json`), 'utf8'))
-    assert.equal(saved.seed_policy.telemetry_disabled, false)
     assert.equal(saved.proxy_required, false)
     assert.equal(saved.proxy, null)
     assert.equal(saved.timezone, null)

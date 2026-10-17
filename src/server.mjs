@@ -41,6 +41,7 @@ import { normalizeHealthProbeConfig, createHealthProbeMonitor, HEALTH_REAL_HEADE
 import { createModelTraceMonitor } from './lib/admin/modeltrace/monitor.mjs'
 import { normalizeNotifyConfig, createNotifyMonitor, dispatchNotify } from './lib/admin/notify.mjs'
 import { runVmTestChat } from './lib/admin/vm-test-chat.mjs'
+import { VmTestScheduleRunner } from './lib/admin/vm-test-schedule.mjs'
 import { StickyRouter } from './lib/pool/sticky-router.mjs'
 import { setManualScheduleWins } from './lib/pool/schedule-policy.mjs'
 import { AccountQuota } from './lib/pool/account-quota.mjs'
@@ -48,6 +49,7 @@ import { normalizeTiers } from './lib/pool/quota-tiers.mjs'
 import { ApiKeyStore } from './lib/admin/api-keys.mjs'
 import { keyScopeFromRequest } from './lib/admin/key-scope.mjs'
 import { GroupsRepo } from './lib/db/repos/groups-repo.mjs'
+import { SettingsRepo } from './lib/db/repos/settings-repo.mjs'
 import { ApiEndpointStore } from './lib/admin/api-endpoints.mjs'
 import { ApiScheduler } from './lib/pool/api-scheduler.mjs'
 import { resolveInferenceBackend } from './lib/pool/api-protocol.mjs'
@@ -475,6 +477,20 @@ modelTraceMonitor = createModelTraceMonitor({
       apiKey: cfg.api_key,
     }),
 })
+const vmTestSchedule = new VmTestScheduleRunner({
+  projectRoot: cfg.paths.project,
+  settings: () => new SettingsRepo(),
+  list: () => listVms(cfg.paths.project),
+  runTest: (vmId, params) =>
+    runVmTestChat({
+      projectRoot: cfg.paths.project,
+      vmId,
+      ...params,
+      baseUrl: `http://127.0.0.1:${cfg.port}`,
+      apiKey: cfg.api_key,
+      accountQuota,
+    }),
+})
 credentialRefreshMonitor = createCredentialRefreshMonitor({
   config: normalizeCredentialRefreshConfig(routingConfig.credential_refresh),
   listTargets: () =>
@@ -606,6 +622,7 @@ backupService.onRestored((db) => {
 
   initPoolRuntime()
   reloadActiveVm(cfg)
+  vmTestSchedule.reload()
 })
 backupService.startScheduler()
 
@@ -994,6 +1011,7 @@ const handlePanel = createPanelHandler({
   apiScheduler,
   panelUsers,
   requestLog,
+  vmTestSchedule,
   backupService,
   stats,
   persistRoutingPatch,
@@ -1235,6 +1253,9 @@ function shutdown(signal) {
   _shuttingDown = true
   console.log(`[shutdown] ${signal} — closing`)
   try {
+    vmTestSchedule.stop()
+  } catch {}
+  try {
     backupService.stopScheduler()
   } catch {}
   try {
@@ -1286,6 +1307,11 @@ process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))
 
 server.listen(cfg.port, cfg.host, () => {
+  try {
+    vmTestSchedule.start()
+  } catch (e) {
+    console.warn('[vm-test-schedule] start failed', e?.message || e)
+  }
   try {
     healthMonitor?.start?.({ immediate: true })
   } catch (e) {

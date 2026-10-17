@@ -10,6 +10,7 @@ export type ApiKeyEntry = {
   api_key: string
   key_suffix?: string
   proxy_url?: string
+  proxy_id?: string
   disabled?: boolean
   cooldown_until?: number
 }

@@ -23,6 +23,7 @@ test('writeSlotSeedFiles writes latest settings and workstation kin-seed', () =>
     timezone: 'America/Los_Angeles',
     locale: 'en_US.UTF-8',
     seed_policy: standardSeedPolicy({
+      telemetry_disabled: false,
       extra_env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:1', KEEP: '1' },
     }),
   }

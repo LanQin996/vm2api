@@ -13,6 +13,9 @@
  * IPv6 egress uses a separate AAAA-only IP probe (`KIN_PROXY_GEO_V6_IP_URL`)
  * plus a geo query for that address. An IPv4 answer from the probe is rejected
  * instead of being stored as IPv6.
+ * `KIN_PROXY_GEO_V6_LOOKUP_MODE=control-plane` explicitly permits metadata
+ * lookup outside the proxy, but only after its real IPv6 exit was verified.
+ * The provider's response must identify that same IPv6 address.
  */
 import net from 'node:net'
 import { validTimezone } from '../core/timezone.mjs'
@@ -23,7 +26,7 @@ export const DEFAULT_GEO_TIMEOUT_MS = 8000
 /** Hostname resolves to AAAA only; unreachable over an IPv4-only exit. */
 export const DEFAULT_GEO_V6_IP_ENDPOINT = 'https://ipv6.icanhazip.com'
 export const DEFAULT_GEO_V6_LOOKUP_ENDPOINT =
-  'http://ip-api.com/json/?fields=status,message,query,country,countryCode,regionName,city,timezone,isp'
+  'http://ip-api.com/json/{ip}?fields=status,message,query,country,countryCode,regionName,city,timezone,isp'
 
 function text(value) {
   const s = String(value ?? '').trim()
@@ -58,6 +61,19 @@ export function parsePlaintextIp(body) {
   return ip.split(/\s+/)[0] || null
 }
 
+function ipv6LookupMode(value) {
+  return value || process.env.KIN_PROXY_GEO_V6_LOOKUP_MODE || 'proxy'
+}
+
+function sameIpv6Address(left, right) {
+  if (!net.isIPv6(left) || !net.isIPv6(right)) return false
+  try {
+    return new URL(`http://[${left}]/`).hostname === new URL(`http://[${right}]/`).hostname
+  } catch {
+    return false
+  }
+}
+
 function geoLookupEndpointForIp(ip, template) {
   const base = String(template || DEFAULT_GEO_V6_LOOKUP_ENDPOINT).trim()
   if (!base) return null
@@ -75,7 +91,10 @@ async function fetchThroughProxy(url, proxyUrl, { timeoutMs, fetchImpl, accept }
   const opts = { method: 'GET', headers: { accept: accept || 'application/json' } }
   if (proxyUrl) {
     const { createProxyAgent } = await import('./proxy-agent.mjs')
-    opts.agent = createProxyAgent(proxyUrl)
+    // Geo describes the proxy exit, so resolve its destination there too.
+    // Keep the shared agent factory's explicit SOCKS5 semantics unchanged.
+    const geoProxyUrl = String(proxyUrl).replace(/^socks5:/i, 'socks5h:')
+    opts.agent = createProxyAgent(geoProxyUrl)
   }
   if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(timeout)
   try {
@@ -89,14 +108,22 @@ async function fetchThroughProxy(url, proxyUrl, { timeoutMs, fetchImpl, accept }
  * Resolve the exit node's geolocation.
  * @returns {Promise<{ok: true, geo: object} | {ok: false, error: string}>}
  */
-export async function lookupProxyGeo(proxyUrl, { endpoint, timeoutMs, fetchImpl } = {}) {
+export async function lookupProxyGeo(proxyUrl, { endpoint, timeoutMs, fetchImpl, ipv6Mode } = {}) {
   const url = endpoint || process.env.KIN_PROXY_GEO_URL || DEFAULT_GEO_ENDPOINT
   const res = await fetchThroughProxy(url, proxyUrl, {
     timeoutMs,
     fetchImpl,
     accept: 'application/json',
   })
-  if (res?.error) return { ok: false, error: res.error }
+  if (res?.error) {
+    // The default service has no IPv6 transport. In the explicitly enabled
+    // mode, verify an IPv6 exit before querying metadata over the host route.
+    // A bad SOCKS password therefore cannot turn into a successful direct lookup.
+    if (proxyUrl && url === DEFAULT_GEO_ENDPOINT && ipv6LookupMode(ipv6Mode) === 'control-plane') {
+      return lookupProxyGeoV6(proxyUrl, { timeoutMs, fetchImpl, lookupMode: 'control-plane' })
+    }
+    return { ok: false, error: res.error }
+  }
   if (!res?.ok) return { ok: false, error: `geo_http_${res?.status || 0}` }
   let payload
   try {
@@ -111,10 +138,12 @@ export async function lookupProxyGeo(proxyUrl, { endpoint, timeoutMs, fetchImpl 
 }
 
 /**
- * Resolve the exit node's public IPv6 address and geolocation through the proxy.
+ * Verify the public IPv6 address through the proxy, then look up its geolocation.
  * @returns {Promise<{ok: true, geo: object} | {ok: false, error: string}>}
  */
-export async function lookupProxyGeoV6(proxyUrl, { ipEndpoint, geoEndpoint, timeoutMs, fetchImpl } = {}) {
+export async function lookupProxyGeoV6(proxyUrl, { ipEndpoint, geoEndpoint, timeoutMs, fetchImpl, lookupMode } = {}) {
+  const mode = ipv6LookupMode(lookupMode)
+  if (mode !== 'proxy' && mode !== 'control-plane') return { ok: false, error: 'geo_ipv6_invalid_lookup_mode' }
   const ipUrl = ipEndpoint || process.env.KIN_PROXY_GEO_V6_IP_URL || DEFAULT_GEO_V6_IP_ENDPOINT
   const ipRes = await fetchThroughProxy(ipUrl, proxyUrl, {
     timeoutMs,
@@ -134,12 +163,19 @@ export async function lookupProxyGeoV6(proxyUrl, { ipEndpoint, geoEndpoint, time
   if (net.isIPv4(ip)) return { ok: false, error: 'geo_ipv6_got_ipv4' }
   if (!net.isIPv6(ip)) return { ok: false, error: 'geo_ipv6_invalid_ip' }
 
-  const geoUrl =
-    geoEndpoint || process.env.KIN_PROXY_GEO_V6_URL || geoLookupEndpointForIp(ip, DEFAULT_GEO_V6_LOOKUP_ENDPOINT)
-  const geoResult = await lookupProxyGeo(proxyUrl, { endpoint: geoUrl, timeoutMs, fetchImpl })
+  const customGeoUrl = geoEndpoint || process.env.KIN_PROXY_GEO_V6_URL
+  const geoUrl = customGeoUrl
+    ? String(customGeoUrl).replaceAll('{ip}', encodeURIComponent(ip))
+    : geoLookupEndpointForIp(ip, DEFAULT_GEO_V6_LOOKUP_ENDPOINT)
+  const geoResult = await lookupProxyGeo(mode === 'control-plane' ? '' : proxyUrl, {
+    endpoint: geoUrl,
+    timeoutMs,
+    fetchImpl,
+    ipv6Mode: 'proxy',
+  })
   if (!geoResult.ok) return geoResult
-  const geo = { ...geoResult.geo, ip }
-  if (geo.ip && net.isIPv4(geo.ip)) return { ok: false, error: 'geo_ipv6_got_ipv4' }
-  if (geo.ip && !net.isIPv6(geo.ip)) return { ok: false, error: 'geo_ipv6_invalid_ip' }
-  return { ok: true, geo }
+  const returnedIp = geoResult.geo?.ip
+  if (net.isIPv4(returnedIp || '')) return { ok: false, error: 'geo_ipv6_got_ipv4' }
+  if (!sameIpv6Address(returnedIp || '', ip)) return { ok: false, error: 'geo_ipv6_ip_mismatch' }
+  return { ok: true, geo: { ...geoResult.geo, ip } }
 }

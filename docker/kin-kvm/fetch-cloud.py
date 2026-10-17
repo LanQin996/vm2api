@@ -11,6 +11,8 @@ def main():
     if not url:
         raise SystemExit('CLOUD_IMAGE_URL is required')
     src = '/tmp/cloud.img'
+    if os.path.islink(src):
+        raise SystemExit(f'refusing to process symlink: {src}')
     if not os.path.isfile(src) or os.path.getsize(src) < 10_000_000:
         raise SystemExit(f'cloud image too small or missing: {src}')
     info = json.loads(subprocess.check_output(['qemu-img', 'info', '--output=json', src]))

@@ -22,11 +22,12 @@ function imageExists(tag) {
 
 for (const [kernel, meta] of Object.entries(OS_CATALOG)) {
   if (only.length && !only.some((arg) => kernel.includes(arg) || meta.dir.includes(arg) || meta.family === arg)) continue
+  // Tags are mutable: --pull refreshes an existing image so guest fixes reach cached hosts.
+  if (pull && spawnSync('docker', ['pull', meta.image], { stdio: 'inherit' }).status === 0) continue
   if (!force && imageExists(meta.image)) {
-    console.log(`vm2api: skip existing ${meta.image}`)
+    console.log(`vm2api: keep existing ${meta.image}`)
     continue
   }
-  if (pull && spawnSync('docker', ['pull', meta.image], { stdio: 'inherit' }).status === 0) continue
   if (pullOnly) {
     console.warn(`vm2api: ${meta.image} not pulled; will build on first slot start`)
     continue

@@ -68,6 +68,9 @@
 | POST | `/vms/:id/schedulable` | `{ schedulable }` 是否入池；不改容器 |
 | POST | `/vms/:id/cooldown/clear` | 清账号/模型冷却、粘性钉和 `/usage` 429 旗标，重新入池 |
 | POST | `/vms/:id/test-chat` | loopback `POST /v1/messages`，master 可钉槽；官方 CC 入站 + 4 块 system。默认 prompt `hello` |
+| GET/PUT/DELETE | `/vms/:id/test-schedule` | 每 VM 一条真实对话定时计划，回 `{ schedule }`。PUT 保存结构化调度 `{ enabled?, frequency, minute?, time?, weekdays?, timezone, model, prompt, max_tokens?, reasoning_effort? }`（`frequency`=`hourly`/`daily`/`weekly`；服务端内部编译五字段 cron，响应不回 `cron` 字符串）。`enabled` 缺省 `false`；Claude 用 `max_tokens`，Codex 用 `reasoning_effort`。GET/PUT 含最近结果、下次运行时间与运行状态；到点 `runVmTestChat` 并计用量；重启恢复计划但不补跑停机错过；删 VM 时清计划。租户可读写自己槽的计划 |
+| GET/PUT | `/test-schedule/default` | 全局默认调度模板（仅调度时间结构）。GET 所有已登录角色可读；**PUT 仅 admin/master**（body `{ schedule: { frequency, … } }`，`schedule: null` 清除） |
+| POST | `/test-schedule/sync` | 覆盖写调度时间：`{ scope: "all" \| "ids", vm_ids?, schedule }`。MVP **只**同步 `frequency`/时刻/星期/分钟/`timezone`，**不同步** prompt、模型、token·effort、`enabled`。无计划槽创建且 `enabled=false`（模型/Prompt 取该槽已有计划或 test-chat 默认 `hello` + 首个可测模型）。租户 `scope=all` 仅自己的槽；逐槽权限同 test-schedule |
 | POST | `/vms/:id/count-tokens` | Setup Token / Console API Key 经槽 Go worker SOCKS 打官方 `POST /v1/messages/count_tokens`。body `{ model, messages, system?, tools? }`。完整 OAuth 400 `count_tokens_unsupported`。成功 `{ input_tokens, model, credential_mode, vm_id }` |
 | POST | `/vms/:id/oauth/refresh` | 只转发 worker `Ensure`，不回 token |
 | POST | `/vms/:id/oauth/to-setup-token` | 把当前完整 OAuth 活票改成 Setup Token（保留 refresh/过期）。已是 setup-token 则幂等 |
@@ -91,7 +94,7 @@
 | POST | `/vms/:id/allocate-proxy` | 从池分配 SOCKS5 |
 | POST | `/vms/:id/update-claude-code` | 410，`claude_cli_removed` |
 | DELETE | `/vms/:id` | 不能删 active；只解绑本槽代理 |
-| POST | `/vms/create` | 种子 VM + Claude Code home；依赖私有 `kin-computer`。未安装返回 400 `computer_service_missing`，身份生成失败返回 400 `computer_create_failed` |
+| POST | `/vms/create` | 种子 VM + Claude Code home；依赖私有 `kin-computer`。未安装返回 400 `computer_service_missing`，身份生成失败返回 400 `computer_create_failed`。Docker 槽可在 `machine` 里可选传 `docker_cpus`（见下） |
 | POST | `/vms/import` | sessionKey 导入（必须已有 VM+代理） |
 | GET | `/vms/fleet-status` | 全槽更新状态 |
 | POST | `/vms/fleet-update` | 全槽 roll / 采集 |
@@ -126,6 +129,9 @@ Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI 
 
 `POST /vms/create` 指定 `platform: "openai"`，省略并发/RPM/会话上限即跟随已保存的 OpenAI 全局值；显式值钉住本槽。OpenAI 凭证导入/重导入保留既有覆盖和权重，未覆盖字段采用当前 OpenAI 全局值；不新增跨平台切换入口。
 
+### Docker 槽可选 CPU 上限
+
+`POST /vms/create`（`runtime_type: "docker"`）可在 `machine` 与 `memory` 同级显式传 `docker_cpus`：`0` 或省略表示不限 CPU（与升级前一致）；`0.01`–`16` 为 CPU 时间硬上限（如 `0.5` 表示最多占用半颗宿主机 CPU 的时间，非独占核）。字符串、非有限数、越界或 KVM 创建携带该字段返回 400 `invalid_machine`。仅当请求体显式带上时才写入 `machine.docker_cpus`；不会把 KVM 的 `machine.vcpus` 隐式转成 Docker 上限。配额在**容器创建或 recreate**（含 `POST /vms/:id/reset`、带 recreate 的 start/reload、看门狗/恢复路径上的重建）时落到本地 `--cpus` 或集群 Engine `HostConfig.NanoCpus`；对已存在容器的普通 start、kernel 重启或控制面重启**不会**在线改限额，且无 `PATCH` 改配额入口。列表/详情回显已保存的 `machine.docker_cpus`。若落盘值损坏或越界，`POST /vms/:id/reload`、恢复/重建相关路径会在触达容器前先拒绝并返回 `invalid_machine`。
 
 `GET /vms/:id` 的 `kernel.rust_health` 来自 wrap `/internal/health`：`reachable`（进程在且 `ready_slots>=1`）、`process_up`、`provider`（cli-hop 为 `local_cli`）、`ready_slots`、`cli_pid`、`worker_version`。Go hop 没有 slot 字段。`reachable=false` 且 `process_up=true` 表示 kernel 在、CLI 槽未就绪。
 
@@ -311,6 +317,51 @@ attempts：每次选中的 VM/账号、错误域、cooldown、提交边界、终
 
 流式 usage 由 worker SSE 校验器合并后经 trailer 回传，终态 attempt 只记一次。
 
+## API 上游 / Anthropic 控制台（仅 admin）
+
+管理第三方 Anthropic/OpenAI 兼容 API 地址与密钥（供 `/v1/messages` 等推理在 category=`api` 的 managed 密钥上调度），以及 admin 专用 Anthropic 联调页。浏览器不直连上游；出站经控制面 `forwardApi`（可挂池内 SOCKS5）。
+
+### API 上游 CRUD
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api-endpoints` | `{ items[], presets[] }`。`items` 为脱敏视图（key 掩码）；`presets` 为内置 kind 模板 |
+| POST | `/api-endpoints` | 创建 endpoint。body 可带 `proxy_id`（池内代理 id）：写入每条 `api_key_entries[].proxy_id` 并解析为 `proxy_url`；忽略客户端自填的裸 `proxy_url` 时仍可通过 `proxy_id` 绑定 |
+| PATCH | `/api-endpoints/:id` | 更新 endpoint 字段。可选 `key_id` + `api_key` 更新已有 key；可选 `proxy_id` 同时写该 key 的 `proxy_id`/`proxy_url`；无 `key_id` 时 `api_key` 会新增一条 key |
+| DELETE | `/api-endpoints/:id` | 删除 endpoint |
+| POST | `/api-endpoints/:id/keys` | `{ api_key, proxy_id?, … }` 增 key |
+| PATCH | `/api-endpoints/:id/keys/:keyId` | 改单 key（含 `proxy_id`） |
+| DELETE | `/api-endpoints/:id/keys/:keyId` | 删 key |
+| POST | `/api-endpoints/fetch-models` | 未保存草稿拉模型：`kind` / `protocol` / `base_url` / `api_key` 等；`key_id` 从库加载已存 key（可不再输入明文）。`proxy_id` 优先于行内 `proxy_url`；body 显式带 `proxy_id`（含空串）时按 id 解析，否则用已存 key 的 `proxy_url` |
+| POST | `/api-endpoints/:id/fetch-models` | 对已保存 endpoint 拉上游 `/v1/models`（可选 `key_id` 指定条目，`apply: false` 只返回不合并） |
+
+列表/详情里每条 key 含 `proxy_id`（池 id，持久化）与 `proxy_url`（解析后的转发地址，不回显账密）。
+
+### Anthropic 控制台
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/anthropic/messages` | admin 联调 `POST …/v1/messages`。成功 `{ ok: true, data }`；失败 `{ ok: false, error: { code, message } }` |
+
+**鉴权**：仅 `admin` 角色（含 master API key）；`user` / `super` 403。
+
+**请求**（JSON，≤64 KiB）：
+
+| 字段 | 说明 |
+|------|------|
+| `mode` | 省略或 `direct`：直连指定 key；`scheduled`：走 API 调度器（prefix/alias/优先级/轮询，同推理路径） |
+| `model` | 模型 id 或 alias（scheduled 必填） |
+| `message` / `prompt` | 用户正文（必填，≤16000 字符） |
+| `max_tokens` | 1–8192，默认 256 |
+| `api_key` / `base_url` / `auth_scheme` / `proxy_id` | direct 单 key；`proxy_id` 只认池内 id，忽略自填 `proxy_url` |
+| `keys` | direct 多 key：`[{ label?, api_key?, key_id?, base_url?, auth_scheme?, proxy_id? }]`；`key_id` 加载已存上游 key（无需重打明文） |
+| `key_index` | 只测 `keys` 中某一行的下标 |
+| `headers` | 额外上游头（≤24 对；禁止 `\r\n` 注入） |
+
+**响应 `data`**（单 key 或 scheduled）：`ok`、`status`、`text`（助手正文摘要）、`error`（上游失败文案）、`body`（上游 JSON）、`mode`、`auth_scheme`、`endpoint_id` / `endpoint_name`（scheduled）、`requested_model` / `upstream_model`、`proxy`（是否走代理）。**不回显**明文 API key。多 key 批量时另含 `items[]`（每行 `label` / `row` / 同上字段）及汇总 `text` / `error`。
+
+**注意**：与 `POST /vms/:id/test-chat` 独立；不走 VM OAuth 入站。scheduled 无可用上游时 503/404（`api_pool_exhausted` / `model_not_found` 等）。
+
 ## 虚拟机测试
 
 | 方法 | 路径 | 说明 |
@@ -356,9 +407,15 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 ### `POST /proxies/geo` · `POST /proxies/:id/geo`
 
-经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。IPv4 结果落在 `proxies.geo_*` 列，IPv6 公网出口落在 `proxies.geo_v6_*` 列；列表响应分别回显 `geo` 与 `geo_v6`。IPv6 探测先经仅 AAAA 的 IP 探针（默认 `https://ipv6.icanhazip.com`，可用 `KIN_PROXY_GEO_V6_IP_URL` 覆盖）确认出口为 IPv6，再查该地址的地理信息；探针若返回 IPv4 记 `geo_v6.error=geo_ipv6_got_ipv4`，无 IPv6 出口时记传输 / HTTP 错误，不会把 IPv4 结果写入 `geo_v6`。单条 IPv4 成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区（仍跟随 IPv4 出口时区，不用 IPv6 覆盖）。
+地理查询的 SOCKS5 目标域名统一由代理端解析（包括 `socks5://` 输入），避免依赖控制面的本地 DNS；IPv4 查询和 IPv6 两阶段探测使用相同策略。此规则仅作用于地理查询，不修改保存的代理 URI 或其它请求的 DNS 策略。HTTP(S) 代理和本地直连行为不变。
 
-响应 `{ proxy, geo, geo_v6, cached, timezones }`（单条）或 `{ total, results }`（批量，每项含 `geo_v6`）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`（IPv4 查询失败时 HTTP 502；IPv6 不可用时在 `geo_v6.error` 中体现，单条请求仍可能 HTTP 200）。`force: true` 忽略缓存重查。
+经该代理本身去查出口 IP 的国家 / 城市 / 时区（本地出口走宿主机默认路由）。主查询结果落在 `proxies.geo_*` 列，独立的 IPv6 公网出口探测落在 `proxies.geo_v6_*` 列；列表响应分别回显 `geo` 与 `geo_v6`。IPv6 探测先经仅 AAAA 的 IP 探针（默认 `https://ipv6.icanhazip.com`，可用 `KIN_PROXY_GEO_V6_IP_URL` 覆盖）确认出口为 IPv6，再查该地址的地理信息；探针若返回 IPv4 记 `geo_v6.error=geo_ipv6_got_ipv4`，无 IPv6 出口时记传输 / HTTP 错误，不会把 IPv4 结果写入 `geo_v6`。主查询成功后，已绑槽位在 `follow_proxy_timezone` 开启且未被手动钉住时会改用该时区；独立的 `geo_v6` 结果不覆盖它。
+
+仅 IPv6 出口可能无法访问默认地理服务 `ip-api.com` 的 IPv4 接口。可在控制面 `.env` 设置 `KIN_PROXY_GEO_V6_LOOKUP_MODE=control-plane` 并重新创建控制面容器（直接运行时重启对应进程）：IPv6 IP 探针仍经所选代理访问（包括代理认证），只有确认 IPv6 后的地理元数据查询走控制面默认路由。此模式会向地理服务提交已确认的出口 IPv6；槽位业务流量的出口不受影响。默认值 `proxy` 保持两个阶段都经代理，IPv6 查询收到其它模式值时返回 `geo_ipv6_invalid_lookup_mode`。
+
+启用 `control-plane` 后，主查询访问默认 `KIN_PROXY_GEO_URL` 发生传输错误时，也会尝试上述 IPv6 探测与元数据查询，成功结果写入 `geo`，因此主结果可能是 IPv6。HTTP / 服务商错误及自定义主查询 URL 不触发该回退。IPv6 元数据默认查询 `http://ip-api.com/json/{ip}?fields=...`；可用 `KIN_PROXY_GEO_V6_URL` 指定 URL，其中 `{ip}` 会替换为探针确认的地址（URL 编码）。响应必须包含相同的 IPv6（允许等价的缩写 / 展开形式）；返回 IPv4 记 `geo_ipv6_got_ipv4`，缺失或不匹配记 `geo_ipv6_ip_mismatch`，不会把控制面自身的 IP 当成代理出口。
+
+响应 `{ proxy, geo, geo_v6, cached, timezones }`（单条）或 `{ total, results }`（批量，每项含 `geo_v6`）。错误：`404 proxy_not_found`、`502 geo_lookup_failed`（主查询失败时 HTTP 502；独立 IPv6 探测不可用时在 `geo_v6.error` 中体现，单条请求仍可能 HTTP 200）。`force: true` 忽略缓存重查。
 
 ### `PUT /proxies/:id`
 

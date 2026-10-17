@@ -149,13 +149,11 @@ export function defaultSeedPolicy(partial = {}) {
 }
 
 /**
- * Latest create / official-init default. Telemetry is ON (console「标准」).
- * Do not use this to normalize existing slots that omit the field —
- * those still mean telemetry off via defaultSeedPolicy().
+ * New slots default to telemetry off. Only an explicit override enables uploads.
  */
 export function standardSeedPolicy(partial = {}) {
   return defaultSeedPolicy({
-    telemetry_disabled: false,
+    telemetry_disabled: true,
     ...partial,
   })
 }

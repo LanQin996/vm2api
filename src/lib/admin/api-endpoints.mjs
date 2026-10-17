@@ -74,6 +74,7 @@ export function publicEndpointView(ep, { reveal = false } = {}) {
     api_key_entries: (ep.api_key_entries || []).map((k) => ({
       id: k.id,
       proxy_url: k.proxy_url || '',
+      proxy_id: k.proxy_id || '',
       disabled: !!k.disabled,
       cooldown_until: k.cooldown_until || null,
       api_key: reveal ? k.api_key : maskUpstreamKey(k.api_key),
@@ -191,6 +192,7 @@ export class ApiEndpointStore {
       endpoint_id: endpointId,
       api_key,
       proxy_url: String(input.proxy_url || '').trim(),
+      proxy_id: String(input.proxy_id || '').trim(),
       disabled: !!input.disabled,
       cooldown_until: null,
       created_at: nowIso(),
@@ -241,6 +243,7 @@ export async function fetchUpstreamModels({
   proxy_url = '',
   headers = {},
   auth_scheme,
+  forward = forwardApi,
 } = {}) {
   const preset = resolvePreset(kind, { protocol, base_url })
   const key = String(api_key || '').trim()
@@ -254,7 +257,7 @@ export async function fetchUpstreamModels({
   const models = []
   let afterId = ''
   for (let page = 0; page < 8; page++) {
-    const upstream = await forwardApi({
+    const upstream = await forward({
       cfg,
       method: 'GET',
       url: modelsUrl(preset.base_url, { afterId }),

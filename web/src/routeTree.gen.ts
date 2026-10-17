@@ -13,6 +13,7 @@ import { Route as AuthenticatedRouteRouteImport } from './routes/_authenticated/
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as AuthenticatedIndexRouteImport } from './routes/_authenticated/index'
+import { Route as AuthenticatedAnthropicRouteImport } from './routes/_authenticated/anthropic'
 import { Route as AuthenticatedApiRouteImport } from './routes/_authenticated/api'
 import { Route as AuthenticatedBillingRouteImport } from './routes/_authenticated/billing'
 import { Route as AuthenticatedClusterRouteImport } from './routes/_authenticated/cluster'
@@ -51,6 +52,11 @@ const WelcomeRoute = WelcomeRouteImport.update({
 const AuthenticatedIndexRoute = AuthenticatedIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AuthenticatedRouteRoute,
+} as any)
+const AuthenticatedAnthropicRoute = AuthenticatedAnthropicRouteImport.update({
+  id: '/anthropic',
+  path: '/anthropic',
   getParentRoute: () => AuthenticatedRouteRoute,
 } as any)
 const AuthenticatedApiRoute = AuthenticatedApiRouteImport.update({
@@ -160,6 +166,7 @@ export interface FileRoutesByFullPath {
   '/': typeof AuthenticatedIndexRoute
   '/login': typeof LoginRoute
   '/welcome': typeof WelcomeRoute
+  '/anthropic': typeof AuthenticatedAnthropicRoute
   '/api': typeof AuthenticatedApiRoute
   '/billing': typeof AuthenticatedBillingRoute
   '/cluster': typeof AuthenticatedClusterRoute
@@ -184,6 +191,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/welcome': typeof WelcomeRoute
+  '/anthropic': typeof AuthenticatedAnthropicRoute
   '/api': typeof AuthenticatedApiRoute
   '/billing': typeof AuthenticatedBillingRoute
   '/cluster': typeof AuthenticatedClusterRoute
@@ -211,6 +219,7 @@ export interface FileRoutesById {
   '/_authenticated': typeof AuthenticatedRouteRouteWithChildren
   '/login': typeof LoginRoute
   '/welcome': typeof WelcomeRoute
+  '/_authenticated/anthropic': typeof AuthenticatedAnthropicRoute
   '/_authenticated/api': typeof AuthenticatedApiRoute
   '/_authenticated/billing': typeof AuthenticatedBillingRoute
   '/_authenticated/cluster': typeof AuthenticatedClusterRoute
@@ -239,6 +248,7 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/welcome'
+    | '/anthropic'
     | '/api'
     | '/billing'
     | '/cluster'
@@ -263,6 +273,7 @@ export interface FileRouteTypes {
   to:
     | '/login'
     | '/welcome'
+    | '/anthropic'
     | '/api'
     | '/billing'
     | '/cluster'
@@ -289,6 +300,7 @@ export interface FileRouteTypes {
     | '/_authenticated'
     | '/login'
     | '/welcome'
+    | '/_authenticated/anthropic'
     | '/_authenticated/api'
     | '/_authenticated/billing'
     | '/_authenticated/cluster'
@@ -346,6 +358,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AuthenticatedIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/anthropic': {
+      id: '/_authenticated/anthropic'
+      path: '/anthropic'
+      fullPath: '/anthropic'
+      preLoaderRoute: typeof AuthenticatedAnthropicRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/api': {
@@ -492,6 +511,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AuthenticatedRouteRouteChildren {
+  AuthenticatedAnthropicRoute: typeof AuthenticatedAnthropicRoute
   AuthenticatedApiRoute: typeof AuthenticatedApiRoute
   AuthenticatedBillingRoute: typeof AuthenticatedBillingRoute
   AuthenticatedClusterRoute: typeof AuthenticatedClusterRoute
@@ -516,6 +536,7 @@ interface AuthenticatedRouteRouteChildren {
 }
 
 const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
+  AuthenticatedAnthropicRoute: AuthenticatedAnthropicRoute,
   AuthenticatedApiRoute: AuthenticatedApiRoute,
   AuthenticatedBillingRoute: AuthenticatedBillingRoute,
   AuthenticatedClusterRoute: AuthenticatedClusterRoute,

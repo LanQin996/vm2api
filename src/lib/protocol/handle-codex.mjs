@@ -226,15 +226,17 @@ function ingestCodexHop(projectRoot, vmId, result, now = Date.now(), policy = nu
   const headers = result?.headers || {}
   const extra = extraFromCodexHeaders(headers, now)
   let limitedUntil = null
+  let quotaExceeded = false
   if (
     isCodexFailoverError(result) &&
     (Number(result?.status) === 429 || /usage_limit_reached/.test(String(result?.body?.error?.code || '')))
   ) {
     const park = extra ? codexQuotaPark(extra, now) : { limited: true, until: now + CODEX_DEFAULT_PARK_MS }
     limitedUntil = park.until || now + CODEX_DEFAULT_PARK_MS
+    quotaExceeded = String(result?.body?.error?.code || result?.error_code || '') === 'usage_limit_reached'
   }
   if (!extra && !limitedUntil) return null
-  return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, now, policy })
+  return persistCodexUsage(projectRoot, vmId, { headers, extra, limitedUntil, quotaExceeded, now, policy })
 }
 
 function checkCodexHopCredential(projectRoot, vmId, result, ops = {}, expectedVersion = null) {

@@ -15,6 +15,7 @@ import {
   buildFullEnvJson,
   DEFAULT_PROCESS_RANGES,
   distroVersionFromPretty,
+  HARDWARE_ENV_KEYS,
   officialDeviceID,
   telemetryCodeUa,
   telemetryShell,
@@ -103,6 +104,7 @@ export function buildWorkerTelemetry(vm, projectRoot) {
     return { enabled: false, reason: 'waiting_official_identity' }
   }
   const profile = resolveWorkstationProfile(vm || {})
+  const hw = guest.hardware && typeof guest.hardware === 'object' ? guest.hardware : null
   const payload = {
     device_id: userId,
     user_id: userId,
@@ -119,10 +121,10 @@ export function buildWorkerTelemetry(vm, projectRoot) {
     cli_version: identity.cliVersion,
     entrypoint: 'cli',
     terminal: 'unknown',
-    shell: telemetryShell(guest.shell || profile.shell),
-    package_managers: '',
+    shell: telemetryShell((hw && hw.shell) || guest.shell || profile.shell),
+    package_managers: String((hw && hw.package_managers) || guest.package_managers || '').trim(),
     vcs: String(guest.vcs || '').trim() || 'git',
-    runtimes: String(guest.runtimes || '').trim() || 'node',
+    runtimes: String((hw && hw.runtimes) || guest.runtimes || '').trim() || 'node',
     build_time: officialInstallTime(homeDir),
     linux_distro_id: guest.os_id || '',
     linux_distro_version: distroVersionFromPretty(guest.os_pretty),
@@ -130,7 +132,10 @@ export function buildWorkerTelemetry(vm, projectRoot) {
     process: { ...DEFAULT_PROCESS_RANGES },
     source: 'official-cc-init',
   }
-  payload.env = buildFullEnvJson(payload)
+  payload.env = buildFullEnvJson({ ...payload, hardware: hw || undefined })
+  for (const key of HARDWARE_ENV_KEYS) {
+    if (payload.env[key] != null) payload[key] = payload.env[key]
+  }
   return {
     enabled: true,
     identity: payload,

@@ -18,13 +18,12 @@ import {
 import { usageFromSseLine } from '../protocol/handle-codex.mjs'
 
 export function resolveInferenceBackend(req) {
-  if (req?.apiKeyKind === 'managed') {
-    return String(req.apiKeyRecord?.category || 'oauth').toLowerCase() === 'api' ? 'api' : 'oauth'
-  }
-  if (req?.apiKeyKind === 'master') {
-    return String(req.headers?.['x-kin-backend'] || '').toLowerCase() === 'api' ? 'api' : 'oauth'
-  }
-  return 'oauth'
+  if (req?.apiKeyKind !== 'managed') return 'oauth'
+  return String(req.apiKeyRecord?.category || '')
+    .trim()
+    .toLowerCase() === 'api'
+    ? 'api'
+    : 'oauth'
 }
 
 export { messagesUrl, responsesUrl } from './api-presets.mjs'

@@ -35,11 +35,12 @@ for (const [kernel, meta] of Object.entries(OS_CATALOG)) {
   ) {
     continue
   }
+  // Tags are mutable: --pull refreshes an existing image so runner fixes reach cached hosts.
+  if (pull && spawnSync('docker', ['pull', kvm.image], { stdio: 'inherit' }).status === 0) continue
   if (!force && imageExists(kvm.image)) {
-    console.log(`vm2api: skip existing ${kvm.image}`)
+    console.log(`vm2api: keep existing ${kvm.image}`)
     continue
   }
-  if (pull && spawnSync('docker', ['pull', kvm.image], { stdio: 'inherit' }).status === 0) continue
   if (pullOnly) {
     console.warn(`vm2api: ${kvm.image} not pulled; will build on first slot start`)
     continue

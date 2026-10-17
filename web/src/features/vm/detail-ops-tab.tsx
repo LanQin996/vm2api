@@ -13,6 +13,7 @@ import {
 import { Field } from '@/features/vm/detail-section-primitives'
 import { VmEnvironmentCard } from '@/features/vm/environment-card'
 import { NodeChip } from '@/features/vm/node-chip'
+import { VmPhysicalFeaturesCard } from '@/features/vm/physical-features-card'
 import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
 import { VmOwnerAdminCard } from '@/features/vm/vm-owner-admin-card'
 import { VmShellCard } from '@/features/vm/vm-shell-card'
@@ -94,6 +95,10 @@ export function VmOpsTab(props: VmOpsTabProps) {
           </Field>
         </CardContent>
       </Card>
+      <VmPhysicalFeaturesCard
+        vm={vm}
+        onCollect={() => onAction('/collect-identity')}
+      />
       <VmEnvironmentCard
         vm={vm}
         proxy={proxy}

@@ -205,8 +205,8 @@ export function VmShellCard({
             </Button>
             <span className='text-xs text-muted-foreground'>
               进入 <span className='font-mono'>{container || id}</span>{' '}
-              容器；空行输入 <span className='font-mono'>/help</span>{' '}
-              查看快捷指令
+              容器，启动时打印系统特征；空行输入{' '}
+              <span className='font-mono'>/help</span> 查看快捷指令
             </span>
           </div>
         )}

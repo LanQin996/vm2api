@@ -76,6 +76,7 @@ import {
 } from '../protocol/seed-policy.mjs'
 
 import { runVmTestChat, resolveTestModels, syncCodexCatalog } from './vm-test-chat.mjs'
+import { VmTestScheduleError } from './vm-test-schedule.mjs'
 import { readCatalogSync, syncClaudeCatalog, syncGptCatalog } from './catalog-monitor.mjs'
 import { setPriceOverride, listPriceOverrides, syncModelsDev } from './price-catalog.mjs'
 import { buildPricing } from './pricing-view.mjs'
@@ -90,6 +91,7 @@ import {
   vmPoolsFor,
 } from './vm-pools.mjs'
 import { publicEndpointView, fetchUpstreamModels, API_ENDPOINT_PRESETS } from './api-endpoints.mjs'
+import { runAnthropicConsole, resolveConsoleProxyUrl, savedEndpointKey } from './anthropic-console.mjs'
 import { publicUserView } from './panel-users.mjs'
 import { authorizePanelRoute, mePayload, panelIdentity } from './panel-acl.mjs'
 import {
@@ -106,6 +108,7 @@ import {
   countUserCreatedVms,
   filterVmsForPanel,
   normalizeOwnerId,
+  vmOwnerId,
 } from './resource-owner.mjs'
 import { servePoolSeatStream } from './pool-seat-stream.mjs'
 import { logsToCsv, logsToJsonl } from './request-log.mjs'
@@ -508,6 +511,7 @@ export function createPanelHandler(ctx) {
   const panelUsers = ctx.panelUsers
   const loginGuard = ctx.loginGuard || createLoginGuard(cfg?.limits?.login || loginGuardOptionsFromEnv())
   const requestLog = ctx.requestLog
+  const vmTestSchedule = ctx.vmTestSchedule
   const backupService = ctx.backupService
   const stats = ctx.stats
   const persistRoutingPatch = (...args) => ctx.persistRoutingPatch(...args)
@@ -633,6 +637,121 @@ export function createPanelHandler(ctx) {
       ? { ok: false, error: probed.body?.error?.message || probed.body?.error?.code || 'probe_failed' }
       : { ok: probed?.data?.ok !== false, source: probed?.data?.source || null }
     return { start_error: startError, official_cc_bootstrap: bootstrap, probe }
+  }
+
+  async function handleVmTestSchedule(req, res, id) {
+    if (!isValidVmId(id)) {
+      return json(res, 400, { ok: false, error: { code: 'invalid_vm_id', message: 'invalid vm id' } })
+    }
+    if (!getVm(cfg.paths.project, id)) {
+      return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'vm not found' } })
+    }
+    if (req.method === 'GET') {
+      return json(res, 200, panel.ok({ schedule: vmTestSchedule.get(id) }))
+    }
+    if (req.method === 'DELETE') {
+      vmTestSchedule.remove(id)
+      return json(res, 200, panel.ok({ schedule: null }))
+    }
+    let body
+    try {
+      body = await readBody(req, 64 * 1024)
+    } catch (error) {
+      return json(res, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: String(error?.message || 'invalid JSON body') },
+      })
+    }
+    try {
+      return json(res, 200, panel.ok({ schedule: vmTestSchedule.save(id, body) }))
+    } catch (error) {
+      const typed = error instanceof VmTestScheduleError
+      return json(res, typed ? error.status : 500, {
+        ok: false,
+        error: {
+          code: error?.code || 'test_schedule_save_failed',
+          message: String(error?.message || error),
+        },
+      })
+    }
+  }
+
+  async function handleVmTestScheduleDefault(req, res) {
+    if (req.method === 'GET') {
+      return json(res, 200, panel.ok({ schedule: vmTestSchedule.getDefaultTemplate() }))
+    }
+    let body
+    try {
+      body = await readBody(req, 16 * 1024)
+    } catch (error) {
+      return json(res, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: String(error?.message || 'invalid JSON body') },
+      })
+    }
+    try {
+      if (body == null || body.schedule == null) {
+        vmTestSchedule.clearDefaultTemplate()
+        return json(res, 200, panel.ok({ schedule: null }))
+      }
+      return json(res, 200, panel.ok({ schedule: vmTestSchedule.saveDefaultTemplate(body.schedule) }))
+    } catch (error) {
+      const typed = error instanceof VmTestScheduleError
+      return json(res, typed ? error.status : 500, {
+        ok: false,
+        error: {
+          code: error?.code || 'test_schedule_default_failed',
+          message: String(error?.message || error),
+        },
+      })
+    }
+  }
+
+  async function handleVmTestScheduleSync(req, res) {
+    let body
+    try {
+      body = await readBody(req, 256 * 1024)
+    } catch (error) {
+      return json(res, 400, {
+        ok: false,
+        error: { code: 'invalid_request', message: String(error?.message || 'invalid JSON body') },
+      })
+    }
+    const ident = panelIdentity(req)
+    let vmIds = body?.vm_ids
+    if (body?.scope === 'all' && ident.role === 'user') {
+      const ownerId = normalizeOwnerId(req.panelUserId)
+      vmIds = listVms(cfg.paths.project)
+        .filter((vm) => vmOwnerId(vm) === ownerId)
+        .map((vm) => vm.id)
+      body = { ...body, scope: 'ids', vm_ids: vmIds }
+    } else if (body?.scope === 'ids' && ident.role === 'user') {
+      const ownerId = normalizeOwnerId(req.panelUserId)
+      vmIds = (Array.isArray(body.vm_ids) ? body.vm_ids : [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => {
+          const vm = getVm(cfg.paths.project, id)
+          return vm && vmOwnerId(vm) === ownerId
+        })
+      body = { ...body, vm_ids: vmIds }
+    }
+    try {
+      const result = vmTestSchedule.syncSchedules({
+        scope: body?.scope,
+        vmIds: body?.vm_ids,
+        schedule: body?.schedule,
+      })
+      return json(res, 200, panel.ok(result))
+    } catch (error) {
+      const typed = error instanceof VmTestScheduleError
+      return json(res, typed ? error.status : 500, {
+        ok: false,
+        error: {
+          code: error?.code || 'test_schedule_sync_failed',
+          message: String(error?.message || error),
+        },
+      })
+    }
   }
 
   function normalizePanelApiKeyInput(body = {}) {
@@ -1496,15 +1615,20 @@ export function createPanelHandler(ctx) {
       if (req.method === 'POST' && p === '/api/panel/api-endpoints/fetch-models') {
         const body = await readBody(req, 8192).catch(() => ({}))
         try {
+          const saved = savedEndpointKey(apiEndpointStore, body?.key_id)
+          const proxyUrl = Object.prototype.hasOwnProperty.call(body || {}, 'proxy_id')
+            ? resolveConsoleProxyUrl(proxyPool, body.proxy_id)
+            : saved?.proxy_url || body?.proxy_url
           const result = await fetchUpstreamModels({
             cfg,
             kind: body?.kind,
             protocol: body?.protocol,
-            base_url: body?.base_url,
-            api_key: body?.api_key,
-            proxy_url: body?.proxy_url,
+            base_url: body?.base_url || saved?.base_url,
+            api_key: body?.api_key || saved?.api_key,
+            proxy_url: proxyUrl,
             headers: body?.headers,
-            auth_scheme: body?.auth_scheme || body?.authScheme,
+            auth_scheme: body?.auth_scheme || body?.authScheme || saved?.auth_scheme,
+            forward: ctx.forwardApi,
           })
           return json(res, 200, { ok: true, ...result })
         } catch (e) {
@@ -1517,6 +1641,13 @@ export function createPanelHandler(ctx) {
       if (req.method === 'POST' && p === '/api/panel/api-endpoints') {
         const body = await readBody(req, 1 << 20).catch(() => ({}))
         try {
+          const proxyUrl = body?.proxy_id ? resolveConsoleProxyUrl(proxyPool, body.proxy_id) : ''
+          if (Array.isArray(body?.api_key_entries)) {
+            for (const entry of body.api_key_entries) {
+              if (!entry.proxy_url) entry.proxy_url = proxyUrl
+              if (body?.proxy_id != null) entry.proxy_id = String(body.proxy_id || '').trim()
+            }
+          }
           const rec = apiEndpointStore.create(body || {})
           apiScheduler.reload(apiEndpointStore.listRaw())
           return json(res, 201, { ok: true, item: publicEndpointView(rec, { reveal: true }) })
@@ -1531,10 +1662,26 @@ export function createPanelHandler(ctx) {
         const id = p.split('/').pop()
         const body = await readBody(req, 1 << 20).catch(() => ({}))
         try {
+          const proxyUrl = body?.proxy_id ? resolveConsoleProxyUrl(proxyPool, body.proxy_id) : ''
           const rec = apiEndpointStore.update(id, body || {})
           if (!rec) return json(res, 404, { ok: false, error: { message: 'endpoint not found' } })
+          const keyId = String(body?.key_id || '').trim()
+          const apiKey = String(body?.api_key || '').trim()
+          if (keyId) {
+            apiEndpointStore.updateKey(keyId, {
+              ...(apiKey ? { api_key: apiKey } : {}),
+              ...(body?.proxy_id != null ? { proxy_url: proxyUrl, proxy_id: String(body.proxy_id || '').trim() } : {}),
+            })
+          } else if (apiKey) {
+            apiEndpointStore.addKey(id, {
+              api_key: apiKey,
+              proxy_url: proxyUrl,
+              proxy_id: String(body?.proxy_id || '').trim(),
+            })
+          }
           apiScheduler.reload(apiEndpointStore.listRaw())
-          return json(res, 200, { ok: true, item: publicEndpointView(rec) })
+          const saved = apiEndpointStore.getRaw(id) || rec
+          return json(res, 200, { ok: true, item: publicEndpointView(saved) })
         } catch (e) {
           return json(res, 400, { ok: false, error: { message: String(e.message || e), code: e.code } })
         }
@@ -1609,6 +1756,26 @@ export function createPanelHandler(ctx) {
         const ep = apiEndpointStore.getRaw(rec.endpoint_id)
         const item = publicEndpointView(ep)?.api_key_entries?.find((k) => k.id === kid)
         return json(res, 200, { ok: true, item })
+      }
+      if (req.method === 'POST' && p === '/api/panel/anthropic/messages') {
+        const body = await readBody(req, 64 * 1024).catch(() => ({}))
+        try {
+          const result = await runAnthropicConsole({
+            cfg,
+            scheduler: apiScheduler,
+            proxyPool,
+            store: apiEndpointStore,
+            input: body || {},
+            forward: ctx.forwardApi,
+          })
+          return json(res, 200, { ok: true, data: result })
+        } catch (e) {
+          const status = e.status && e.status < 600 ? e.status : 400
+          return json(res, status, {
+            ok: false,
+            error: { message: String(e.message || e), code: e.code || 'anthropic_console_failed' },
+          })
+        }
       }
 
       // ---- Request logs (normal summary + debug full; DB-backed filters/pagination) ----
@@ -2763,6 +2930,26 @@ export function createPanelHandler(ctx) {
         return json(res, 200, result)
       }
 
+      if (req.method === 'GET' && /^\/api\/panel\/vms\/[^/]+\/test-schedule$/.test(p)) {
+        return await handleVmTestSchedule(req, res, p.split('/')[4])
+      }
+      if (req.method === 'PUT' && /^\/api\/panel\/vms\/[^/]+\/test-schedule$/.test(p)) {
+        return await handleVmTestSchedule(req, res, p.split('/')[4])
+      }
+      if (req.method === 'DELETE' && /^\/api\/panel\/vms\/[^/]+\/test-schedule$/.test(p)) {
+        return await handleVmTestSchedule(req, res, p.split('/')[4])
+      }
+
+      if (req.method === 'GET' && p === '/api/panel/test-schedule/default') {
+        return await handleVmTestScheduleDefault(req, res)
+      }
+      if (req.method === 'PUT' && p === '/api/panel/test-schedule/default') {
+        return await handleVmTestScheduleDefault(req, res)
+      }
+      if (req.method === 'POST' && p === '/api/panel/test-schedule/sync') {
+        return await handleVmTestScheduleSync(req, res)
+      }
+
       // POST /api/panel/vms/:id/test-chat — sub2api-style model connectivity test
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/test-chat$/.test(p)) {
         const id = p.split('/')[4]
@@ -2982,6 +3169,9 @@ export function createPanelHandler(ctx) {
         } catch {}
         fs.unlinkSync(vmPath)
         invalidateVmSlotReadCache(cfg.paths.project, id)
+        try {
+          vmTestSchedule.remove(id)
+        } catch {}
         if (active === id) {
           clearActiveVm(cfg.paths.project)
           try {

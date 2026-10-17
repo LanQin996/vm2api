@@ -19,8 +19,48 @@ import {
   readExistingKernelConfig,
   dataplaneUsesCcNode,
   WRAP_SLOT_MAX,
+  slotContainerName,
 } from './rust-kernel-supervisor.mjs'
 import { resolveInferenceEngine } from '../vm/slot-engine.mjs'
+import { slotHost } from '../vm/slot-host.mjs'
+import { dockerRequest } from '../cluster/docker-remote.mjs'
+
+/** A failed observation is not evidence of a dead container. Use the slot's own host, including KVM runners. */
+export async function observeWatchdogContainer(
+  vm,
+  { hostFor = slotHost, request = dockerRequest, timeoutMs = 1500 } = {},
+) {
+  let timer
+  try {
+    const name = slotContainerName({ vm })
+    if (!name) return { state: 'unknown' }
+    const observation = Promise.resolve().then(async () => {
+      const res = await request(hostFor(vm).dockerApi(), {
+        path: `/containers/${encodeURIComponent(name)}/json`,
+        timeoutMs,
+      })
+      if (res.status === 404) return { state: 'missing' }
+      if (res.status !== 200) return { state: 'unknown' }
+      const state = JSON.parse(res.body.toString('utf8'))?.State
+      if (state?.Paused === true) return { state: 'paused' }
+      if (state?.Restarting === true) return { state: 'restarting' }
+      if (state?.Running === true) return { state: 'running' }
+      if (state?.Running === false && ['created', 'exited', 'dead'].includes(state.Status)) return { state: 'stopped' }
+      return { state: 'unknown' }
+    })
+    // Covers connector/SSH setup too, before dockerRequest's own HTTP timeout starts.
+    return await Promise.race([
+      observation,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ state: 'unknown' }), timeoutMs)
+      }),
+    ])
+  } catch {
+    return { state: 'unknown' }
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export const DEFAULT_KERNEL_WATCHDOG = Object.freeze({
   enabled: true,
@@ -82,6 +122,7 @@ export function createKernelWatchdog({
   homeDirFor,
   ensure = ensureRustKernel,
   health = rustKernelHealth,
+  observeRuntime = observeWatchdogContainer,
   onFault = null,
   ensureTelemetry = null,
   telemetryEveryMs = TELEMETRY_HEAL_MS,
@@ -171,16 +212,33 @@ export function createKernelWatchdog({
       // Plain recovery keeps past attempts so a crash loop stays bounded by the window.
       if (kernelFaults.delete(vm.id)) restarts.delete(vm.id)
       // Config convergence, not a failure: outside the restart budget.
-      if (kernelSlotMismatch(exec)) await ensure(exec, { timeoutMs: config.timeout_ms })
+      if (kernelSlotMismatch(exec)) {
+        const observed = await observeRuntime(vm)
+        if (!held.has(vm.id) && observed?.state === 'running') await ensure(exec, { timeoutMs: config.timeout_ms })
+      }
       return
     }
     const reason = current?.unhealthy_reason || current?.error || 'kernel process down'
+    const observed = await observeRuntime(vm)
+    if (held.has(vm.id)) return
+    // Permission/transport failures and deliberately paused containers never authorize recovery.
+    if (!['running', 'missing', 'stopped', 'restarting'].includes(observed?.state)) return
+    if (observed.state !== 'running') {
+      if (vm.status !== 'running' || typeof revive !== 'function') return
+      if (!admitRestart(vm, `container ${observed.state}`, now())) return
+      const revived = await revive(vm)
+      if (!revived?.ok) console.warn(`[kernel-watchdog] ${vm.id} boot failed: ${revived?.error || revived?.code}`)
+      return
+    }
     if (!admitRestart(vm, reason, now())) return
     console.warn(`[kernel-watchdog] ${vm.id} restarting container: ${reason}`)
     const result = await ensure(exec, { timeoutMs: config.timeout_ms })
     if (held.has(vm.id)) return
     // The container itself is gone or exited: a kernel restart cannot help, a full boot can.
     if (result?.reason === 'container_unavailable' && typeof revive === 'function' && vm.status === 'running') {
+      // The container may disappear during ensure; do not mistake a daemon/permission error for absence.
+      const latest = await observeRuntime(vm)
+      if (held.has(vm.id) || !['missing', 'stopped', 'restarting'].includes(latest?.state)) return
       console.warn(`[kernel-watchdog] ${vm.id} container unavailable; booting slot`)
       const revived = await revive(vm).catch((error) => ({ ok: false, error: error?.message || String(error) }))
       if (!revived?.ok) console.warn(`[kernel-watchdog] ${vm.id} boot failed: ${revived?.error || revived?.code}`)
@@ -208,10 +266,15 @@ export function createKernelWatchdog({
         inflight.set(vm.id, work)
         try {
           await work
+        } catch {
+          // One failed probe/recovery must not starve later slots or reject an interval's promise.
+          console.warn(`[kernel-watchdog] ${vm.id} check failed; skipping this tick`)
         } finally {
           if (inflight.get(vm.id) === work) inflight.delete(vm.id)
         }
       }
+    } catch {
+      console.warn('[kernel-watchdog] tick failed; retrying at the next interval')
     } finally {
       inTick = false
     }

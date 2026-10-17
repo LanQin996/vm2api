@@ -18,6 +18,7 @@ export const PANEL_VIEWS = [
   'system',
   'keys',
   'api',
+  'anthropic',
   'logs',
   'statistics',
   'database',
@@ -98,9 +99,15 @@ const USER_EXACT_GET = new Set([
   '/api/panel/request-logs/export',
   '/api/panel/request-logs/stats',
   '/api/panel/billing',
+  '/api/panel/test-schedule/default',
 ])
 
-const USER_EXACT_POST = new Set(['/api/panel/vms/create', '/api/panel/vms/import', '/api/panel/proxies/import'])
+const USER_EXACT_POST = new Set([
+  '/api/panel/vms/create',
+  '/api/panel/vms/import',
+  '/api/panel/proxies/import',
+  '/api/panel/test-schedule/sync',
+])
 
 const USER_VM_DENIED = new Set([
   'fleet-status',
@@ -162,6 +169,7 @@ function userVmPathAllowed(method, path) {
     if (!rest) return true
     if (rest === 'oauth/credential' || rest === 'package') return false
     return (
+      rest === 'test-schedule' ||
       rest.startsWith('oauth/') ||
       rest === 'probe' ||
       rest === 'count-tokens' ||
@@ -192,8 +200,8 @@ function userVmPathAllowed(method, path) {
       rest.startsWith('oauth/')
     )
   }
-  if (method === 'DELETE') return !rest
-  if (method === 'PUT' && rest === 'oauth/credential') return true
+  if (method === 'PUT') return rest === 'test-schedule' || rest === 'oauth/credential'
+  if (method === 'DELETE') return !rest || rest === 'test-schedule'
   return false
 }
 
@@ -236,6 +244,10 @@ export function authorizePanelRoute(method, path, role) {
   if (r === 'admin') return { ok: true, role: r }
   const m = String(method || 'GET').toUpperCase()
   const p = String(path || '')
+
+  if (p === '/api/panel/test-schedule/default' && m === 'PUT') {
+    return { ok: false, role: r, code: 'forbidden', message: '当前权限无法执行此操作' }
+  }
 
   if (r === 'user' && isUserAllowed(m, p)) return { ok: true, role: r }
   if (p === '/api/panel/onboarding' && (m === 'GET' || m === 'PUT')) return { ok: true, role: r }

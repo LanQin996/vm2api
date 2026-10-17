@@ -32,6 +32,8 @@ export function AboutPane() {
   const changelog = useQuery(changelogQueryOptions())
   const [confirmOpen, setConfirmOpen] = useState(false)
   const data = version.data
+  const checkFailed =
+    version.isError || !!data?.source_error || data?.check_status === 'failed'
   const updateRunning = !!upgradeTarget || data?.upgrade?.state === 'running'
 
   useEffect(() => {
@@ -138,10 +140,12 @@ export function AboutPane() {
             <div>
               <dt className='text-muted-foreground'>GitHub 最新</dt>
               <dd className='flex items-center gap-2 font-mono'>
-                {data?.latest_tag || '—'}
-                {data?.update_available ? (
+                {checkFailed ? '—' : data?.latest_tag || '—'}
+                {checkFailed ? (
+                  <Badge variant='destructive'>检查失败</Badge>
+                ) : data?.update_available ? (
                   <Badge>有更新</Badge>
-                ) : data ? (
+                ) : data?.update_available === false ? (
                   <Badge variant='secondary'>已是最新</Badge>
                 ) : null}
               </dd>
@@ -218,7 +222,10 @@ export function AboutPane() {
             <Button
               size='sm'
               disabled={
-                !data?.update_available || upgrade.isPending || updateRunning
+                checkFailed ||
+                !data?.update_available ||
+                upgrade.isPending ||
+                updateRunning
               }
               onClick={() => setConfirmOpen(true)}
             >

@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SLOT_CAPS_NODE } from '../../src/lib/cluster/placement.mjs'
 import { codexRoleMatches, slotContainerBody } from '../../src/lib/cluster/remote-slot.mjs'
-import { CODEX_SLOT_ROLE } from '../../src/lib/vm/vm-runtime.mjs'
+import { REMOTE_KERNEL_ENTRY } from '../../src/lib/vm/slot-engine.mjs'
+import { CODEX_SLOT_ROLE, slotContainerCommand } from '../../src/lib/vm/vm-runtime.mjs'
 import { slotHost } from '../../src/lib/vm/slot-host.mjs'
 import { startSlotReady } from '../../src/lib/vm/slot-runtime.mjs'
 
@@ -30,14 +31,40 @@ test('a remote GPT container idles instead of booting the Claude kernel', () => 
   const spec = body(gpt)
   assert.deepEqual(spec.Cmd, ['sleep', 'infinity'])
   assert.equal(spec.Labels['kin.vm.role'], CODEX_SLOT_ROLE)
-  const claudeSpec = body(claude)
-  assert.deepEqual(claudeSpec.Cmd, [
+})
+
+for (const runtime of [undefined, { type: 'docker' }]) {
+  test(`a remote Claude slot uses the baked kernel entry (${runtime?.type || 'default'} runtime)`, () => {
+    const spec = body({ ...claude, runtime })
+    assert.equal(REMOTE_KERNEL_ENTRY, '/opt/kin/kin-kernel')
+    assert.deepEqual(spec.Cmd, [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'])
+    assert.equal(spec.Labels['kin.vm.role'], undefined)
+    assert.equal(spec.Labels['kin.vm.runtime'], 'docker')
+  })
+}
+
+test('local Claude commands retain their bind-mounted and wrapped kernel entries', () => {
+  assert.deepEqual(slotContainerCommand(claude), [
     '/usr/local/bin/kin-kernel',
     '--gateway-worker',
     '--config',
     '/run/kin/kernel.json',
   ])
-  assert.equal(claudeSpec.Labels['kin.vm.role'], undefined)
+  assert.deepEqual(slotContainerCommand(claude, { wrapKernel: true }), [
+    '/home/kincli/.kin/kin-kernel',
+    '--gateway-worker',
+    '--config',
+    '/run/kin/kernel.json',
+  ])
+  assert.deepEqual(slotContainerCommand(gpt), ['sleep', 'infinity'])
+})
+
+test('remote KVM slots retain the runner image command for both platforms', () => {
+  for (const vm of [claude, gpt]) {
+    const spec = body({ ...vm, runtime: { type: 'kvm' } })
+    assert.equal(spec.Labels['kin.vm.runtime'], 'kvm')
+    assert.equal(Object.hasOwn(spec, 'Cmd'), false)
+  }
 })
 
 test('a remote GPT container still running kin-kernel is recreated', () => {

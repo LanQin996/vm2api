@@ -8,13 +8,62 @@ import path from 'node:path'
 import { atomicWriteJson } from './vm-file.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
 import { slotExec } from './slot-runtime.mjs'
-import { readGuestIdentity } from './guest-identity-reader.mjs'
+import { readGuestIdentity, normalizeGuestHardware } from './guest-identity-reader.mjs'
 import { OFFICIAL_STAINLESS } from '../identity/vm-identity.mjs'
 import { applyOfficialFingerprintToVm } from '../identity/official-fingerprint.mjs'
 import { isHostKernel } from '../identity/workstation-profile.mjs'
+import { syncWorkerTelemetry } from './vm-runtime.mjs'
+import { slotHost } from './slot-host.mjs'
 import { isGeneratedHostname } from '../identity/workstation-fingerprint.mjs'
 
 export const GUEST_IDENTITY_SCHEMA = '1'
+
+const DMI_KEYS = Object.freeze(['manufacturer', 'product', 'version', 'family', 'serial', 'uuid'])
+
+function textOrNull(value) {
+  if (value == null) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+function intOrNull(value) {
+  if (value == null || value === '') return null
+  const n = typeof value === 'number' ? value : Number.parseInt(String(value), 10)
+  if (!Number.isFinite(n) || n < 0) return null
+  return Math.trunc(n)
+}
+
+function pickText(next, prev) {
+  return textOrNull(next) ?? textOrNull(prev)
+}
+
+function pickInt(next, prev) {
+  return intOrNull(next) ?? intOrNull(prev)
+}
+
+/** Merge observed hardware; empty new facts keep previous values. */
+export function mergeGuestHardware(prev, next, observedAt) {
+  const p = prev && typeof prev === 'object' && !Array.isArray(prev) ? prev : {}
+  const n = next && typeof next === 'object' && !Array.isArray(next) ? next : {}
+  const pd = p.dmi && typeof p.dmi === 'object' ? p.dmi : {}
+  const nd = n.dmi && typeof n.dmi === 'object' ? n.dmi : {}
+  const dmi = {}
+  for (const key of DMI_KEYS) {
+    dmi[key] = pickText(nd[key], pd[key])
+  }
+  return {
+    cpu_model: pickText(n.cpu_model, p.cpu_model),
+    cpu_cores: pickInt(n.cpu_cores, p.cpu_cores),
+    memory_bytes: pickInt(n.memory_bytes, p.memory_bytes),
+    root_disk: pickText(n.root_disk, p.root_disk),
+    mac: pickText(n.mac, p.mac),
+    dmi,
+    shell: pickText(n.shell, p.shell),
+    package_managers: pickText(n.package_managers, p.package_managers),
+    runtimes: pickText(n.runtimes, p.runtimes),
+    observed_at: pickText(n.observed_at, observedAt) || textOrNull(p.observed_at),
+  }
+}
 
 function stainlessArch(arch) {
   const a = String(arch || '').toLowerCase()
@@ -87,6 +136,14 @@ export function mergeGuestFingerprint(prev = {}, guest = {}) {
     reset_at: prev.reset_at || null,
     updated_at: new Date().toISOString(),
   }
+  const guestHw = guest.hardware != null ? normalizeGuestHardware(guest.hardware) : null
+  if (guestHw) {
+    next.hardware = mergeGuestHardware(
+      prev.hardware,
+      { ...guestHw, observed_at: guest.hardware?.observed_at },
+      guest.collected_at,
+    )
+  }
   if (officialMachine) delete next.machine_id
   return next
 }
@@ -130,5 +187,26 @@ export async function collectSlotIdentity(projectRoot, vm, { callGet = readGuest
   try {
     current = JSON.parse(fs.readFileSync(vmPath, 'utf8'))
   } catch {}
-  return { ok: true, id: vm.id, fingerprint: current.fingerprint, runtime_kind: current.runtime.type }
+  try {
+    const telemetry = syncWorkerTelemetry(current, projectRoot)
+    if (telemetry.wrote) {
+      await slotHost(current).syncRun(current, path.join(projectRoot, 'vms', current.id))
+    }
+    return {
+      ok: true,
+      id: vm.id,
+      fingerprint: current.fingerprint,
+      runtime_kind: current.runtime.type,
+      telemetry_sync: telemetry,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      id: vm.id,
+      fingerprint: current.fingerprint,
+      runtime_kind: current.runtime.type,
+      error: `telemetry sync failed: ${String(error?.message || error).slice(0, 300)}`,
+      code: 'telemetry_sync_failed',
+    }
+  }
 }

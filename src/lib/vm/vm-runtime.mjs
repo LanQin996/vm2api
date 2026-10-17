@@ -32,7 +32,7 @@ import {
   kvmImageForKernel,
   KVM_BUILD_DIR,
 } from './os-catalog.mjs'
-import { slotMemory, memoryMiB, VM_CONFIG_DEFAULTS } from './machine-spec.mjs'
+import { slotMemory, slotDockerCpus, memoryMiB, VM_CONFIG_DEFAULTS } from './machine-spec.mjs'
 import { probeLocalKvm } from './kvm-host.mjs'
 import { slotExecArgv } from './slot-exec.mjs'
 
@@ -63,12 +63,16 @@ export function timezoneForIndex(i) {
   return US_TIMEZONES[(Number(i) - 1) % US_TIMEZONES.length]
 }
 
-/** Pull the guest image, falling back to the in-repo Dockerfile when the registry is unreachable. */
+/**
+ * Runner tags are mutable: re-pull before creating a container so runner fixes reach
+ * hosts that cached an older tag. Unreachable registry falls back to the local image,
+ * then to the in-repo Dockerfile.
+ */
 export function ensureSlotImage(kernel, { run = sh, projectRoot, runtime } = {}) {
   const kvm = runtime === 'kvm' || runtime === RUNTIME_KVM
   const image = kvm ? kvmImageForKernel(kernel) : imageForKernel(kernel)
-  if (run(['docker', 'image', 'inspect', image], { timeout: 10_000 }).ok) return { ok: true, action: 'present', image }
   if (run(['docker', 'pull', image], { timeout: 300_000 }).ok) return { ok: true, action: 'pulled', image }
+  if (run(['docker', 'image', 'inspect', image], { timeout: 10_000 }).ok) return { ok: true, action: 'present', image }
   if (kvm) {
     const dir = path.join(projectRoot || MODULE_ROOT, KVM_BUILD_DIR)
     if (!fs.existsSync(path.join(dir, 'Dockerfile'))) {
@@ -147,14 +151,17 @@ export function inspectContainer(name) {
     'docker',
     'inspect',
     '--format',
-    '{{.State.Running}}|{{.State.Pid}}|{{.HostConfig.NetworkMode}}|{{.State.StartedAt}}|{{.Config.Image}}|{{.Config.Hostname}}|{{index .Config.Labels "kin.vm.runtime"}}|{{index .Config.Labels "kin.vm.role"}}',
+    '{{.State.Running}}|{{.State.Pid}}|{{.HostConfig.NetworkMode}}|{{.State.StartedAt}}|{{.Config.Image}}|{{.Config.Hostname}}|{{index .Config.Labels "kin.vm.runtime"}}|{{index .Config.Labels "kin.vm.role"}}|{{.State.Restarting}}',
     name,
   ])
   if (!r.ok) return null
-  const [running, pid, networkMode, startedAt, image, hostname, runtime, role] = r.stdout.split('|')
+  const [running, pid, networkMode, startedAt, image, hostname, runtime, role, restarting] = r.stdout.split('|')
+  // Docker reports Running=true during a restart-policy backoff; nothing can be exec'd there.
+  const crashLooping = restarting === 'true'
   return {
     name,
-    running: running === 'true',
+    running: running === 'true' && !crashLooping,
+    restarting: crashLooping,
     pid: Number(pid) || 0,
     ip: networkMode === 'host' ? PUBLIC_IP : null,
     networkMode: networkMode || null,
@@ -249,7 +256,7 @@ function applyKvmBindChown(name, vm) {
   }
 }
 
-function runtimePatch(vm, info, extra = {}) {
+export function runtimePatch(vm, info, extra = {}) {
   const kernel = vm.kernel || 'ubuntu-24.04'
   const meta = OS_CATALOG[kernel] || OS_CATALOG['ubuntu-24.04']
   const { routing, memory, ...rest } = extra
@@ -257,6 +264,7 @@ function runtimePatch(vm, info, extra = {}) {
     type: runtimeKind(vm) === 'kvm' ? 'kvm' : RUNTIME,
     container: info?.name || containerName(vm.id),
     pid: info?.pid || null,
+    stopped: info?.running !== true,
     ip: info?.ip || PUBLIC_IP,
     network: NET,
     network_mode: info?.networkMode || NET,
@@ -368,9 +376,10 @@ export function slotContainerNetworkMismatch(existing, vm) {
   return (existing?.networkMode || '') !== want
 }
 
-/** Reload must recreate (not restart) when the kernel is dead, egress network moved, or a GPT slot still runs kin-kernel. */
+/** Reload must recreate (not restart) when the kernel is dead, the container crash-loops, egress network moved, or a GPT slot still runs kin-kernel. */
 export function slotWorkerNeedsRecreate(existing, vm, paths) {
   if (!existing) return false
+  if (existing.restarting) return true
   if (codexContainerStale(existing, vm)) return true
   if (!slotKernelAlive(existing, paths, vm)) return true
   return slotContainerNetworkMismatch(existing, vm)
@@ -385,6 +394,8 @@ export function slotWorkerNeedsRecreate(existing, vm, paths) {
  */
 export function reloadSlotWorker(vm, projectRoot, { routing } = {}) {
   if (!vm?.id) return { ok: false, error: 'vm required' }
+  // Outside the cached-config fallback: invalid quotas must never reach restart.
+  if (!isKvmRuntime(vm)) slotDockerCpus(vm)
   const paths = workerPaths(projectRoot, vm.id)
   const name = containerName(vm.id)
   let worker
@@ -558,10 +569,11 @@ export function writeWorkerFiles(vm, projectRoot, { transparent, routing } = {})
   return { ...paths, kernelSocket: kernel?.socketPath || paths.kernelSocket }
 }
 
-/** Running slots survive Node deploy. Only an explicit recreate may docker rm -f. */
+/** Running slots survive Node deploy. Only an explicit recreate or a crash-looping container may docker rm -f. */
 export function shouldReplaceSlotContainer({ existing, recreate = false, network, image, runtime } = {}) {
   if (!existing) return false
   if (recreate === true) return true
+  if (existing.restarting) return true
   if (existing.running) return false
   const wrongNet = network != null && existing.networkMode && existing.networkMode !== network
   const wrongImg = image != null && existing.image && existing.image !== image
@@ -787,7 +799,15 @@ export function buildKvmRunArgs({
   ]
 }
 
+/** Creation-only resources: restarting an existing container does not change its limits. */
+export function dockerSlotResourceArgs(vm, routing) {
+  const memory = slotMemory(vm, routing)
+  const cpus = slotDockerCpus(vm)
+  return ['--memory', memory, '--memory-swap', memory, ...(cpus > 0 ? ['--cpus', String(cpus)] : [])]
+}
+
 export function startVmRuntime(vm, projectRoot, { recreate = false, routing, accel: accelOpt } = {}) {
+  if (!isKvmRuntime(vm)) slotDockerCpus(vm) // reject corrupt persisted quotas before any lifecycle changes
   if (isKvmRuntime(vm) && accelOpt !== 'kvm' && accelOpt !== 'tcg') {
     const recorded = vm.runtime?.accel
     if (recorded !== 'kvm' && recorded !== 'tcg') {
@@ -968,10 +988,7 @@ export function startVmRuntime(vm, projectRoot, { recreate = false, routing, acc
       netName,
       '--restart',
       'unless-stopped',
-      '--memory',
-      mem,
-      '--memory-swap',
-      mem,
+      ...dockerSlotResourceArgs(vm, resolvedRouting),
       '--pids-limit',
       '256',
       '--user',

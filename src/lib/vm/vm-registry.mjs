@@ -210,7 +210,7 @@ export function persistAccountTier(projectRoot, vmId, tier, { source = null } = 
 export function persistCodexUsage(
   projectRoot,
   vmId,
-  { headers, extra, limitedUntil, now = Date.now(), policy = null } = {},
+  { headers, extra, limitedUntil, quotaExceeded = false, now = Date.now(), policy = null } = {},
 ) {
   if (!projectRoot || !vmId) return null
   const file = path.join(projectRoot, 'vms', `${vmId}.json`)
@@ -218,7 +218,18 @@ export function persistCodexUsage(
   const vm = JSON.parse(fs.readFileSync(file, 'utf8'))
   vm.codex = { ...(vm.codex || {}) }
   const fromHeaders = extraFromCodexHeaders(headers || {}, now)
-  const merged = { ...(vm.codex.extra || {}), ...(fromHeaders || {}), ...(extra || {}) }
+  const cached = { ...(vm.codex.extra || {}) }
+  if (quotaExceeded) {
+    // The error proves exhaustion, not which window or its percentage. Drop
+    // cached below-cap readings (including aliases) instead of inventing 100%.
+    // Keep known caps so a headerless error cannot release an existing limit.
+    // Fresh response measurements below are authoritative, even below 100%.
+    for (const role of ['primary', 'secondary', '5h', '7d']) {
+      const key = `codex_${role}_used_percent`
+      if (Object.hasOwn(cached, key) && !(Number(cached[key]) >= 100)) cached[key] = null
+    }
+  }
+  const merged = { ...cached, ...(fromHeaders || {}), ...(extra || {}) }
   if (limitedUntil) {
     merged.codex_limited_until = new Date(limitedUntil).toISOString()
   } else {

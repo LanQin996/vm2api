@@ -28,11 +28,11 @@ import {
   proxyKey,
 } from '../vm/egress.mjs'
 import { OS_CATALOG } from '../vm/os-catalog.mjs'
-import { resolveKernelDataplane } from '../vm/slot-engine.mjs'
+import { REMOTE_KERNEL_ENTRY, resolveKernelDataplane } from '../vm/slot-engine.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { proxyBlockedReason } from '../vm/proxy-policy.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
-import { slotMemory, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
+import { slotMemory, slotDockerCpus, memoryMiB, normalizeVmConfig, VM_CONFIG_DEFAULTS } from '../vm/machine-spec.mjs'
 import { slotExecArgv, slotExecCmd } from '../vm/slot-exec.mjs'
 import {
   CODEX_SLOT_ROLE,
@@ -42,7 +42,6 @@ import {
   normalizeTimezone,
   KVM_CAPS,
   STANDARD_LOCALE,
-  slotContainerCommand,
   writeWorkerFiles,
 } from '../vm/vm-runtime.mjs'
 import {
@@ -473,6 +472,7 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
   if (isKvmRuntime(vm)) return kvmSlotContainerBody(vm, { image, network, remoteDir, routing, accel, slotUser: user })
   const slotName = displayName(vm.id)
   const mem = parseMemoryBytes(slotMemory(vm, routing))
+  const cpus = slotDockerCpus(vm)
   const codex = isCodexVm(vm)
   return {
     Image: image,
@@ -488,7 +488,8 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
       `KIN_VM_NAME=${slotName}`,
       `KIN_VM_OS=${vm.kernel}`,
     ],
-    Cmd: slotContainerCommand(vm),
+    // Node images bake the Claude kernel here; local slots bind-mount a different path.
+    Cmd: codex ? ['sleep', 'infinity'] : [REMOTE_KERNEL_ENTRY, '--gateway-worker', '--config', '/run/kin/kernel.json'],
     Labels: {
       'kin.vm': '1',
       'kin.vm.id': vm.id,
@@ -514,6 +515,7 @@ export function slotContainerBody(vm, { image, network, remoteDir, user, routing
       // Equal swap allowance lets idle CLI pages leave RAM on small nodes
       // (MemorySwap == Memory would forbid swap entirely).
       MemorySwap: mem * 2,
+      ...(cpus > 0 ? { NanoCpus: Math.round(cpus * 1e9) } : {}),
       PidsLimit: 256,
       ReadonlyRootfs: true,
       Tmpfs: { '/tmp': 'rw,noexec,nosuid,size=32m' },
@@ -642,6 +644,7 @@ async function chownRemoteKvmBinds(session, name, vm) {
 /** Remote twin of startVmRuntime. Running + same image/network is left alone (Node restart must not bounce slots). */
 export async function startRemoteSlot(vm, projectRoot, { recreate = false, routing } = {}) {
   try {
+    if (!isKvmRuntime(vm)) slotDockerCpus(vm)
     const p = await prepare(vm, projectRoot, routing)
     if (p.fail) return p.fail
     const { nodeId, session, image, egressImage, user, remoteDir, slotDir } = p
@@ -664,6 +667,9 @@ export async function startRemoteSlot(vm, projectRoot, { recreate = false, routi
       existing.Config?.Labels?.['kin.vm.layout'] === SLOT_LAYOUT &&
       runtimeLabelOf(existing) === runtimeKind(vm) &&
       codexRoleMatches(existing, vm) &&
+      // Running stays true during Docker restart-policy backoff. Recreate the
+      // loop just like the local runtime; otherwise watchdog revival is a no-op.
+      !existing.State?.Restarting &&
       !recreate
     const common = {
       nodeId,
@@ -722,6 +728,7 @@ export async function startRemoteSlot(vm, projectRoot, { recreate = false, routi
 /** Remote twin of reloadSlotWorker: rewrite + push config, bounce the container, never remove it unless the exit moved. */
 export async function reloadRemoteSlot(vm, projectRoot, { routing } = {}) {
   try {
+    if (!isKvmRuntime(vm)) slotDockerCpus(vm)
     const p = await prepare(vm, projectRoot, routing)
     if (p.fail) return p.fail
     const { nodeId, session, image, user, remoteDir, slotDir } = p

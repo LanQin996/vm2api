@@ -133,7 +133,7 @@
     "wipe": true,
     "apply_seed": true,
     "reconcile_fingerprint": true,
-    "sync_telemetry": true,
+    "sync_telemetry": false,
     "hello_prompt": "hello",
     "timeout_ms": 240000,
     "memory": "500m",

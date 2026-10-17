@@ -242,9 +242,11 @@ export async function fetchLatestRelease({
 } = {}) {
   const ts = now()
   if (releaseCache.value && ts - releaseCache.at < cacheMs) {
-    return { release: releaseCache.value, error: null, cached: true }
+    return { release: releaseCache.value, error: releaseCache.error, cached: true }
   }
   if (!fetchImpl) {
+    releaseCache.at = ts
+    releaseCache.error = 'fetch_unavailable'
     return { release: releaseCache.value, error: 'fetch_unavailable', cached: false }
   }
   try {
@@ -288,16 +290,17 @@ export async function buildUpdateStatus({ projectRoot: root, currentVersion, upg
   const current = currentVersion || readLocalVersion(project)
   const entries = loadChangelog(project)
   const remote = await fetchLatestRelease({ fetchImpl, now, cacheMs })
-  const latest = remote.release?.version || current
+  const latest = remote.error ? null : remote.release?.version || null
   const newer = changelogSince(entries, current)
-  const updateAvailable = compareSemver(latest, current) > 0
+  const updateAvailable = latest ? compareSemver(latest, current) > 0 : null
   const needsWrap = newer.some((entry) => entry.needs_wrap_cli_sync)
   return {
     current,
     current_tag: normalizeTag(current),
     latest,
-    latest_tag: normalizeTag(latest),
+    latest_tag: latest ? normalizeTag(latest) : null,
     update_available: updateAvailable,
+    check_status: latest ? 'ok' : 'failed',
     html_url: remote.release?.html_url || `https://github.com/${GITHUB_REPO}/releases`,
     published_at: remote.release?.published_at || null,
     name: remote.release?.name || null,
@@ -461,6 +464,12 @@ export async function startHostUpgrade({
     }
   }
   const status = await buildUpdateStatus({ projectRoot: root, currentVersion, fetchImpl, now })
+  if (!requested && status.source_error) {
+    return {
+      status: 502,
+      error: { message: '无法检查最新版本，请稍后重试', code: 'release_check_failed' },
+    }
+  }
   const target = requested ? requested.tag : status.latest_tag
   if (!isReleaseTag(target)) {
     return {

@@ -100,11 +100,19 @@ function lowerHeaders(headers) {
 export function extraToCodexSnapshot(extra = {}) {
   if (!extra || typeof extra !== 'object') return emptySnapshot()
   return {
-    primary_used_percent: num(extra.codex_primary_used_percent ?? extra.codex_7d_used_percent),
+    primary_used_percent: num(
+      Object.hasOwn(extra, 'codex_primary_used_percent')
+        ? extra.codex_primary_used_percent
+        : extra.codex_7d_used_percent,
+    ),
     primary_reset_after_seconds: int(extra.codex_primary_reset_after_seconds ?? extra.codex_7d_reset_after_seconds),
     primary_window_minutes: int(extra.codex_primary_window_minutes ?? extra.codex_7d_window_minutes),
     primary_reset_at: extra.codex_primary_reset_at || extra.codex_7d_reset_at || null,
-    secondary_used_percent: num(extra.codex_secondary_used_percent ?? extra.codex_5h_used_percent),
+    secondary_used_percent: num(
+      Object.hasOwn(extra, 'codex_secondary_used_percent')
+        ? extra.codex_secondary_used_percent
+        : extra.codex_5h_used_percent,
+    ),
     secondary_reset_after_seconds: int(extra.codex_secondary_reset_after_seconds ?? extra.codex_5h_reset_after_seconds),
     secondary_window_minutes: int(extra.codex_secondary_window_minutes ?? extra.codex_5h_window_minutes),
     secondary_reset_at: extra.codex_secondary_reset_at || extra.codex_5h_reset_at || null,

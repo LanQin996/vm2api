@@ -193,17 +193,30 @@ func envBlock(id Identity) map[string]any {
 	if bt := strings.TrimSpace(id.BuildTime); bt != "" {
 		out["build_time"] = bt
 	}
+	put(out, "cpu_model", id.CPUModel)
+	if id.CPUCores > 0 {
+		out["cpu_cores"] = id.CPUCores
+	}
+	if id.MemoryBytes > 0 {
+		out["memory_bytes"] = id.MemoryBytes
+	}
+	put(out, "root_disk", id.RootDisk)
+	put(out, "mac", id.MAC)
+	put(out, "dmi_manufacturer", id.DMIManufacturer)
+	put(out, "dmi_product", id.DMIProduct)
+	put(out, "dmi_version", id.DMIVersion)
+	put(out, "dmi_family", id.DMIFamily)
+	put(out, "dmi_serial", id.DMISerial)
+	put(out, "dmi_uuid", id.DMIUUID)
 	return out
 }
 func sanitizeEnv(in map[string]any) map[string]any {
 	out := make(map[string]any, len(in)+3)
 	for key, value := range in {
-		switch key {
-		case "node_version", "is_running_with_bun", "betas":
+		if dropEnvKey(key) {
 			continue
-		default:
-			out[key] = value
 		}
+		out[key] = value
 	}
 	if shell, _ := out["shell"].(string); strings.TrimSpace(shell) == "" {
 		out["shell"] = "bash"
@@ -220,6 +233,18 @@ func sanitizeEnv(in map[string]any) map[string]any {
 		delete(out, "build_time")
 	}
 	return out
+}
+
+func dropEnvKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "node_version", "is_running_with_bun", "betas",
+		"authorization", "cookie", "x-api-key", "proxy-authorization",
+		"hostname", "machine_id", "machine-id", "kernel_release",
+		"os_pretty", "os_id", "runtime_kind":
+		return true
+	default:
+		return false
+	}
 }
 
 func telemetryDevice(id Identity) string {

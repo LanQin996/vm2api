@@ -15,6 +15,7 @@ type GuideTo =
   | '/risk'
   | '/system'
   | '/keys'
+  | '/anthropic'
   | '/wrap'
   | '/database'
   | '/settings/$tab'
@@ -117,6 +118,14 @@ const GROUPS: { title: string; items: GuideItem[] }[] = [
         to: '/keys',
         summary: '发给客户端的 sk-vm- 密钥。',
         detail: '不要把主控密钥写进环境变量。可按槽、模型和并发收口。',
+      },
+      {
+        title: 'Anthropic',
+        view: 'anthropic',
+        to: '/anthropic',
+        summary: '直接调用 Anthropic Messages，不经过虚拟机。',
+        detail:
+          '默认为官方地址和 x-api-key。地址、认证和代理都能改，也可以按已配置的 API 地址调度。',
       },
     ],
   },
