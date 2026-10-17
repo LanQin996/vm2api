@@ -157,7 +157,7 @@ test('prepareCliHopBody keeps existing signatures and fills missing ones', () =>
   ])
 })
 
-test('prepareCliHopBody drops an assistant turn that is only unsigned thinking', () => {
+test('prepareCliHopBody keeps a short non-dummy signature on Opus 5.5', () => {
   const body = prepareCliHopBody({
     model: 'claude-opus-5.5',
     max_tokens: 64000,
@@ -174,12 +174,9 @@ test('prepareCliHopBody drops an assistant turn that is only unsigned thinking',
   assert.equal(body.model, 'claude-opus-5-5')
   assert.deepEqual(
     body.messages.map((message) => message.role),
-    ['user'],
+    ['user', 'assistant', 'user'],
   )
-  assert.deepEqual(body.messages.at(-1).content, [
-    { type: 'text', text: 'first' },
-    { type: 'text', text: 'continue', cache_control: { type: 'ephemeral', ttl: '1h' } },
-  ])
+  assert.deepEqual(body.messages[1].content, [{ type: 'thinking', thinking: 'draft only', signature: 'abc' }])
 })
 
 test('prepareCliHopBody repaired does not refill thinking after signature downgrade', () => {

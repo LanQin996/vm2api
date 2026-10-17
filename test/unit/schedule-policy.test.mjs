@@ -8,7 +8,13 @@ import {
   getManualScheduleWins,
   isManualScheduleLocked,
 } from '../../src/lib/pool/schedule-policy.mjs'
-import { setVmSchedulable } from '../../src/lib/vm/vm-registry.mjs'
+import {
+  getVm,
+  holdSchedulableSlots,
+  resumeSchedulableSlots,
+  setVmSchedulable,
+  waitForSlotDrain,
+} from '../../src/lib/vm/vm-registry.mjs'
 import { restoreScheduleAfterLiveCredential } from '../../src/lib/oauth/oauth-credentials.mjs'
 
 afterEach(() => {
@@ -62,6 +68,49 @@ test('auto cannot override a manual lock; panel source can', () => {
   setManualScheduleWins(false)
   const autoOn = setVmSchedulable(project, 'vm-01', true)
   assert.equal(autoOn.schedulable, true)
+  fs.rmSync(project, { recursive: true, force: true })
+})
+test('kernel update hold restores the previous schedule without an auto unlock', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kernel-hold-'))
+  const file = path.join(project, 'vms', 'vm-01.json')
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, JSON.stringify({ id: 'vm-01', status: 'running', schedulable: true }))
+  const held = setVmSchedulable(project, 'vm-01', false, 'kernel_update', {
+    preserveStatus: true,
+    source: 'force',
+  })
+  assert.equal(held.schedulable, false)
+  assert.equal(held.schedule_disabled_reason, 'kernel_update')
+  assert.equal(setVmSchedulable(project, 'vm-01', true).schedulable, false)
+  const restored = setVmSchedulable(project, 'vm-01', true, null, { preserveStatus: true, source: 'force' })
+  assert.equal(restored.schedulable, true)
+  assert.equal(restored.schedule_disabled_reason, null)
+  fs.rmSync(project, { recursive: true, force: true })
+})
+test('a failed kernel hold restores only the slots it paused', async () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-kernel-hold-fail-'))
+  const dir = path.join(project, 'vms')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'vm-01.json'), JSON.stringify({ id: 'vm-01', status: 'running', schedulable: true }))
+  fs.writeFileSync(
+    path.join(dir, 'vm-02.json'),
+    JSON.stringify({
+      id: 'vm-02',
+      status: 'running',
+      schedulable: false,
+      schedule_manual: true,
+      schedule_disabled_reason: 'disabled',
+    }),
+  )
+  const held = holdSchedulableSlots(project, 'kernel_update')
+  const drain = await waitForSlotDrain({ vmInflight: new Map([['vm-01', 1]]) }, held, { timeoutMs: 1 })
+  assert.equal(drain.ok, false)
+  const restored = drain.ok ? [] : resumeSchedulableSlots(project, held, 'kernel_update')
+  assert.deepEqual(restored, ['vm-01'])
+  assert.equal(getVm(project, 'vm-01').schedulable, true)
+  const manual = getVm(project, 'vm-02')
+  assert.equal(manual.schedulable, false)
+  assert.equal(manual.schedule_disabled_reason, 'disabled')
   fs.rmSync(project, { recursive: true, force: true })
 })
 

@@ -26,6 +26,14 @@ export function streamIdleTimeoutMs(routing, fallbackMs = Number(process.env.KIN
   return Math.min(STREAM_IDLE_TIMEOUT_MAX_MS, Math.max(STREAM_IDLE_TIMEOUT_MIN_MS, Math.round(ms)))
 }
 
+/** Gateway stream path: panel routing → cfg.limits → KIN_STREAM_IDLE_TIMEOUT → 180s default. */
+export function resolveStreamIdleTimeoutMs(routing, cfg) {
+  const limitsMs = Number(cfg?.limits?.stream_idle_timeout_ms)
+  const fallback =
+    Number.isFinite(limitsMs) && limitsMs > 0 ? limitsMs : Number(process.env.KIN_STREAM_IDLE_TIMEOUT) || 180_000
+  return streamIdleTimeoutMs(routing, fallback)
+}
+
 /**
  * How long a Claude stream may sit in the queue before the first downstream
  * byte. Cloudflare returns 524 when the origin writes nothing for ~100s.

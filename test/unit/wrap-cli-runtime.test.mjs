@@ -14,6 +14,7 @@ import {
   materializeSlotDataplane,
   materializeWrapCli,
   replaceKernelBinary,
+  inspectKernelChanges,
   syncWrapSample,
   wrapCliHomeDir,
   wrapCliTemplateDir,
@@ -90,6 +91,29 @@ test('crag materialize copies the crag kernel and cc-node', () => {
     fs.rmSync(project, { recursive: true, force: true })
   }
 })
+test('crag inspection reports a change and sync marks the kernel for restart', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-crag-change-'))
+  try {
+    seedTemplate(project)
+    const crag = path.join(project, 'share', 'crag', 'kin-kernel')
+    fs.mkdirSync(path.dirname(crag), { recursive: true })
+    fs.writeFileSync(crag, 'crag-kernel')
+    const vm = { id: 'vm-13', dataplane: 'crag' }
+    assert.equal(syncWrapSample(project, [vm]).items[0].kernel_changed, true)
+    const dest = path.join(wrapCliHomeDir(project, 'vm-13'), 'kin-kernel.bin')
+    const before = fs.readFileSync(dest)
+    fs.writeFileSync(crag, 'crag-kernel-next')
+    const checked = inspectKernelChanges(project, [vm])
+    assert.equal(checked.changed_count, 1)
+    assert.deepEqual(fs.readFileSync(dest), before)
+    const synced = syncWrapSample(project, [vm])
+    assert.equal(synced.items[0].kernel_changed, true)
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'crag-kernel-next')
+    assert.equal(syncWrapSample(project, [vm]).items[0].kernel_changed, false)
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
 
 test('materializeWrapCli does not recopy identical wrap files', () => {
   const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-wrap-cli-skip-'))
@@ -120,8 +144,48 @@ test('materializeWrapCli replaces same-size stale kernel payload', () => {
     const timestamp = new Date(Date.now() + 60_000)
     fs.utimesSync(dest, timestamp, timestamp)
 
-    assert.equal(materializeWrapCli(project, { id: 'vm-13' }).ok, true)
+    const updated = materializeWrapCli(project, { id: 'vm-13' })
+    assert.equal(updated.ok, true)
+    assert.equal(updated.kernel_changed, true)
     assert.equal(fs.readFileSync(dest, 'utf8'), 'new-kernel')
+    assert.equal(materializeWrapCli(project, { id: 'vm-13' }).kernel_changed, false)
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
+
+test('kernel inspection reports a change without writing the slot', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-wrap-cli-inspect-'))
+  try {
+    const template = seedTemplate(project)
+    const vm = { id: 'vm-13' }
+    assert.equal(materializeWrapCli(project, vm).ok, true)
+    const dest = path.join(wrapCliHomeDir(project, 'vm-13'), 'kin-kernel.bin')
+    const before = fs.readFileSync(dest)
+    fs.writeFileSync(path.join(template, 'kin-kernel'), 'replacement-kernel')
+    const checked = inspectKernelChanges(project, [vm])
+    assert.equal(checked.changed_count, 1)
+    assert.deepEqual(fs.readFileSync(dest), before)
+    const synced = syncWrapSample(project, [vm])
+    assert.equal(synced.items[0].kernel_changed, true)
+    assert.equal(fs.readFileSync(dest, 'utf8'), 'replacement-kernel')
+  } finally {
+    fs.rmSync(project, { recursive: true, force: true })
+  }
+})
+test('a failed kernel restart stays pending until the next sync', () => {
+  const project = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-wrap-cli-pending-'))
+  try {
+    seedTemplate(project)
+    const vm = { id: 'vm-13', kernel_restart_pending: 'kernel_restart_failed' }
+    assert.equal(materializeWrapCli(project, vm).ok, true)
+    const checked = inspectKernelChanges(project, [vm])
+    assert.equal(checked.changed_count, 1)
+    const synced = syncWrapSample(project, [vm])
+    assert.equal(synced.items[0].kernel_changed, true)
+    delete vm.kernel_restart_pending
+    assert.equal(inspectKernelChanges(project, [vm]).changed_count, 0)
+    assert.equal(syncWrapSample(project, [vm]).items[0].kernel_changed, false)
   } finally {
     fs.rmSync(project, { recursive: true, force: true })
   }

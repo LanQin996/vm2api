@@ -260,8 +260,8 @@ function filesEqual(src, dest) {
 }
 
 function replaceFile(src, dest) {
-  if (!src || src === dest || sameFile(src, dest)) return
-  if (filesEqual(src, dest)) return
+  if (!src || src === dest || sameFile(src, dest)) return false
+  if (filesEqual(src, dest)) return false
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   const tmp = path.join(path.dirname(dest), `.${path.basename(dest)}.${process.pid}.new`)
   fs.copyFileSync(src, tmp)
@@ -279,6 +279,7 @@ function replaceFile(src, dest) {
     }
   }
   fs.renameSync(tmp, dest)
+  return true
 }
 
 function copyFile(src, dest) {
@@ -385,7 +386,7 @@ export function materializeCragKernel(projectRoot, vm, { uid = null, gid = null 
   }
   const dest = wrapCliHomeDir(projectRoot, vm.id)
   fs.mkdirSync(dest, { recursive: true })
-  copyFile(src, path.join(dest, WRAP_KERNEL_BIN))
+  const kernelChanged = replaceFile(src, path.join(dest, WRAP_KERNEL_BIN))
   copyFile(cliSrc, path.join(dest, CC_NODE_BIN))
   writeCragWrapper(dest)
   chownTree(dest, uid, gid)
@@ -394,6 +395,8 @@ export function materializeCragKernel(projectRoot, vm, { uid = null, gid = null 
     dest,
     src,
     dataplane: 'crag',
+    changed: kernelChanged,
+    kernel_changed: kernelChanged,
     glibc_shim: false,
     wrapper: isFile(path.join(dest, WRAP_KERNEL_WRAPPER)),
     kernel_bin: isFile(path.join(dest, WRAP_KERNEL_BIN)),
@@ -442,12 +445,11 @@ function writeWrapper(destDir) {
 
 function installKernelPayload(src, dest, projectRoot = '') {
   const binSrc = kernelPayloadPath(src, projectRoot)
-  if (binSrc && isFile(binSrc)) {
-    copyFile(binSrc, path.join(dest, WRAP_KERNEL_BIN))
-  }
+  const kernelChanged = binSrc && isFile(binSrc) ? replaceFile(binSrc, path.join(dest, WRAP_KERNEL_BIN)) : false
   const glibcSrc = path.join(src, WRAP_GLIBC_DIR)
   if (isDir(glibcSrc)) copyDir(glibcSrc, path.join(dest, WRAP_GLIBC_DIR))
   writeWrapper(dest)
+  return kernelChanged
 }
 
 export function materializeWrapCli(projectRoot, vm, { uid = null, gid = null } = {}) {
@@ -462,12 +464,14 @@ export function materializeWrapCli(projectRoot, vm, { uid = null, gid = null } =
   for (const name of WRAP_CLI_FILES) {
     copyFile(path.join(src, name), path.join(dest, name))
   }
-  installKernelPayload(src, dest, projectRoot)
+  const kernelChanged = installKernelPayload(src, dest, projectRoot)
   chownTree(dest, uid, gid)
   return {
     ok: true,
     dest,
     src,
+    changed: kernelChanged,
+    kernel_changed: kernelChanged,
     glibc_shim: isDir(path.join(dest, WRAP_GLIBC_DIR)),
     wrapper: isFile(path.join(dest, WRAP_KERNEL_WRAPPER)),
     kernel_bin: isFile(path.join(dest, WRAP_KERNEL_BIN)),
@@ -710,6 +714,46 @@ export function replaceCcNodeBinary(projectRoot, buf) {
   return replaceNamedCliBinary(projectRoot, buf, CC_NODE_BIN)
 }
 
+function kernelWouldChange(src, dest) {
+  if (!src || !isFile(src)) return false
+  if (!isFile(dest)) return true
+  if (sameFile(src, dest)) return false
+  return !filesEqual(src, dest)
+}
+
+export function inspectKernelChanges(projectRoot, vms, { routing } = {}) {
+  const sample = describeWrapSample(projectRoot)
+  const crag = describeCragPayload(projectRoot)
+  const items = []
+  for (const vm of vms || []) {
+    if (isCodexVm(vm)) continue
+    const dataplane = resolveKernelDataplane(vm, routing) || 'wrap'
+    const dest = path.join(wrapCliHomeDir(projectRoot, vm.id), WRAP_KERNEL_BIN)
+    const src = dataplane === 'crag' ? crag.path : kernelPayloadPath(sample.dir, projectRoot)
+    if (dataplane === 'crag' && !crag.ok) {
+      items.push({ id: vm.id, dataplane, ok: false, code: 'crag_kernel_missing', kernel_changed: false })
+      continue
+    }
+    if (dataplane !== 'crag' && !sample.ok) {
+      items.push({ id: vm.id, dataplane, ok: false, code: sample.code, kernel_changed: false })
+      continue
+    }
+    const kernelChanged = kernelWouldChange(src, dest) || Boolean(vm?.kernel_restart_pending)
+    items.push({ id: vm.id, dataplane, ok: true, kernel_changed: kernelChanged })
+  }
+  const failed = items.filter((item) => !item.ok)
+  const changed = items.filter((item) => item.kernel_changed === true)
+  return {
+    ok: failed.length === 0,
+    changed: changed.length > 0,
+    total: items.length,
+    ok_count: items.length - failed.length,
+    failed_count: failed.length,
+    changed_count: changed.length,
+    items,
+  }
+}
+
 export function syncWrapSample(projectRoot, vms, { uidOf, routing } = {}) {
   const sample = describeWrapSample(projectRoot)
   const crag = describeCragPayload(projectRoot)
@@ -737,17 +781,21 @@ export function syncWrapSample(projectRoot, vms, { uidOf, routing } = {}) {
       uid: uid?.uid ?? uid,
       gid: gid ?? null,
     })
+    if (vm?.kernel_restart_pending) out.kernel_changed = true
     items.push({ id: vm.id, dataplane, ...out })
   }
   const failed = items.filter((item) => !item.ok)
+  const changed = items.filter((item) => item.kernel_changed === true)
   return {
     ok: failed.length === 0,
+    changed: changed.length > 0,
     src: sample.dir,
     meta: sample.meta,
     crag,
     total: items.length,
     ok_count: items.length - failed.length,
     failed_count: failed.length,
+    changed_count: changed.length,
     items,
   }
 }

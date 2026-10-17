@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   prepareAnthropicRequest,
+  stripInvalidThinkingBlocks,
   rewriteToolNames,
   restoreToolNames,
   restoreToolNamesInSSELine,
@@ -124,7 +125,7 @@ test('unsigned and empty thinking blocks are stripped before hop', () => {
     { type: 'text', text: 'answer' },
   ])
 })
-test('preserves omitted signed and redacted thinking blocks', () => {
+test('older models keep a long omitted signature and drop redacted thinking', () => {
   const body = prepareAnthropicRequest({
     model: 'claude-opus-5',
     thinking: { type: 'adaptive' },
@@ -141,9 +142,172 @@ test('preserves omitted signed and redacted thinking blocks', () => {
   })
   assert.deepEqual(body.messages[0].content, [
     { type: 'thinking', thinking: '', signature: 'sig_omitted_12345678901234567890' },
-    { type: 'redacted_thinking', data: 'encrypted-thinking' },
     { type: 'text', text: 'answer' },
   ])
+})
+test('5.5 drops the whole signed chain after one invalid block', () => {
+  const messages = [
+    { role: 'user', content: [{ type: 'text', text: 'a' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'old', signature: '' },
+        { type: 'text', text: 'answer' },
+      ],
+    },
+    { role: 'user', content: [{ type: 'text', text: 'b' }] },
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'later', signature: 'sig_real_1234567890abcdef' },
+        { type: 'redacted_thinking', data: 'encrypted' },
+        { type: 'text', text: 'later answer' },
+      ],
+    },
+    {
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'only thought', signature: 'sig_real_1234567890abcdef' }],
+    },
+  ]
+  for (const model of ['claude-opus-5-5', 'anthropic/claude-sonnet-5.5', 'claude-haiku-5-5']) {
+    const body = stripInvalidThinkingBlocks({
+      model,
+      thinking: { type: 'adaptive' },
+      messages,
+    })
+    assert.deepEqual(
+      body.messages.map((message) => message.content.map((block) => block.text || block.type)),
+      [['a'], ['answer'], ['b'], ['later answer']],
+      model,
+    )
+  }
+  const older = stripInvalidThinkingBlocks({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages,
+  })
+  assert.deepEqual(
+    older.messages[3].content.map((block) => block.type),
+    ['thinking', 'text', 'thinking'],
+  )
+})
+
+test('5.5 keeps a lone redacted block and a short non-dummy signature', () => {
+  const kept = stripInvalidThinkingBlocks({
+    model: 'claude-sonnet-5-5',
+    thinking: { type: 'adaptive' },
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '', signature: 'signed' },
+          { type: 'redacted_thinking', data: 'encrypted' },
+          { type: 'text', text: 'ok' },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(
+    kept.messages[0].content.map((block) => block.type),
+    ['thinking', 'redacted_thinking', 'text'],
+  )
+  const dropped = stripInvalidThinkingBlocks({
+    model: 'claude-opus-5-5',
+    thinking: { type: 'adaptive' },
+    messages: [
+      {
+        role: 'assistant',
+        content: [{ type: 'redacted_thinking' }, { type: 'text', text: 'Visible' }],
+      },
+    ],
+  })
+  assert.deepEqual(dropped.messages[0].content, [{ type: 'text', text: 'Visible' }])
+  const older = stripInvalidThinkingBlocks({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'redacted_thinking', data: 'encrypted' },
+          { type: 'text', text: 'Visible' },
+        ],
+      },
+    ],
+  })
+  assert.deepEqual(older.messages[0].content, [{ type: 'text', text: 'Visible' }])
+  for (const model of ['claude-opus-5-5', 'claude-opus-5']) {
+    const signed = stripInvalidThinkingBlocks({
+      model,
+      thinking: { type: 'adaptive' },
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'redacted_thinking', signature: 'sig_real_1234567890abcdef' },
+            { type: 'text', text: 'kept' },
+          ],
+        },
+      ],
+    })
+    assert.deepEqual(
+      signed.messages[0].content.map((block) => block.type),
+      ['redacted_thinking', 'text'],
+      model,
+    )
+  }
+})
+
+test('5.5 preserve path still keeps an invalid signed chain', () => {
+  const body = stripInvalidThinkingBlocks(
+    {
+      model: 'claude-opus-5-5',
+      thinking: { type: 'adaptive' },
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            { type: 'thinking', thinking: 'old', signature: '' },
+            { type: 'thinking', thinking: 'later', signature: 'sig_real_1234567890abcdef' },
+            { type: 'redacted_thinking', data: 'encrypted' },
+            { type: 'text', text: 'answer' },
+          ],
+        },
+      ],
+    },
+    { preserveThinkingBlocks: true },
+  )
+  assert.deepEqual(
+    body.messages[0].content.map((block) => block.type),
+    ['thinking', 'thinking', 'redacted_thinking', 'text'],
+  )
+})
+test('an untyped thinking block breaks a valid 5.5 chain and is dropped on older models', () => {
+  const messages = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'kept', signature: 'sig_real_1234567890abcdef' },
+        { thinking: 'bad' },
+        { type: 'text', text: 'answer' },
+      ],
+    },
+  ]
+  const newer = stripInvalidThinkingBlocks({
+    model: 'claude-opus-5-5',
+    thinking: { type: 'adaptive' },
+    messages,
+  })
+  assert.deepEqual(newer.messages[0].content, [{ type: 'text', text: 'answer' }])
+  const older = stripInvalidThinkingBlocks({
+    model: 'claude-opus-5',
+    thinking: { type: 'adaptive' },
+    messages,
+  })
+  assert.deepEqual(
+    older.messages[0].content.map((block) => block.type || 'untyped'),
+    ['thinking', 'text'],
+  )
 })
 
 test('panel preservation creates a missing thinking signature field', () => {

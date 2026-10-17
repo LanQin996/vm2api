@@ -17,5 +17,6 @@ export function getManualScheduleWins() {
 export function isManualScheduleLocked(vm) {
   if (!getManualScheduleWins() || !vm) return false
   if (vm.schedule_manual === true) return true
-  return String(vm.schedule_disabled_reason || '') === 'disabled'
+  const reason = String(vm.schedule_disabled_reason || '')
+  return reason === 'disabled' || reason === 'kernel_update'
 }

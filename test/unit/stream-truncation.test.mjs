@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildAnthropicSseError,
+  createAnthropicSseErrorRemapper,
   createAnthropicStreamTracker,
   isRecoverableTruncation,
 } from '../../src/lib/protocol/stream-truncation.mjs'
@@ -51,4 +52,31 @@ test('a worker timeout is not closed as max_tokens', () => {
     isRecoverableTruncation({ body: { error: { code: 'worker_timeout', message: 'slot worker idle timeout' } } }),
     false,
   )
+})
+
+test('streaming Usage Policy SSE error remaps to policy_blocked / refusal_guard (#503)', () => {
+  const msg =
+    'provider error: provider error: API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request'
+  const upstream = JSON.stringify({
+    type: 'error',
+    error: { type: 'invalid_request_error', message: msg },
+  })
+  const remapper = createAnthropicSseErrorRemapper()
+  remapper.remapLine('event: error\n')
+  const remapped = remapper.remapLine(`data: ${upstream}\n`)
+  assert.match(remapped, /^data: /)
+  const payload = JSON.parse(remapped.trim().slice(5))
+  assert.equal(payload.type, 'error')
+  assert.equal(payload.error.type, 'policy_blocked')
+  assert.equal(payload.error.code, 'refusal_guard')
+  assert.notEqual(payload.error.type, 'invalid_request_error')
+  assert.notEqual(payload.error.code, 'upstream_invalid_request')
+  assert.equal(payload.error.details?.blocked_by, 'upstream')
+  assert.equal(payload.error.details?.retryable, false)
+})
+
+test('non-error SSE lines pass through the Anthropic error remapper unchanged', () => {
+  const remapper = createAnthropicSseErrorRemapper()
+  const line = 'data: {"type":"message_start","message":{"id":"msg_1","content":[]}}\n'
+  assert.equal(remapper.remapLine(line), line)
 })

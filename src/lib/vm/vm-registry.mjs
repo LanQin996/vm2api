@@ -508,6 +508,57 @@ export function setVmSchedulable(
   atomicWriteJson(file, vm)
   return summarizeVm(vm)
 }
+export const KERNEL_UPDATE_HOLD = 'kernel_update'
+
+export function holdSchedulableSlots(project, reason = KERNEL_UPDATE_HOLD) {
+  const held = []
+  for (const vm of listVms(project)) {
+    if (vm?.schedulable === false) continue
+    const summary = setVmSchedulable(project, vm.id, false, reason, { preserveStatus: true, source: 'force' })
+    if (summary) held.push(vm.id)
+  }
+  return held
+}
+
+export function resumeSchedulableSlots(project, ids, reason = KERNEL_UPDATE_HOLD) {
+  const restored = []
+  for (const id of ids || []) {
+    const vm = getVm(project, id)
+    if (!vm || vm.schedule_disabled_reason !== reason) continue
+    const summary = setVmSchedulable(project, id, true, null, { preserveStatus: true, source: 'force' })
+    if (summary?.schedulable !== false) restored.push(id)
+  }
+  return restored
+}
+
+export async function waitForSlotDrain(poolScheduler, ids, { timeoutMs = 120000 } = {}) {
+  const wanted = new Set((ids || []).map(String))
+  const count = () => {
+    let inflight = 0
+    for (const [vmId, value] of poolScheduler?.vmInflight || []) {
+      if (wanted.has(String(vmId))) inflight += Number(value) || 0
+    }
+    return inflight
+  }
+  const deadline = Date.now() + timeoutMs
+  let inflight = count()
+  while (inflight > 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    inflight = count()
+  }
+  return { ok: inflight === 0, inflight }
+}
+
+export function markKernelRestartPending(project, id, reason = 'kernel_restart_failed') {
+  return patchVmRecord(project, id, { kernel_restart_pending: reason })
+}
+
+export function clearKernelRestartPending(project, id) {
+  return patchVmRecord(project, id, (vm) => {
+    delete vm.kernel_restart_pending
+    return vm
+  })
+}
 
 export function bindVmProxy(projectRoot, id, proxyInfo) {
   const file = path.join(projectRoot, 'vms', `${id}.json`)

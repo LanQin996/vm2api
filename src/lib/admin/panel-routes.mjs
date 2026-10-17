@@ -120,6 +120,12 @@ import {
   setActiveVm,
   clearActiveVm,
   setVmSchedulable,
+  holdSchedulableSlots,
+  resumeSchedulableSlots,
+  waitForSlotDrain,
+  KERNEL_UPDATE_HOLD,
+  markKernelRestartPending,
+  clearKernelRestartPending,
   bindVmProxy,
   adoptVmProxyBinding,
   patchVmRecord,
@@ -232,6 +238,7 @@ import {
   replaceKernelBinary,
   replaceCliNodeBinary,
   replaceCcNodeBinary,
+  inspectKernelChanges,
   syncWrapSample,
   wrapCliHomeDir,
 } from '../vm/wrap-cli-runtime.mjs'
@@ -448,10 +455,11 @@ async function syncInstalledKernels({ project, routingConfig, body = {} }) {
   const wanted = Array.isArray(body.ids) ? new Set(body.ids.map(String)) : null
   // Cluster-node slots run image-baked binaries; they upgrade by rebuilding the slot image.
   const vms = (wanted ? all.filter((vm) => wanted.has(vm.id)) : all).filter((vm) => !slotHost(vm).bakedKernel)
+  if (body.restart === false) return inspectKernelChanges(project, vms, { routing: routingConfig })
   const report = syncWrapSample(project, vms, { routing: routingConfig })
   if (body.restart !== false) {
     for (const item of report.items || []) {
-      if (!item.ok) continue
+      if (!item.ok || item.kernel_changed !== true) continue
       const vm = getVm(project, item.id)
       if (!vm || vm.status !== 'running') {
         item.kernel = { ok: true, skipped: true, reason: 'vm_stopped' }
@@ -465,9 +473,12 @@ async function syncInstalledKernels({ project, routingConfig, body = {} }) {
         error: String(e?.message || e).slice(0, 200),
       }))
       if (!item.kernel?.ok) {
+        markKernelRestartPending(project, item.id, item.kernel?.reason || 'kernel_restart_failed')
         item.ok = false
         item.code = 'kernel_restart_failed'
         item.error = item.kernel?.error || item.kernel?.reason || 'kernel restart failed'
+      } else {
+        clearKernelRestartPending(project, item.id)
       }
     }
   }
@@ -3041,6 +3052,31 @@ export function createPanelHandler(ctx) {
           refresh,
         })
         return json(res, 200, panel.ok(payload))
+      }
+
+      if (req.method === 'POST' && p === '/api/panel/vms/schedule/hold') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const reason = String(body?.reason || KERNEL_UPDATE_HOLD).slice(0, 64)
+        const ids = holdSchedulableSlots(cfg.paths.project, reason)
+        const drain = await waitForSlotDrain(ctx.poolScheduler, ids)
+        if (!drain.ok) {
+          const restored = resumeSchedulableSlots(cfg.paths.project, ids, reason)
+          return json(res, 409, {
+            ok: false,
+            error: { code: 'slots_busy', message: '在途请求未结束，已恢复调度' },
+            data: { paused: ids.length, restored: restored.length, inflight: drain.inflight, drained: false },
+          })
+        }
+        return json(res, 200, panel.ok({ paused: ids.length, inflight: 0, drained: true }))
+      }
+      if (req.method === 'POST' && p === '/api/panel/vms/schedule/resume') {
+        const body = await readBody(req, 8192).catch(() => ({}))
+        const reason = String(body?.reason || KERNEL_UPDATE_HOLD).slice(0, 64)
+        const ids = (listVms(cfg.paths.project) || [])
+          .filter((vm) => vm?.schedule_disabled_reason === reason)
+          .map((vm) => vm.id)
+        const restored = resumeSchedulableSlots(cfg.paths.project, ids, reason)
+        return json(res, 200, panel.ok({ restored: restored.length }))
       }
 
       // POST /api/panel/vms/:id/schedulable — sub2api-style schedule toggle

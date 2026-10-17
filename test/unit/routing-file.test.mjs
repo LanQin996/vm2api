@@ -11,6 +11,7 @@ import {
   queueKeepaliveDelayMs,
   readRoutingConfigFile,
   routingConfigFile,
+  resolveStreamIdleTimeoutMs,
   streamIdleTimeoutMs,
 } from '../../src/lib/core/config.mjs'
 
@@ -81,6 +82,34 @@ test('streamIdleTimeoutMs prefers the panel value, then the caller fallback', ()
   })
   withEnv('KIN_STREAM_IDLE_TIMEOUT', '240000', () => {
     assert.equal(streamIdleTimeoutMs(null), 240_000)
+  })
+})
+
+test('resolveStreamIdleTimeoutMs cascades panel, cfg.limits, env, then 180s default', () => {
+  withEnv('KIN_STREAM_IDLE_TIMEOUT', '', () => {
+    assert.equal(resolveStreamIdleTimeoutMs({ failover: {} }, { limits: {} }), 180_000)
+    assert.equal(
+      resolveStreamIdleTimeoutMs(
+        { failover: { stream_idle_timeout_ms: 600_000 } },
+        { limits: { stream_idle_timeout_ms: 2000 } },
+      ),
+      600_000,
+    )
+    assert.equal(resolveStreamIdleTimeoutMs({ failover: {} }, { limits: { stream_idle_timeout_ms: 90_000 } }), 90_000)
+  })
+  withEnv('KIN_STREAM_IDLE_TIMEOUT', '420000', () => {
+    assert.equal(resolveStreamIdleTimeoutMs({ failover: {} }, { limits: {} }), 420_000)
+    assert.equal(
+      resolveStreamIdleTimeoutMs({ failover: {} }, { limits: { stream_idle_timeout_ms: Number.NaN } }),
+      420_000,
+    )
+  })
+})
+
+test('resolveStreamIdleTimeoutMs avoids hardcoded 180k when cfg.limits is unset but env is set', () => {
+  withEnv('KIN_STREAM_IDLE_TIMEOUT', '600000', () => {
+    const cfg = { limits: { max_body_bytes: 1 } }
+    assert.equal(resolveStreamIdleTimeoutMs({ failover: {} }, cfg), 600_000)
   })
 })
 

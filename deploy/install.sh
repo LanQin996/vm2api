@@ -73,7 +73,7 @@ usage() {
   --dir PATH           安装目录（默认 ${INSTALL_DIR}）
   --yes                非交互
   --no-start           只拉代码，不 compose up
-  --no-sync-wrap       升级后不自动替换并重启槽内 CLI / kernel
+  --no-sync-wrap       升级后不检查、不停调度、不更新槽内 kernel
   --from-source        clone 仓库并在本机构建镜像（默认拉预构建镜像）
   -h, --help           帮助
 EOF
@@ -414,8 +414,35 @@ read_env_key() {
   grep -E "^${name}=" "${INSTALL_DIR}/.env" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d "'" | tr -d '"'
 }
 
+pause_schedulable_slots() {
+  local key="$1" port="$2" response
+  info "暂停可调度槽，等待在途请求"
+  response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/vms/schedule/hold" \
+    -H "Authorization: Bearer ${key}" \
+    -H "Content-Type: application/json" \
+    -d '{"reason":"kernel_update"}')" || return 1
+  printf '%s' "$response" | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+r = d.get("data") or {}
+print(f"schedule hold: paused={int(r.get("paused") or 0)} inflight={int(r.get("inflight") or 0)}")
+raise SystemExit(0 if d.get("ok") else 1)'
+}
+
+resume_schedulable_slots() {
+  local key="$1" port="$2" response
+  response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/vms/schedule/resume" \
+    -H "Authorization: Bearer ${key}" \
+    -H "Content-Type: application/json" \
+    -d '{"reason":"kernel_update"}')" || return 1
+  printf '%s' "$response" | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+r = d.get("data") or {}
+print(f"schedule resume: restored={int(r.get("restored") or 0)}")
+raise SystemExit(0 if d.get("ok") else 1)'
+}
+
 sync_wrap_cli() {
-  local key port response
+  local key port response changed
   key="$(read_env_key VM2API_API_KEY)"
   port="$(read_env_key PORT)"
   port="${port:-$DEFAULT_PORT}"
@@ -424,11 +451,32 @@ sync_wrap_cli() {
     echo "  curl -sS -X POST http://127.0.0.1:${port}/api/panel/wrap-cli/sync -H \"Authorization: Bearer \$VM2API_API_KEY\" -H 'Content-Type: application/json' -d '{\"restart\":true}'"
     return 1
   fi
-  info "同步槽内 wrap CLI / kernel"
+  info "检查槽内 kernel 是否变化"
   response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/wrap-cli/sync" \
     -H "Authorization: Bearer ${key}" \
     -H "Content-Type: application/json" \
-    -d '{"restart":true}')" || return 1
+    -d '{"restart":false}')" || return 1
+  probe="$(printf '%s' "$response" | python3 -c 'import json, sys
+d = json.load(sys.stdin)
+r = d.get("data") or {}
+failed = int(r.get("failed_count") or 0)
+total = int(r.get("total") or 0)
+changed = int(r.get("changed_count") or 0)
+print(f"wrap-cli/check: changed={changed}/{total}, failed={failed}", file=sys.stderr)
+if not d.get("ok") or failed:
+    raise SystemExit(2)
+print("1" if changed else "0")')" || return 1
+  if [ "$probe" != "1" ]; then
+    ok "kernel 未变化，跳过停调度和重启"
+    return 0
+  fi
+  pause_schedulable_slots "$key" "$port" || { resume_schedulable_slots "$key" "$port" || true; return 1; }
+  info "kernel 已变化，重启受影响的槽"
+  response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/wrap-cli/sync" \
+    -H "Authorization: Bearer ${key}" \
+    -H "Content-Type: application/json" \
+    -d '{"restart":true}')" || { resume_schedulable_slots "$key" "$port" || true; return 1; }
+  resume_schedulable_slots "$key" "$port" || return 1
   printf '%s' "$response" | python3 -c 'import json, sys
 d = json.load(sys.stdin)
 r = d.get("data") or {}
@@ -437,7 +485,7 @@ total = int(r.get("total") or 0)
 ok = int(r.get("ok_count") or 0)
 print(f"wrap-cli/sync: {ok}/{total}, failed={failed}")
 raise SystemExit(0 if d.get("ok") and failed == 0 else 1)'
-  ok "槽内 wrap CLI / kernel 已同步"
+  ok "槽内 kernel 已更新"
 }
 
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}"

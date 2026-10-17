@@ -8,6 +8,9 @@
  * A thinking block cut mid-way cannot be closed (it needs a signature).
  */
 
+import { mapUpstreamError, rewritePoolErrorForClient } from '../core/errors.mjs'
+import { semanticStatusForStreamError } from './stream-error-status.mjs'
+
 const CLOSABLE_BLOCKS = new Set(['text', 'tool_use'])
 
 function sse(event, data) {
@@ -22,6 +25,54 @@ export function buildAnthropicSseError(error = {}) {
   }
   if (error.code) body.code = String(error.code)
   return sse('error', { type: 'error', error: body })
+}
+
+/**
+ * Remap upstream `event: error` SSE data lines through mapUpstreamError so
+ * streaming Anthropic clients see the same taxonomy as non-streaming responses.
+ */
+export function createAnthropicSseErrorRemapper({ headers = {} } = {}) {
+  let pendingEvent = null
+  return {
+    remapLine(line) {
+      const text = String(line)
+      const trimmed = text.trimEnd()
+      const bare = trimmed.trim()
+      if (bare.startsWith('event:')) {
+        pendingEvent = bare.slice(6).trim()
+        return line
+      }
+      if (bare === '') {
+        pendingEvent = null
+        return line
+      }
+      if (!bare.startsWith('data:') || pendingEvent !== 'error') return line
+      pendingEvent = null
+      let payload
+      try {
+        payload = JSON.parse(bare.slice(5).trim())
+      } catch {
+        return line
+      }
+      if (payload?.type !== 'error' && !payload?.error) return line
+      const hopStatus = semanticStatusForStreamError(payload)
+      const mapped = rewritePoolErrorForClient(mapUpstreamError(hopStatus, payload, headers), payload)
+      const err = mapped.body?.error
+      if (!err) return line
+      const suffix = text.slice(trimmed.length)
+      const data = JSON.stringify({
+        type: 'error',
+        error: {
+          type: err.type,
+          message: err.message,
+          ...(err.code ? { code: err.code } : {}),
+          ...(err.details && Object.keys(err.details).length ? { details: err.details } : {}),
+          ...(err.request_id ? { request_id: err.request_id } : {}),
+        },
+      })
+      return `data: ${data}${suffix || '\n'}`
+    },
+  }
 }
 
 export function createAnthropicStreamTracker() {
