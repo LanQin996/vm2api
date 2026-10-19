@@ -1,11 +1,12 @@
 import { useCallback, useDeferredValue, useMemo, useState } from 'react'
 import { useMutation, useMutationState, useQuery } from '@tanstack/react-query'
 import { VIEW_TITLES } from '@/config/nav'
-import type { Vm, VmProxySnap } from '@/types/panel-vm'
+import type { VmProxySnap } from '@/types/panel-vm'
 import { Plus, Settings2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useVmIndex } from '@/hooks/use-vm-index'
 import { Button } from '@/components/ui/button'
 import {
   Sheet,
@@ -18,7 +19,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { PageHeader } from '@/components/page-header'
 import { SectionSkeleton } from '@/components/page-skeletons'
 import { QueryGate } from '@/components/query-gate'
-import { dashboardQueryOptions } from '@/features/overview/queries'
+import { meQueryOptions } from '@/features/auth/queries'
 import { ProxyBulkActions } from './proxy-bulk-actions'
 import { ProxyEditDialog } from './proxy-edit-dialog'
 import { createProxyHover } from './proxy-hover'
@@ -34,6 +35,11 @@ import {
   regionLabel,
 } from './proxy-region'
 import { ProxyRegionRail } from './proxy-region-rail'
+import {
+  bindOutcome,
+  deleteConfirmText,
+  disableConfirmText,
+} from './proxy-results'
 import type { ProxyRowActions } from './proxy-row'
 import {
   PROXY_SORT_DEFAULT_DIR,
@@ -92,7 +98,10 @@ function firstOf(set: Set<string>): string {
 
 export function ProxiesPage() {
   const px = useQuery(proxiesQueryOptions())
-  const dash = useQuery(dashboardQueryOptions())
+  const me = useQuery(meQueryOptions())
+  // 租户只能增删改自己的代理；测通、测地理、启停、绑定、池设置都是管理员接口。
+  const canManage = me.data?.role === 'admin'
+  const { list: vms } = useVmIndex()
   const refresh = useRefreshProxies()
   const [hover] = useState(createProxyHover)
   const [sortKey, setSortKey] = useState<ProxySortKey>('status')
@@ -108,6 +117,7 @@ export function ProxiesPage() {
   }>({ open: false, kind: 'import' })
   const [dragVm, setDragVm] = useState('')
   const [delId, setDelId] = useState('')
+  const [disableId, setDisableId] = useState('')
   const [editId, setEditId] = useState('')
   const [unbindTarget, setUnbindTarget] = useState<{
     id: string
@@ -118,7 +128,6 @@ export function ProxiesPage() {
   const list = useMemo(() => px.data?.proxies || [], [px.data?.proxies])
   const tot = px.data?.totals || {}
   const cfg = px.data?.config || {}
-  const vms: Vm[] = useMemo(() => dash.data?.vms || [], [dash.data?.vms])
   // 回落序对齐 index.html:7756 的 proxyBindLimit()：totals 先于 config。
   const bindLimit = readPositive(
     tot,
@@ -167,6 +176,7 @@ export function ProxiesPage() {
     : ''
   const deleting = list.find((p) => p.id === delId)
   const delBound = proxyBoundIds(deleting).length
+  const disabling = list.find((p) => p.id === disableId)
   const editing = list.find((p) => p.id === editId) || null
 
   const probeOne = useMutation({
@@ -218,25 +228,31 @@ export function ProxiesPage() {
       ),
     onSuccess: async (_data, { on }) => {
       toast.success(on ? '已启用' : '已禁用')
+      setDisableId('')
       await refresh()
     },
     onError: (error: Error) => toast.error(error.message),
   })
   const bind = useMutation({
     mutationFn: ({ id, vmId }: { id: string; vmId: string }) =>
-      api(`/api/panel/proxies/${encodeURIComponent(id)}/bind`, {
-        method: 'POST',
-        body: JSON.stringify({ vm_id: vmId }),
-      }),
-    onSuccess: async (_data, { id, vmId }) => {
+      api<{ worker?: { ok?: boolean; error?: unknown } | null }>(
+        `/api/panel/proxies/${encodeURIComponent(id)}/bind`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ vm_id: vmId }),
+        }
+      ),
+    onSuccess: async (data, { id, vmId }) => {
       const to = list.find((p) => p.id === id)
       const from = ownerOf.get(vmId)
       const name = vmById.get(vmId)?.name || vmId
-      toast.success(
+      const out = bindOutcome(
         from && from.id !== id
           ? `${name} 已从 ${proxyLabel(from)} 换绑到 ${to ? proxyLabel(to) : id}`
-          : `${name} 已绑定`
+          : `${name} 已绑定`,
+        data?.worker
       )
+      toast[out.level](out.text)
       await refresh()
     },
     onError: (error: Error) => toast.error(error.message),
@@ -291,18 +307,27 @@ export function ProxiesPage() {
   const toggling = usePendingIds(TOGGLE_KEY)
 
   const actions: ProxyRowActions = {
-    onProbe: (id) => probeOne.mutate(id),
-    onGeo: (id) => geoOne.mutate(id),
     onCopy: (id) => copyUri.mutate(id),
     onEdit: setEditId,
-    onToggleEnabled: (item) => {
-      if (!item.id) return
-      setEnabled.mutate({ id: item.id, on: item.enabled === false })
-    },
     onDelete: setDelId,
-    onBind: (id, vmId) => bind.mutate({ id, vmId }),
-    onUnbind: (id, vmId) => setUnbindTarget({ id, vmId }),
     onVmDragChange: setDragVm,
+    ...(canManage
+      ? {
+          onProbe: (id: string) => probeOne.mutate(id),
+          onGeo: (id: string) => geoOne.mutate(id),
+          onToggleEnabled: (item: VmProxySnap) => {
+            if (!item.id) return
+            // 禁用会让绑在上面的槽位全部停调度，先确认；启用直接生效。
+            if (item.enabled === false) {
+              setEnabled.mutate({ id: item.id, on: true })
+            } else {
+              setDisableId(item.id)
+            }
+          },
+          onBind: (id: string, vmId: string) => bind.mutate({ id, vmId }),
+          onUnbind: (id: string, vmId: string) => setUnbindTarget({ id, vmId }),
+        }
+      : {}),
   }
 
   function changeSortKey(next: ProxySortKey) {
@@ -340,15 +365,19 @@ export function ProxiesPage() {
       title={VIEW_TITLES.proxies}
       extra={
         <div className='flex flex-wrap items-center gap-2'>
-          <ProxyBulkActions empty={!list.length} />
-          <Button
-            variant='outline'
-            size='sm'
-            onClick={() => setDrawer({ open: true, kind: 'settings' })}
-          >
-            <Settings2 aria-hidden='true' />
-            池设置
-          </Button>
+          {canManage ? (
+            <>
+              <ProxyBulkActions empty={!list.length} />
+              <Button
+                variant='outline'
+                size='sm'
+                onClick={() => setDrawer({ open: true, kind: 'settings' })}
+              >
+                <Settings2 aria-hidden='true' />
+                池设置
+              </Button>
+            </>
+          ) : null}
           <Button
             size='sm'
             onClick={() => setDrawer({ open: true, kind: 'import' })}
@@ -402,6 +431,7 @@ export function ProxiesPage() {
             visible={matches}
             onLocate={locate}
             onVmDragChange={setDragVm}
+            canBind={canManage}
           />
           <div
             className={cn(
@@ -516,17 +546,26 @@ export function ProxiesPage() {
         open={!!delId}
         onOpenChange={() => setDelId('')}
         title='删除代理'
-        desc={
-          delBound
-            ? `删除后 ${delBound} 台虚拟机将解绑，确认？`
-            : '删除这条 SOCKS5？'
-        }
+        desc={deleteConfirmText(delBound)}
         confirmText='删除'
         cancelBtnText='取消'
         destructive
         isLoading={remove.isPending}
         handleConfirm={() => {
           if (delId) remove.mutate(delId)
+        }}
+      />
+      <ConfirmDialog
+        open={!!disableId}
+        onOpenChange={() => setDisableId('')}
+        title='禁用代理'
+        desc={disableConfirmText(proxyBoundIds(disabling).length)}
+        confirmText='禁用'
+        cancelBtnText='取消'
+        destructive
+        isLoading={setEnabled.isPending}
+        handleConfirm={() => {
+          if (disableId) setEnabled.mutate({ id: disableId, on: false })
         }}
       />
     </PageHeader>

@@ -56,9 +56,11 @@ function observedLabel(at: string | null | undefined) {
 
 export function VmPhysicalFeaturesCard({
   vm,
+  collecting = false,
   onCollect,
 }: {
   vm: Vm
+  collecting?: boolean
   onCollect: () => void
 }) {
   const features = vm.physical_features || {}
@@ -67,7 +69,13 @@ export function VmPhysicalFeaturesCard({
     <Card>
       <CardHeader className='flex flex-row items-center justify-between space-y-0 pb-2'>
         <CardTitle className='text-sm'>物理特征</CardTitle>
-        <Button size='sm' variant='outline' className='h-7' onClick={onCollect}>
+        <Button
+          size='sm'
+          variant='outline'
+          className='h-7'
+          loading={collecting}
+          onClick={onCollect}
+        >
           采集
         </Button>
       </CardHeader>

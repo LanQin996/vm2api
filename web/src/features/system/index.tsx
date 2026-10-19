@@ -4,11 +4,7 @@ import { VIEW_TITLES } from '@/config/nav'
 import type { Dashboard } from '@/types/panel-overview'
 import { toast } from 'sonner'
 import { api, patchVm } from '@/lib/api'
-import {
-  personaInjectFromPreset,
-  personaPresetFromCompat,
-  protocolPersonaSaveToast,
-} from '@/lib/persona-template'
+import { protocolPersonaSaveToast } from '@/lib/persona-template'
 import { cn } from '@/lib/utils'
 import { isCodexVm } from '@/lib/vm-kind'
 import { PageHeader } from '@/components/page-header'
@@ -19,6 +15,7 @@ import { routingQueryOptions } from '@/features/settings/queries'
 import { SaveBar } from '@/features/settings/save-bar'
 import { SettingsSkeleton } from '@/features/settings/settings-skeleton'
 import { SystemPromptWorkspace } from '@/features/system/prompt-workspace'
+import { compatibilityPatch } from './compat-patch'
 
 type RoutingSaveResult = {
   compatibility?: Record<string, unknown>
@@ -45,15 +42,10 @@ export function SystemPromptPage() {
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { ...draft }
-      const compat = (body.compatibility as Record<string, unknown>) || {}
-      const preset = personaPresetFromCompat(compat)
-      body.compatibility = {
-        ...compat,
-        persona_preset: preset,
-        persona_inject: personaInjectFromPreset(preset, compat.persona_inject),
-        persona_templates: compat.persona_templates,
-      }
+      const body = compatibilityPatch(
+        (draft.compatibility as Record<string, unknown>) || {},
+        routing.data?.compatibility as Record<string, unknown> | undefined
+      )
       return api<RoutingSaveResult>('/api/panel/routing', {
         method: 'PUT',
         body: JSON.stringify(body),

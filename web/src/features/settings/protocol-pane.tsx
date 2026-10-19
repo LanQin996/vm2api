@@ -1,21 +1,22 @@
-import { Boxes, Check, ShieldCheck } from 'lucide-react'
+import {
+  SESSION_IDLE_TTL_SECONDS_DEFAULT,
+  SESSION_IDLE_TTL_SECONDS_MAX,
+  SESSION_IDLE_TTL_SECONDS_MIN,
+} from '@/types/panel-routing'
+import { Check, Clock3, Database, Hash, ShieldCheck } from 'lucide-react'
 import {
   cacheTtlFromCompat,
   detectProxiedOfficialCcFromCompat,
 } from '@/lib/cache-breakpoints'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
-import { Input } from '@/components/ui/input'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { SettingRow } from '@/components/setting-row'
-import { PaneSection } from './scheduler-controls'
+import {
+  cchEnabledFromCompat,
+  sessionIdleTtlFromInference,
+} from './protocol-authority'
+import { ChipGroup, PaneSection, StepperSetting } from './scheduler-controls'
 
 type Block = Record<string, unknown>
 
@@ -30,67 +31,33 @@ const CLAUDE_CODE_FINGERPRINT: [string, string][] = [
   ['计费块', 'cc_version = UA 版本'],
 ]
 
-function codexClient(codex: Block, key: string) {
-  const clients = (codex.clients as Record<string, unknown>) || {}
-  return clients[key] === 'allow'
-}
-
-function codexProtocol(codex: Block, key: string) {
-  const protocols =
-    (codex.protocols as Record<string, Record<string, unknown>>) || {}
-  return protocols[key] || {}
-}
-
-function RowGroup({
-  title,
-  children,
-}: {
-  title: string
-  children: React.ReactNode
-}) {
-  return (
-    <section className='min-w-0 space-y-2'>
-      <h4 className='text-xs font-medium text-muted-foreground'>{title}</h4>
-      <div className='divide-y'>{children}</div>
-    </section>
-  )
-}
-
-function AdmissionSection({
+export function ProtocolPane({
   compat,
-  codex,
+  inference,
   onCompatChange,
-  onCodexChange,
+  onInferenceChange,
 }: {
   compat: Block
-  codex: Block
+  inference: Block
   onCompatChange: (next: Block) => void
-  onCodexChange: (next: Block) => void
+  onInferenceChange: (patch: Block) => void
 }) {
   const strict = compat.claude_code_only === true
   const relay = detectProxiedOfficialCcFromCompat(compat)
-  const setClient = (key: string, allow: boolean) =>
-    onCodexChange({
-      ...codex,
-      clients: {
-        ...((codex.clients as object) || {}),
-        [key]: allow ? 'allow' : 'reject',
-      },
-    })
-
+  const cch = cchEnabledFromCompat(compat)
   return (
-    <PaneSection
-      icon={ShieldCheck}
-      title='入站准入'
-      desc='谁能调用。按请求的模型平台分别生效。'
-      aside={
-        <Badge variant={strict ? 'default' : 'secondary'}>
-          {strict ? 'Claude 仅限 Claude Code' : 'Claude 不限客户端'}
-        </Badge>
-      }
-    >
-      <div className='grid gap-x-10 gap-y-6 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]'>
-        <RowGroup title='Claude 模型'>
+    <div className='space-y-4'>
+      <PaneSection
+        icon={ShieldCheck}
+        title='入站准入'
+        desc='谁能调用 Claude。GPT 准入在 OpenAI 页。'
+        aside={
+          <Badge variant={strict ? 'default' : 'secondary'}>
+            {strict ? 'Claude 仅限 Claude Code' : 'Claude 不限客户端'}
+          </Badge>
+        }
+      >
+        <div className='divide-y'>
           <SettingRow
             label='仅允许 Claude Code 家族请求'
             desc='其余一律 403 claude_code_only，不选号、不上游。'
@@ -135,205 +102,107 @@ function AdmissionSection({
               aria-label='官方 Claude Code 家族透传'
             />
           </SettingRow>
-          <div
-            className={cn(
-              'space-y-3 pt-3 transition-opacity duration-200',
-              !strict && 'opacity-55'
-            )}
-          >
-            <p className='text-xs text-muted-foreground'>
-              {strict ? '直连放行须同时满足' : '开启后直连放行须同时满足'}
-            </p>
-            <ul className='grid gap-x-4 gap-y-1.5 sm:grid-cols-2'>
-              {CLAUDE_CODE_FINGERPRINT.map(([name, value]) => (
-                <li
-                  key={name}
-                  className='flex min-w-0 items-start gap-2 text-xs'
-                >
-                  <Check
-                    className={cn(
-                      'mt-0.5 size-3.5 shrink-0',
-                      strict ? 'text-primary' : 'text-muted-foreground'
-                    )}
-                    aria-hidden
-                  />
-                  <span className='min-w-0'>
-                    <span className='font-medium'>{name}</span>{' '}
-                    <span className='font-mono break-all text-muted-foreground'>
-                      {value}
-                    </span>
+        </div>
+        <div
+          className={cn(
+            'space-y-3 pt-3 transition-opacity duration-200',
+            !strict && 'opacity-55'
+          )}
+        >
+          <p className='text-xs text-muted-foreground'>
+            {strict ? '直连放行须同时满足' : '开启后直连放行须同时满足'}
+          </p>
+          <ul className='grid gap-x-4 gap-y-1.5 sm:grid-cols-2'>
+            {CLAUDE_CODE_FINGERPRINT.map(([name, value]) => (
+              <li key={name} className='flex min-w-0 items-start gap-2 text-xs'>
+                <Check
+                  className={cn(
+                    'mt-0.5 size-3.5 shrink-0',
+                    strict ? 'text-primary' : 'text-muted-foreground'
+                  )}
+                  aria-hidden
+                />
+                <span className='min-w-0'>
+                  <span className='font-medium'>{name}</span>{' '}
+                  <span className='font-mono break-all text-muted-foreground'>
+                    {value}
                   </span>
-                </li>
-              ))}
-            </ul>
-            <p className='text-xs leading-5 text-muted-foreground'>
-              OpenAI 格式入口与健康探测一律拒绝。count_tokens 只验请求头；CLI
-              自身的 quota 探测须是固定原样。面板测试与内部探测不受影响。
-            </p>
-          </div>
-        </RowGroup>
-
-        <RowGroup title='GPT 模型'>
-          <SettingRow label='官方 Codex 客户端'>
-            <Switch
-              checked={codexClient(codex, 'official_codex')}
-              onCheckedChange={(allow) => setClient('official_codex', allow)}
-              aria-label='允许官方 Codex 客户端'
-            />
-          </SettingRow>
-          <SettingRow label='OpenAI 兼容客户端'>
-            <Switch
-              checked={codexClient(codex, 'openai_compatible')}
-              onCheckedChange={(allow) => setClient('openai_compatible', allow)}
-              aria-label='允许 OpenAI 兼容客户端'
-            />
-          </SettingRow>
-          <SettingRow
-            label='拒绝 Claude Code 客户端'
-            desc='GPT 槽不走 Claude Code。'
-          >
-            <Switch
-              checked={!codexClient(codex, 'claude_code')}
-              onCheckedChange={(reject) => setClient('claude_code', !reject)}
-              aria-label='GPT 模型拒绝 Claude Code 客户端'
-            />
-          </SettingRow>
-        </RowGroup>
-      </div>
-      <RowGroup title='缓存'>
-        <SettingRow
-          label='TTL'
-          desc='未指定时按 5 分钟；1 小时缓存写入按 2× 计费。'
-        >
-          <Select
-            value={cacheTtlFromCompat(compat)}
-            onValueChange={(cache_ttl) =>
-              onCompatChange({ ...compat, cache_ttl })
-            }
-          >
-            <SelectTrigger className='w-44' aria-label='缓存 TTL'>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value='auto'>按请求（默认 5 分钟）</SelectItem>
-              <SelectItem value='5m'>5 分钟</SelectItem>
-              <SelectItem value='1h'>1 小时</SelectItem>
-            </SelectContent>
-          </Select>
-        </SettingRow>
-      </RowGroup>
-    </PaneSection>
-  )
-}
-
-function GptRouteSection({
-  codex,
-  onCodexChange,
-}: {
-  codex: Block
-  onCodexChange: (next: Block) => void
-}) {
-  const enabled = codex.enabled !== false
-  const convert = (codex.convert as Block) || {}
-  const update = (patch: Block) => onCodexChange({ ...codex, ...patch })
-  const setProtocol = (key: string, on: boolean, mode: string) =>
-    update({
-      protocols: {
-        ...((codex.protocols as object) || {}),
-        [key]: { mode, enabled: on },
-      },
-    })
-
-  return (
-    <PaneSection
-      icon={Boxes}
-      title='GPT 链路'
-      desc={
-        enabled
-          ? 'gpt-* 进 codex-kernel。'
-          : '已关：gpt-* 请求 4xx，不回落 Claude。'
-      }
-      aside={
-        <Switch
-          checked={enabled}
-          onCheckedChange={(on) => update({ enabled: on })}
-          aria-label='启用 GPT 路由'
-        />
-      }
-    >
-      <div
-        className={cn(
-          'divide-y transition-opacity duration-200',
-          !enabled && 'opacity-55'
-        )}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <p className='text-xs leading-5 text-muted-foreground'>
+            OpenAI 格式入口与健康探测一律拒绝。count_tokens 只验请求头；CLI
+            自身的 quota 探测须是固定原样。面板测试与内部探测不受影响。
+          </p>
+        </div>
+      </PaneSection>
+      <PaneSection
+        icon={Database}
+        title='提示词缓存'
+        desc='设置默认缓存写入时长，保持现有断点布局。'
       >
-        <SettingRow label='/v1/responses' desc='ChatGPT native。'>
-          <Switch
-            checked={codexProtocol(codex, 'openai.responses').enabled !== false}
-            onCheckedChange={(on) =>
-              setProtocol('openai.responses', on, 'native')
-            }
-            aria-label='/v1/responses'
-          />
-        </SettingRow>
-        <SettingRow label='Chat 转 Codex Responses'>
-          <Switch
-            checked={convert.chat_to_codex !== false}
-            onCheckedChange={(chat_to_codex) =>
-              update({ convert: { ...convert, chat_to_codex } })
-            }
-            aria-label='Chat 转 Codex Responses'
-          />
-        </SettingRow>
-        <SettingRow label='Completions 转 Codex'>
-          <Switch
-            checked={convert.completions_to_codex !== false}
-            onCheckedChange={(completions_to_codex) =>
-              update({ convert: { ...convert, completions_to_codex } })
-            }
-            aria-label='Completions 转 Codex'
-          />
-        </SettingRow>
         <SettingRow
-          label='Codex 目录客户端版本'
-          desc='auto 取官方 @openai/codex 版本并缓存，失败用 0.160.0。'
+          label='默认缓存写入 TTL'
+          desc='请求头、请求显式 TTL 与会话锁定值优先；system 模板中的显式 TTL 不变。'
         >
-          <Input
-            className='w-28'
-            maxLength={20}
-            value={String(codex.catalog_client_version ?? 'auto')}
-            placeholder='auto'
-            aria-label='Codex 目录客户端版本'
-            onChange={(e) =>
-              update({ catalog_client_version: e.target.value || 'auto' })
-            }
+          <ChipGroup
+            label='默认缓存写入 TTL'
+            value={cacheTtlFromCompat(compat)}
+            options={[
+              ['auto', '按请求（默认 5 分钟）'],
+              ['5m', '5 分钟（5m）'],
+              ['1h', '1 小时（1h）'],
+            ]}
+            onChange={(cache_ttl) => onCompatChange({ ...compat, cache_ttl })}
           />
         </SettingRow>
-      </div>
-    </PaneSection>
-  )
-}
-
-export function ProtocolPane({
-  compat,
-  codex,
-  onCompatChange,
-  onCodexChange,
-}: {
-  compat: Block
-  codex: Block
-  onCompatChange: (next: Block) => void
-  onCodexChange: (next: Block) => void
-}) {
-  return (
-    <div className='space-y-4'>
-      <AdmissionSection
-        compat={compat}
-        codex={codex}
-        onCompatChange={onCompatChange}
-        onCodexChange={onCodexChange}
-      />
-      <GptRouteSection codex={codex} onCodexChange={onCodexChange} />
+        <p className='text-xs leading-5 text-muted-foreground'>
+          保存后作为新会话和自有缺省标记的
+          TTL。已有会话锁定值不变，官方透传仍保留调用方断点及缺失 TTL。
+        </p>
+      </PaneSection>
+      <PaneSection
+        icon={Hash}
+        title='CCH 统一附加'
+        desc='出站 billing 的 cch。开启后缺失也补，不区分试用或订阅。'
+      >
+        <SettingRow
+          label='强制附加 CCH'
+          desc={
+            cch
+              ? '开：出站补齐 cch；试用号缺失也写。保存后热写入各槽 kernel.json，不重启 CLI。'
+              : '关：固定发送 cch=00000;（5 个 0），不计算摘要。'
+          }
+        >
+          <Switch
+            checked={cch}
+            onCheckedChange={(on) =>
+              onCompatChange({ ...compat, cch_enabled: on })
+            }
+            aria-label='强制附加 CCH'
+          />
+        </SettingRow>
+      </PaneSection>
+      <PaneSection
+        icon={Clock3}
+        title='原生 sticky 槽'
+        desc='kernel 里 CLI 槽空闲回收。不是流空闲超时，也不是粘性页的账号绑定 TTL。'
+      >
+        <StepperSetting
+          id='inference-session-idle-ttl'
+          label='槽空闲超时'
+          desc='从最后一次任务完成开始计时，活动请求不回收。保存后热生效，不重启内核。'
+          value={sessionIdleTtlFromInference(inference)}
+          min={SESSION_IDLE_TTL_SECONDS_MIN}
+          max={SESSION_IDLE_TTL_SECONDS_MAX}
+          unit='秒'
+          fallback={SESSION_IDLE_TTL_SECONDS_DEFAULT}
+          onChange={(value) =>
+            onInferenceChange({ session_idle_ttl_seconds: value })
+          }
+        />
+      </PaneSection>
     </div>
   )
 }

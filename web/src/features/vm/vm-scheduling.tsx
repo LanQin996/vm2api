@@ -29,6 +29,7 @@ import {
   SEAT_CAP_STEPS,
   withCurrent,
 } from '@/features/vm/scheduling-steps'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 type Knob<T> = { own: boolean; value: T }
 type QuotaKey = keyof VmQuotaView
@@ -284,6 +285,7 @@ export function VmSchedulingBlock({
   const policy = vm.quota_policy
   const quotaOverride = vm.quota_override || {}
   const level = Number(vm.schedule_level)
+  const canEdit = useVmPerms().admin
 
   return (
     <div className='space-y-2 rounded-md border border-primary/30 bg-primary/5 px-2.5 py-2'>
@@ -299,7 +301,7 @@ export function VmSchedulingBlock({
             {custom ? `本槽覆盖 ${custom} 项` : '全部跟随全局'}
           </div>
         </div>
-        <VmSchedulingEditor vm={vm} />
+        {canEdit ? <VmSchedulingEditor vm={vm} /> : null}
       </div>
 
       {codex ? null : (

@@ -15,7 +15,7 @@
 | UA | `^claude-cli/\d+\.\d+\.\d+`（sub2api 同款前缀；vscode / cowork / desktop 都算） |
 | `metadata.user_id` | 合法官方 user id |
 | tools | 不能是 OpenAI `{type:function}` / `tool_choice.type=function`。`/v1/messages` 上这种 tools 会先转 Anthropic，但仍判非官方 |
-| system | 含 `x-anthropic-billing-header:`、官方 `cc_entrypoint`（`cli` / `sdk-cli` / `vscode` / `cowork` / `desktop`，不含 `local-agent`）、或官方身份行（含 `You are Claude Code` / `Claude Agent SDK` 变体） |
+| system | 含 `x-anthropic-billing-header:`、官方 `cc_entrypoint`（`cli` / `sdk-cli` / `vscode` / `cowork` / `desktop`）、或官方身份行（含 `You are Claude Code` / `Claude Agent SDK` 变体）。`local-agent` 仅在 UA 含对应入口和 Agent SDK、平台为 `desktop_app` 且客户端版本有效时继续原有官方校验；OMP 专属特征仍优先排除 |
 
 四闸不全 → 非官方，走人设。虚拟机测试入站会先铺 4 块官方 system + 官方 UA，因此分类为 `claude_code_official`。
 
@@ -28,11 +28,11 @@
 | `persona_preset` | `official_full` | 使用独立的完整官方模板；`official` 保留原有官方提示词 |
 | `overlay_preset` | `off` | 不向首条 user 注入 overlay |
 | `persona_park` | `false` | 与 `overlay_preset=off` 对齐 |
-| `cache_ttl` | `1h` | 出站 cache_control 默认 1h；可改为 5m，或用 `x-kin-cache-ttl` 覆盖 |
+| `cache_ttl` | `1h` | Node 重写时新增点的缺省 TTL；`x-kin-cache-ttl` 参与首次会话选择，不覆盖 native 透传 caller / 模板显式 TTL |
 
 **official 模板**保留 billing + Agent SDK identity + 可选 caller_agent / caller_system，并在 agent 块之后写槽位 `# Environment`（`{{env}}`，只含 `Timezone: <槽位时区>`，不挂 cache，不破 agent 块的 1h global 缓存）；不会自动追加完整 agent prompt。
 
-**official_full 模板**在相同前缀后固定追加完整 `agent_official`，带 ephemeral 5m cache；调用方 system 作为末块追加。
+**official_full 模板**在相同前缀后固定追加完整 `agent_official`，带 ephemeral 1h cache；调用方 system 作为末块追加。
 
 **zero 模板**在 agent 槽之后写 `{{env}}` 块（`hide`、`drop_if_empty`、不挂 cache），只含槽位时区。自定义档空模板回落 official，同样带 `{{env}}`。live 已自定义的 zero 模板不会自动多出这一块，需在 system提示词页「恢复预设」。
 
@@ -41,10 +41,10 @@
 **按档开关**（`{official,official_full,zero,custom}: boolean`）：
 - `agent_standing_presets`：是否写常驻约束，缺 map 或缺 key 视为关。控制台开关、预览与 Node 出站使用同一缺省语义。
 - `agent_standing_hide_presets`：常驻约束是否从客户端 usage 中扣除，缺 map/key 视为开，独立于整档遮罩；未启用约束时不扣约束 token。cli-hop 0注入 同样生效。
-- `persona_env_presets`：是否写 `{{env}}`，缺 map/key 视为开。官方完整的 `env_official` 不受此开关影响。
+- `persona_env_presets`：是否写生成的 `{{env}}` / `{{env_timezone_only}}` / `{{env_official}}` 及槽位 `{{timezone}}`，缺 map/key 视为开。关闭时删除生成的整个环境块（含官方完整档 continuation 环境块），不留下带 cache 的零宽环境占位；调用方或自定义模板字面写入的 Environment / 时区保留，不用槽位时区覆盖。控制台预览与最终出站一致，各档独立。
 - `persona_hide_presets`：整档 usage 遮罩（billing / identity / agent / Environment 等 `hide:true` 块）。缺 key 时依次回落旧全局 `persona_hides`、该档模板的 `hide` 标记（默认 zero 开、其余关）。槽位单独指定人设时读该槽位档的开关；cli-hop 0注入 关掉后 CLI billing + Environment 计入 usage。
 
-cli-hop 的 kin 分支只组装 `billing →（identity 布局的身份句）→ # Environment\n - Timezone: <kernel.json timezone> → Node/caller leftover`。它剥离重复 billing、身份句、`# Environment` 和 Kin/Crag 自产 persona，不再追加槽内 cwd、Platform、Notes 或默认 agent prompt。leftover 各块原文（包括首尾空白）按原顺序以双换行拼接；调用方真正的 `You are an agent for Claude Code...` 和 `Notes:` 不会被当作自产内容删除。常驻约束若启用，仍在 leftover 的 agent prompt 顶部。billing 的 `isSubagent: true`、`splitSysPromptPrefix` 断点与既有缓存 TTL 策略不因本修复改变。
+native cli-hop 优先完整保留 Node 已组装、带 billing 的 wire system，不在后面重加槽内 Environment。Node 关闭当前档 Environment 时，CLI 预处理保留调用方环境原文，HTTP 出站也跳过槽位时区刷新；没有调用方环境就不发送 Environment 块。启用时沿用原有槽位环境规则。调用方真正的 `You are an agent for Claude Code...` 和 `Notes:` 不会被当作自产内容删除。无 Node billed wire system 的独立 CLI fallback 仍沿用自己的布局，不在本次修改范围；槽位必须使用支持 wire-system 保留的 CLI 产物，旧 ELF 不会因修改控制面配置而自动更新。
 
 调用方 `messages[].role=system` 和 tools / `tool_choice` 保留；`overlay_preset=off` 不挂 prompt-leak / identity / no-tools reminder。
 
@@ -52,7 +52,7 @@ cli-hop 的 kin 分支只组装 `billing →（identity 布局的身份句）→
 
 遗留 `persona_inject=rewrite|overwrite|append|none` 仍可用，但不是仓库配置默认值。`rewrite` 使用 KIN 短 agent + env；`overwrite` 使用完整 agent_prompt + continuation + Environment。system提示词页保存时三档写回 `official_prompt` / `official_full` / `zero`；自定义才保留旧 inject。
 
-权威开关是 `routing.json` 的 `compatibility.persona_preset`（system提示词）与 `cache_ttl`（面板不再提供修改入口，直接改 `routing.json`；缺省 `1h`）。`vms/<id>/run/kernel.json` 不是第二套面板：面板保存、槽位「跟随全局」、外部改写 `routing.json`，或虚拟机环境保存时区之后，才把解析结果投影进去（`persona_preset`、`system_layout`、`default_cache_ttl`、`timezone`）。`system_layout` 只有 `zero` 与 `identity`（`official` / `official_full` / `custom` 都是 `identity`）。字节没变不重写。kernel 热读该文件，不必重启槽。Codex 槽不写。手改 `kernel.json` 会在下一次投影时被盖掉。
+权威开关是 `routing.json` 的 `compatibility.persona_preset`（system提示词）与 `cache_ttl`（设置 → 协议 → 提示词缓存 → 默认缓存写入 TTL，可选 `5m` / `1h`，缺省 `1h`，点击「保存」生效）。该值仅是默认值，不覆盖请求头、请求显式 TTL、已有会话锁定值或 system 模板显式 TTL；官方透传的调用方 marker 及缺失 TTL 保持原样。`vms/<id>/run/kernel.json` 不是第二套面板：面板保存、槽位「跟随全局」、外部改写 `routing.json`，或虚拟机环境保存时区之后，才把解析结果投影进去（`persona_preset`、`system_layout`、`default_cache_ttl`、`timezone`）。`system_layout` 只有 `zero` 与 `identity`（`official` / `official_full` / `custom` 都是 `identity`）。字节没变不重写。kernel 热读该文件，不必重启槽。Codex 槽不写。手改 `kernel.json` 会在下一次投影时被盖掉。
 
 面板预览表达 Node 给出的模板内容；cli-hop 最终线序以上述 CLI-owned 前缀为准，不把 Node 对象预览当成最终 wire 抓包。更新 CLI 二进制后需要替换槽内副本并重启相应 kernel/CLI；配置热读不能让旧进程自动加载新 ELF。删除旧环境文本后首次前缀会冷写，后续 cache_read 数值须实测，不能保证必然不低于旧值。0注入 + 常驻约束关闭 + 无调用方 agent 的真实模型可见输出须单独验收。
 
@@ -106,6 +106,14 @@ Rikka / 客户端 `search_web`、`scrape_web` **不是** Anthropic 自带搜索�
 - OpenAI `response_format` → `output_config`；`refusal` → `content_filter`
 - 空 refusal 记 `content_filter_refusal`
 
+## 搜索历史重放
+
+旧 `server_tool_use` / `web_search_tool_result` / 加密 `search_result` 被当前上游拒绝时，`search_repairable` 仍只在该请求内做一次纯文本修复重试；这不是 `slot_busy`，每个执行 lease 都在 hop 的 `finally` 释放，不清除原会话 pin。
+
+若同一 VM / 账号 / 模型 / 凭据代际的修复跳确认成功，`FailoverRunner` 在进程内记录该入站会话的精确搜索历史和工具契约指纹。后续回合仅追加普通消息、指纹不变时，首跳直接复用既有修复，不再重复发送已知失败的历史。首次遇到、内容改变、新增搜索、不同会话或执行上下文均原样尝试；修复失败不记录。已知修复后来仍被拒绝时，返回真实错误并丢弃记录，不重发同一份展开体。
+
+记录只保留指纹，不保存历史正文；最多 512 项，空闲 1 小时失效，与 Anthropic cache TTL 无关。Node 重启后重新学习，因此首个携带旧历史的请求仍可能经历一次 400 → 修复 → 200。无需数据库迁移，不修改生产 persona、凭据、容器或 kernel/CLI。
+
 ## thinking 历史与签名
 
 出站前 `stripInvalidThinkingBlocks` 保留可回放的历史思维块：
@@ -115,7 +123,11 @@ Rikka / 客户端 `search_web`、`scrape_web` **不是** Anthropic 自带搜索�
 3. 更早的型号仍逐块过滤：签名短于 24、空签名、dummy 签名删掉，合法签名块留下。`redacted_thinking` 不看 `data`，只在签名达到 24 字符时留。
 4. 保留路径（cli-hop 首跳，以及默认 HTTP hop）不走上面的拆链。缺少 `signature` 字段的 `thinking` 补空字段，已有字段不改写。
 
-HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但职责不同。cli-hop 的首个出站 hop 保留已有 thinking 指纹块，并为缺字段的 thinking 补 `signature: ""`；只有签名修复重试的 `repaired` hop 才清除这些块。Node 清除 caller `cache_control` 后写入最后消息及 `messages.length>=4` 时倒数第二 user 的断点，TTL 用入站会话已 pin 值。native Claude Code CLI 每个 job 热读 slot `kernel.json` 做 persona 布局，自产 system/tools 标记必须沿用同一请求 TTL，不得再从面板独立决策。Rust kernel 只认证、转发和流式传输，不再重打 last。Node 出站 JSON 不是最终 wire。HTTP hop 仍可由 Node 按自己的路由策略整流缓存。
+HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但缓存职责不同。cli-hop 首跳保留 thinking 指纹，缺失签名补 `signature: ""`；签名修复重试才清除。官方家族开启 `official_cc_passthrough` 时，Node 保留 system/tools/messages 的 caller marker、显式 TTL、缺失 TTL 和位置，不添点、不裁剪；超过四点、thinking marker、非法 TTL 或 5m（含缺失）后出现 1h，在调度前返回 `400 invalid_cache_control`。
+
+关闭透传或非官方请求仍走 Node rewrite：清除 caller marker，生成最后消息及 `messages.length>=4` 时倒数第二 user 的点，TTL 用入站会话 pin 值。应用 persona 后，模板显式 TTL 保留，只补自产缺失 TTL；超额时优先删 tools、system 尾部的自产点。非法模板返回 request-scoped 400，零上游执行，不换号、不冷却。
+
+native CLI `2.1.296` 保留带 billing 的 wire system（含官方 CLI / 子代理布局）、wire tools 和 wire messages，不自动给最后一个 tool 加点；caller tool 的缺失 TTL 也保持缺失。仅对 CLI 自有 marker 补 TTL，优先请求显式 TTL（混合时 5m）→ slot `kernel.json.default_cache_ttl` → 1h，并按保留内容占用后的剩余预算裁剪。Rust kernel 不增删 marker、不重打 last、不自动降级 TTL。Node native envelope 不用菜单 TTL 重分类上游 usage，日志/计费保留真实 5m/1h 分桶。Node 对象不等于最终 wire；HTTP hop 原有独立缓存整流不变。
 
 长度够的签名原样转发，由 Anthropic 验。5.5 的非 dummy 签名也原样转发，不按 24 字符预过滤。签名是 opaque 加密内容，当前模型 / 账户 / 会话前缀不匹配时可能被丢弃或返回 400 `Invalid \`signature\` in \`thinking\` block`。网关不伪造真实签名，只在面板 / cli-hop 保留路径补齐缺失字段。切换账号时不改写已有签名；`cli-node` 仍按现有登录 / fallback 逻辑清理签名块。
 
@@ -147,7 +159,7 @@ HTTP hop 与 cli-hop（`prepareCliHopBody`）共用内容预过滤，但职责�
 | 头 | 作用 |
 |----|------|
 | `x-kin-delivery: verified` | 缓冲到终态 |
-| `x-kin-cache-ttl: 1h` | 出站 cache 升 1h |
+| `x-kin-cache-ttl: 1h` | Node 重写模式的首次会话 TTL 选择；不覆盖 native 透传 caller / 模板显式 TTL |
 | `x-kin-vm` | 仅 master：钉槽（虚拟机测试 loopback） |
 | `x-session-id` 等 | sticky 键，见 `routing.sticky` |
 | `x-kin-debug` / `x-kin-log` | 单请求日志模式覆盖 |

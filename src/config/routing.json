@@ -78,14 +78,17 @@
   },
   "failover": {
     "max_total_attempts": 12,
-    "max_account_switches": 10,
-    "max_same_account_retries": 1,
+    "max_account_switches": 3,
+    "max_same_account_retries": 3,
     "same_account_retry_delay_ms": 500,
     "total_retry_deadline_ms": 120000,
     "stream_idle_timeout_ms": 180000,
     "queue_keepalive_delay_ms": 60000,
     "session_queue_timeout_ms": 900000,
     "eager_tool_streaming": true
+  },
+  "websocket": {
+    "enabled": true
   },
   "inference": {
     "engine": "rust",
@@ -95,6 +98,11 @@
   "codex": {
     "enabled": true,
     "catalog_client_version": "auto",
+    "user_agent": "codex_cli_rs/0.160.0 (linux x86_64)",
+    "upstream_transport": "prefer_websocket",
+    "websocket": { "enabled": true },
+    "client_features": { "enabled": false },
+    "analytics": { "enabled": false },
     "protocols": {
       "openai.responses": { "mode": "native", "enabled": true },
       "openai.chat": { "mode": "convert", "enabled": true },

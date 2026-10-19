@@ -1,6 +1,6 @@
 import type { ApiKeyItem } from '@/types/panel-keys'
 import type { StatusTone } from '@/types/status'
-import { fmtNum } from '@/lib/format'
+import { fmtNum, fmtUsd } from '@/lib/format'
 
 export function maskApiKeyItem(k: ApiKeyItem): string {
   const raw = String(k.key || '')
@@ -21,8 +21,20 @@ export function keyIsExpired(k: ApiKeyItem): boolean {
   return Number.isFinite(t) && t <= Date.now()
 }
 
+/**
+ * 额度用完：USD 额度由计费写入时把状态翻成 quota_exhausted；次数额度不改状态、
+ * 鉴权时直接拒，所以两种都按用量再判一次。
+ */
+export function keyQuotaExhausted(k: ApiKeyItem): boolean {
+  if (k.status === 'quota_exhausted') return true
+  const req = Number(k.quota_requests || 0)
+  if (req > 0 && Number(k.quota_used || 0) >= req) return true
+  const usd = Number(k.quota_usd || 0)
+  return usd > 0 && Number(k.quota_usd_used || 0) >= usd
+}
+
 export function keyIsDead(k: ApiKeyItem): boolean {
-  return k.status === 'disabled' || keyIsExpired(k)
+  return k.status === 'disabled' || keyIsExpired(k) || keyQuotaExhausted(k)
 }
 
 export function keyStatusTone(k: ApiKeyItem): StatusTone {
@@ -31,6 +43,9 @@ export function keyStatusTone(k: ApiKeyItem): StatusTone {
   }
   if (keyIsExpired(k)) {
     return { key: 'bad', text: '已过期', cls: 'bad', label: '已过期' }
+  }
+  if (keyQuotaExhausted(k)) {
+    return { key: 'bad', text: '额度用完', cls: 'bad', label: '额度用完' }
   }
   return { key: 'ok', text: '启用', cls: 'ok', label: '启用' }
 }
@@ -55,18 +70,28 @@ export function keyExpiryText(k: ApiKeyItem): {
   return { text: `${relMs(d)} 后`, expired: false }
 }
 
+/** 次数额度和 USD 额度各自显示；两项都没设才算「不限」。 */
 export function keyQuotaLabel(k: ApiKeyItem): string {
   const q = Number(k.quota_requests || 0)
   const u = Number(k.quota_used || 0)
-  if (!q) return `不限 · 已用 ${fmtNum(u)}`
-  return `${fmtNum(u)} / ${fmtNum(q)}`
+  const usd = Number(k.quota_usd || 0)
+  const usdUsed = Number(k.quota_usd_used || 0)
+  const parts: string[] = []
+  if (q) parts.push(`${fmtNum(u)} / ${fmtNum(q)} 次`)
+  if (usd) parts.push(`${fmtUsd(usdUsed)} / ${fmtUsd(usd)}`)
+  if (parts.length) return parts.join(' · ')
+  return `不限 · 已用 ${fmtNum(u)}${usdUsed ? ` · ${fmtUsd(usdUsed)}` : ''}`
 }
 
+/** 进度条取两种额度里用得更多的那个。 */
 export function keyQuotaPct(k: ApiKeyItem): number | null {
+  const pcts: number[] = []
   const q = Number(k.quota_requests || 0)
-  const u = Number(k.quota_used || 0)
-  if (!q) return null
-  return Math.min(100, (u / q) * 100)
+  if (q) pcts.push((Number(k.quota_used || 0) / q) * 100)
+  const usd = Number(k.quota_usd || 0)
+  if (usd) pcts.push((Number(k.quota_usd_used || 0) / usd) * 100)
+  if (!pcts.length) return null
+  return Math.min(100, Math.max(...pcts))
 }
 
 export function plaintextFromPayload(payload: unknown): string {

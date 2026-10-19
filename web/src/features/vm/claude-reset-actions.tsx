@@ -10,6 +10,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { ResetAt } from '@/features/vm/detail-section-primitives'
 import { vmQueryOptions, vmsListQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 type ResetCredit = {
   label?: string
@@ -152,10 +153,13 @@ export function ClaudeResetActions({
     redeem,
     setConfirm,
   } = useClaudeResetActions(vm)
+  const canUse = useVmPerms().credential
   const held = (credits?.credits || []).reduce(
     (sum, credit) => sum + Math.max(0, Number(credit.resets_left) || 0),
     0
   )
+
+  if (!canUse) return null
 
   return (
     <div

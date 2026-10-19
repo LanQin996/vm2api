@@ -146,6 +146,7 @@ import { parseScheduleLevelInput, manualScheduleLevelOf } from '../pool/credenti
 import { parseActiveHoursInput } from '../pool/active-hours.mjs'
 import { parseVmQuotaOverride } from '../pool/vm-quota-override.mjs'
 import { validateOpenAIQuotaPatch, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
+import { validateInferenceWebsocketPatch } from '../protocol/codex-route.mjs'
 import {
   normalizeInferenceConfig,
   normalizeSessionSlots,
@@ -324,7 +325,7 @@ function onboardingPayloadFor(req, ctx) {
     status: rec.status,
     profile: rec.profile,
     guide_used: rec.guide_used,
-    // cfg.base_url falls back to HOST:PORT (often 0.0.0.0); only an explicit public URL beats the browser origin.
+    // Onboarding matches /health: base_url only when PUBLIC_* is configured; else null → browser origin.
     base_url: process.env.PUBLIC_BASE_URL || null,
     facts: collectOnboardingFacts(req, ctx),
   })
@@ -751,6 +752,7 @@ export function createPanelHandler(ctx) {
         scope: body?.scope,
         vmIds: body?.vm_ids,
         schedule: body?.schedule,
+        test: body?.test ?? null,
       })
       return json(res, 200, panel.ok(result))
     } catch (error) {
@@ -1100,7 +1102,11 @@ export function createPanelHandler(ctx) {
         if (error instanceof TypeError || error instanceof RangeError) {
           return json(res, 400, {
             ok: false,
-            error: { type: 'invalid_request_error', code: 'invalid_openai_quota', message: error.message },
+            error: {
+              type: 'invalid_request_error',
+              code: error.code || 'invalid_openai_quota',
+              message: error.message,
+            },
           })
         }
         throw error
@@ -1840,24 +1846,23 @@ export function createPanelHandler(ctx) {
       if (req.method === 'GET' && p === '/api/panel/request-logs/export') {
         const u = new URL(req.url, 'http://x')
         const format = (u.searchParams.get('format') || 'jsonl').toLowerCase() === 'csv' ? 'csv' : 'jsonl'
+        // Same filter parsing as the scrolling list, so "export current view" matches the page.
+        // Older `/request-logs` keys stay accepted as fallbacks.
+        const legacy = (k) => u.searchParams.get(k) || null
+        const listed = usageLogFilters(req, u)
+        const legacyStatus = legacy('status')
         const filters = {
-          limit: Math.min(5000, Number(u.searchParams.get('limit') || 2000)),
-          maxLimit: 5000,
-          api_key_id: u.searchParams.get('api_key_id') || null,
-          vm_id: u.searchParams.get('vm_id') || null,
-          account_id: u.searchParams.get('account_id') || null,
-          model: u.searchParams.get('model') || null,
-          protocol: u.searchParams.get('protocol') || null,
-          status: u.searchParams.get('status') || null,
-          error_class: u.searchParams.get('error_class') || null,
-          exclude_error_class: u.searchParams.get('exclude_error_class') || null,
-          include_muted: u.searchParams.get('include_muted') === '1',
-          since: u.searchParams.get('since') || null,
-          until: u.searchParams.get('until') || null,
-          q: u.searchParams.get('q') || null,
-          owner_user_id: panelIdentity(req).role === 'user' ? req.panelUserId : u.searchParams.get('user_id') || null,
+          ...listed,
+          limit: legacy('limit') || 2000,
+          key_id: listed.key_id || legacy('api_key_id'),
+          start_time: listed.start_time || legacy('since'),
+          end_time: listed.end_time || legacy('until'),
+          status_code: listed.status_code || (/^\d+$/.test(legacyStatus || '') ? legacyStatus : null),
+          errors_only: legacyStatus === 'error',
         }
-        const { items, total } = requestLog.exportRows(filters)
+        const { items, total, capped } = new UsageLogsView(getDb(), {
+          mutedErrorClasses: requestLog?.mutedErrorClasses,
+        }).exportRows(filters)
         const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')
         const body = format === 'csv' ? logsToCsv(items) : logsToJsonl(items)
         const filename = `vm2api-logs-${stamp}.${format}`
@@ -1866,7 +1871,7 @@ export function createPanelHandler(ctx) {
           'content-disposition': `attachment; filename="${filename}"`,
           'x-kin-export-count': String(items.length),
           'x-kin-export-total': String(total),
-          'x-kin-export-truncated': items.length < total ? '1' : '0',
+          'x-kin-export-truncated': items.length < total || capped ? '1' : '0',
         })
         res.end(body)
         return
@@ -4944,11 +4949,16 @@ export function createPanelHandler(ctx) {
           if (body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')) {
             validateOpenAIQuotaPatch(body.codex.quota)
           }
+          validateInferenceWebsocketPatch(body)
         } catch (error) {
           if (error instanceof TypeError || error instanceof RangeError) {
             return json(res, 400, {
               ok: false,
-              error: { type: 'invalid_request_error', code: 'invalid_openai_quota', message: error.message },
+              error: {
+                type: 'invalid_request_error',
+                code: error.code || 'invalid_openai_quota',
+                message: error.message,
+              },
             })
           }
           throw error
@@ -5230,7 +5240,7 @@ export function createPanelHandler(ctx) {
       }
       if (req.method === 'POST' && p === '/api/panel/proxies/local') {
         const result = proxyPool.ensureLocal()
-        if (result.created) ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(result.proxy.id))
+        if (result.created) await ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(result.proxy.id))
         // Enabling local egress on a cluster that already has nodes: each VPS gets its row now.
         proxyPool.syncLocalNodes(clusterNodesOf(ctx).map((node) => node.id))
         return json(res, 200, panel.ok(result))
@@ -5311,7 +5321,7 @@ export function createPanelHandler(ctx) {
           const dnsEmptyTypes = result.config.dns_disable_svcb_https ? [64, 65] : []
           for (const proxy of proxyPool.snapshot().proxies) {
             if (isLocalEgressProxy(proxy) || !proxy.bound_vm_ids?.length) continue
-            const r = ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(proxy.id), {
+            const r = await ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(proxy.id), {
               dnsUpstream,
               dnsEmptyTypes,
             })
@@ -5353,7 +5363,7 @@ export function createPanelHandler(ctx) {
           process.env.KIN_CRS_MOCK !== '1' &&
           (result.proxy.bound_vm_ids || []).length
         ) {
-          const restarted = ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(id))
+          const restarted = await ensureProxyEgress(cfg.paths.project, proxyPool.getProxyByIdWithAuth(id))
           egress = { ok: !!restarted.ok, error: restarted.ok ? null : restarted.error || 'egress_restart_failed' }
         }
         // A label is display-only; reloading every bound worker for it would
@@ -5511,7 +5521,10 @@ export function createPanelHandler(ctx) {
         }
         bindVmProxy(cfg.paths.project, vmId, proxyPool.getProxyForVm(vmId))
         if (egressEnabled()) {
-          ensureProxyEgress(cfg.paths.project, proxyPool.getProxyForVm(vmId) || proxyPool.getProxyByIdWithAuth(id))
+          await ensureProxyEgress(
+            cfg.paths.project,
+            proxyPool.getProxyForVm(vmId) || proxyPool.getProxyByIdWithAuth(id),
+          )
         }
         let worker = null
         // Runs before the reload so the worker starts with the exit node's zone.
@@ -5580,7 +5593,7 @@ export function createPanelHandler(ctx) {
             error: { type: 'api_error', code: 'no_free_proxy', message: 'No free SOCKS5 in pool' },
           })
         bindVmProxy(cfg.paths.project, vmId, proxyPool.getProxyForVm(vmId))
-        if (egressEnabled()) ensureProxyEgress(cfg.paths.project, proxyPool.getProxyForVm(vmId))
+        if (egressEnabled()) await ensureProxyEgress(cfg.paths.project, proxyPool.getProxyForVm(vmId))
         let worker = null
         const timezone = await syncVmTimezoneFromProxy(cfg.paths.project, proxyPool, vmId, {
           proxyId: allocated?.id || null,

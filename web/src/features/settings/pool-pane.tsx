@@ -640,7 +640,6 @@ export function PoolPane({
           <Link2 className='size-3.5' aria-hidden /> 粘性设置
         </a>
       </div>
-
       <Dialog
         open={open !== null}
         onOpenChange={(next) => {

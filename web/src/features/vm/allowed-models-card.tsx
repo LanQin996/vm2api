@@ -76,7 +76,11 @@ export function AllowedModelsCard({ vm }: { vm: Vm }) {
   const inherit = !allowedListOf(vm)
   const gpt = isCodexVm(vm)
 
-  const policy = useQuery(modelPolicyQueryOptions(gpt ? 'openai' : 'anthropic'))
+  // model-policy 只有管理员能读；其他角色只看本槽已存的白名单。
+  const policy = useQuery({
+    ...modelPolicyQueryOptions(gpt ? 'openai' : 'anthropic'),
+    enabled: canEdit,
+  })
   const items = catalogForVm(catalogFrom(policy.data), vm)
   const save = useMutation({
     mutationFn: (next: string[] | null) =>
@@ -131,7 +135,13 @@ export function AllowedModelsCard({ vm }: { vm: Vm }) {
             : '仅下列模型可打入此凭证'}
           {pro && !gpt ? ' · Pro 账号无 Fable' : ''}
         </p>
-        {policy.isLoading ? (
+        {!canEdit ? (
+          inherit ? null : (
+            <p className='font-mono text-xs break-all'>
+              {allowedListOf(vm)?.join(' · ')}
+            </p>
+          )
+        ) : policy.isLoading ? (
           <p className='text-xs text-muted-foreground'>矩阵加载中…</p>
         ) : items.length ? (
           <div className='flex flex-wrap gap-x-4 gap-y-2'>

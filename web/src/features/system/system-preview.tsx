@@ -8,6 +8,7 @@ import {
   PREVIEW_CALLER_SYSTEM,
   PREVIEW_REQUEST_VARS,
   agentStandingVar,
+  applyPersonaEnvVars,
   envTimezoneText,
   estimateTokens,
   personaHideEnabled,
@@ -99,18 +100,23 @@ export function SystemPreview({
   const blocksMasked = personaHideEnabled(compat, preset, blocks)
   const env = envTimezoneText(timezone)
   const rendered = vars.data
-    ? previewSystemBlocks(blocks, {
-        ...vars.data.vars,
-        ...PREVIEW_REQUEST_VARS,
-        timezone,
-        env_timezone_only: env,
-        env: presetFlagEnabled(compat, 'persona_env_presets', preset)
-          ? env
-          : '',
-        agent_standing: agentStandingVar(compat, preset),
-        caller_agent: withCaller ? PREVIEW_CALLER_AGENT : '',
-        caller_system: withCaller ? PREVIEW_CALLER_SYSTEM : '',
-      })
+    ? previewSystemBlocks(
+        blocks,
+        applyPersonaEnvVars(
+          {
+            ...vars.data.vars,
+            ...PREVIEW_REQUEST_VARS,
+            timezone,
+            env_timezone_only: env,
+            env,
+            agent_standing: agentStandingVar(compat, preset),
+            caller_agent: withCaller ? PREVIEW_CALLER_AGENT : '',
+            caller_system: withCaller ? PREVIEW_CALLER_SYSTEM : '',
+          },
+          compat,
+          preset
+        )
+      )
     : []
   const plain = rendered.map((block) => block.text).join('\n\n')
   const marks = [standing, PREVIEW_CALLER_AGENT, PREVIEW_CALLER_SYSTEM]

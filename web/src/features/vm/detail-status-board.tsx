@@ -39,6 +39,7 @@ import {
   quotaWindowHint,
   ResetAt,
 } from '@/features/vm/detail-section-primitives'
+import type { VmTodayCounts } from '@/features/vm/detail-today'
 import { KernelFeatTags } from '@/features/vm/kernel-feat-tags'
 import { OpenaiPlanBadge } from '@/features/vm/openai-plan-badge'
 import { OpenaiQuotaPanel } from '@/features/vm/openai-quota-panel'
@@ -63,6 +64,7 @@ type Props = {
   split: WeeklySplitSummary | null
   conc: ConcurrencyInfo
   rpm: RpmInfo | null
+  today: VmTodayCounts
 }
 
 type Verdict = {
@@ -170,6 +172,7 @@ export function VmStatusBoard(props: Props) {
     split,
     conc,
     rpm,
+    today,
   } = props
   const verdict = slotVerdict(vm, kernel, proxy)
   const proxyH = proxyHealthOf(vm, proxy)
@@ -356,7 +359,7 @@ export function VmStatusBoard(props: Props) {
                 )}
               </div>
               <div className='text-[11px] text-muted-foreground'>
-                {fmtNum(cost.req)} req
+                {fmtNum(today.requests)} req
               </div>
             </div>
             <div>

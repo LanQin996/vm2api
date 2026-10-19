@@ -34,6 +34,7 @@ import { VmListSkeleton } from '@/features/vm/list-skeleton'
 import { vmsListQueryOptions } from '@/features/vm/queries'
 import { usePoolSeatStream } from '@/features/vm/use-pool-seat-stream'
 import { VmActionsProvider } from '@/features/vm/vm-actions-provider'
+import { vmPermsFor } from '@/features/vm/vm-perms'
 import { VmRack } from '@/features/vm/vm-rack'
 import type { RackSize } from '@/features/vm/vm-rack-blade'
 import type { VmZoneFilter } from '@/features/vm/vm-rack-model'
@@ -150,6 +151,7 @@ export function VmListPage() {
   const canCreate =
     me.data?.role === 'admin' ||
     (me.data?.role === 'user' && (me.data.vm_create_quota || 0) > 0)
+  const perms = vmPermsFor(me.data?.role)
   const scoped = filterVms(vms, '', 'all', kind)
   const list = sortVms(filterVms(vms, q, filter, kind), sort, dir, accounts)
 
@@ -282,14 +284,22 @@ export function VmListPage() {
         </div>
         <VmActionsProvider
           accounts={accounts}
-          onReset={(vm) => {
-            setResetInput('')
-            setResetTarget(vm)
-          }}
-          onDelete={(vm) => {
-            setDeleteInput('')
-            setDeleteTarget(vm)
-          }}
+          onReset={
+            perms.admin
+              ? (vm) => {
+                  setResetInput('')
+                  setResetTarget(vm)
+                }
+              : undefined
+          }
+          onDelete={
+            perms.remove
+              ? (vm) => {
+                  setDeleteInput('')
+                  setDeleteTarget(vm)
+                }
+              : undefined
+          }
         >
           {list.length ? (
             view === 'grid' ? (
@@ -306,8 +316,8 @@ export function VmListPage() {
           ) : (
             <EmptyState
               reason='没有符合当前筛选的槽位。'
-              actionLabel='创建'
-              onAction={() => setCreateOpen(true)}
+              actionLabel={canCreate ? '创建' : undefined}
+              onAction={canCreate ? () => setCreateOpen(true) : undefined}
             />
           )}
         </VmActionsProvider>
@@ -358,7 +368,11 @@ export function VmListPage() {
           value={resetInput}
           onChange={(e) => setResetInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && resetInput.trim() === resetTarget?.id) {
+            if (
+              e.key === 'Enter' &&
+              resetInput.trim() === resetTarget?.id &&
+              !resetVm.isPending
+            ) {
               resetVm.mutate(resetTarget.id)
             }
           }}
@@ -408,7 +422,11 @@ export function VmListPage() {
           value={deleteInput}
           onChange={(e) => setDeleteInput(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && deleteInput.trim() === deleteTarget?.id) {
+            if (
+              e.key === 'Enter' &&
+              deleteInput.trim() === deleteTarget?.id &&
+              !deleteVm.isPending
+            ) {
               deleteVm.mutate(deleteTarget.id)
             }
           }}

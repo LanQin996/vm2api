@@ -2,9 +2,8 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { VIEW_TITLES } from '@/config/nav'
-import type { BillingItem } from '@/types/panel-billing'
 import { fmtNum, fmtUsd } from '@/lib/format'
-import { type VmKind, vmKindOf } from '@/lib/vm-kind'
+import type { VmKind } from '@/lib/vm-kind'
 import { useVmIndex } from '@/hooks/use-vm-index'
 import { Button } from '@/components/ui/button'
 import {
@@ -22,30 +21,9 @@ import { SlotIdentity } from '@/components/platform-chip'
 import { QueryGate } from '@/components/query-gate'
 import { StatCard } from '@/components/stat-card'
 import { billingQueryOptions } from '@/features/billing/queries'
+import { emptyTotals, splitBilling } from './split'
 
 type PlatformFilter = 'all' | VmKind
-
-function emptyTotals(): BillingItem {
-  return {
-    requests: 0,
-    ok: 0,
-    fail: 0,
-    tokens_in: 0,
-    tokens_out: 0,
-    cost_usd: 0,
-  }
-}
-
-function addItem(acc: BillingItem, row: BillingItem): BillingItem {
-  return {
-    requests: acc.requests + row.requests,
-    ok: acc.ok + row.ok,
-    fail: acc.fail + row.fail,
-    tokens_in: acc.tokens_in + row.tokens_in,
-    tokens_out: acc.tokens_out + row.tokens_out,
-    cost_usd: acc.cost_usd + row.cost_usd,
-  }
-}
 
 export function BillingPage() {
   const [groupBy, setGroupBy] = useState<'vm' | 'key'>('vm')
@@ -54,21 +32,10 @@ export function BillingPage() {
   const { vms } = useVmIndex()
   const items = q.data?.items || []
 
-  const split = useMemo(() => {
-    const rows = items.map((row) => {
-      const vm = row.vm_id ? vms.get(row.vm_id) : undefined
-      const kind: VmKind | null =
-        groupBy === 'vm' && row.vm_id ? vmKindOf(vm) : null
-      return { row, vm, kind }
-    })
-    let claude = emptyTotals()
-    let gpt = emptyTotals()
-    for (const item of rows) {
-      if (item.kind === 'codex') gpt = addItem(gpt, item.row)
-      else if (item.kind === 'claude') claude = addItem(claude, item.row)
-    }
-    return { rows, claude, gpt }
-  }, [groupBy, items, vms])
+  const split = useMemo(
+    () => splitBilling(items, groupBy, vms),
+    [groupBy, items, vms]
+  )
 
   const visible = split.rows.filter((item) => {
     if (groupBy !== 'vm' || platform === 'all') return true

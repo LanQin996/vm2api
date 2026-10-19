@@ -317,6 +317,53 @@ test('runCodexKernelHop does not stack reasoning fallback after emit, transport 
   assert.equal(cancelled.reasoning_history_retried, undefined)
 })
 
+test('reasoning fallback shares the configured total and per-account attempt budgets', async () => {
+  for (const [total, retries, expected] of [
+    [1, 3, 1],
+    [2, 3, 2],
+    [8, 1, 4],
+  ]) {
+    resetOpenAIAccountRuntime()
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-history-budget-'))
+    try {
+      writeGptVm(root, 'vm-gpt-a')
+      writeGptVm(root, 'vm-gpt-b')
+      const args = qualifyingArgs()
+      const seen = []
+      const logBag = {}
+      const out = await handleCodexProtocol({
+        req: { headers: args.envelope.headers, apiKeyKind: 'user' },
+        res: { headersSent: false, write() {}, end() {} },
+        protocol: 'openai.responses',
+        ctx: { path: '/v1/responses', body: { ...args.body, stream: false } },
+        inbound: { stream: false },
+        logBag,
+        stats: { errors: 0, requests: 0, by_route: {} },
+        json: (_res, status, body) => ({ status, body }),
+        writeSSEHeaders() {},
+        routing: { failover: { max_total_attempts: total, max_same_account_retries: retries } },
+        projectRoot: root,
+        ops: {
+          writeCodexKernelConfig() {},
+          ensureCodexKernel: async () => ({ ok: true }),
+          waitCodexRetry: async () => {},
+          streamCodexKernel: async ({ exec }) => {
+            seen.push(exec.vm.id)
+            return serverError()
+          },
+        },
+      })
+      assert.equal(out.status, 500)
+      assert.equal(seen.length, expected, `total=${total}, retries=${retries}`)
+      assert.equal(logBag.attempt_count, expected)
+      for (const id of new Set(seen)) assert.ok(seen.filter((vm) => vm === id).length <= retries + 1)
+    } finally {
+      resetOpenAIAccountRuntime()
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  }
+})
+
 test('handleCodexProtocol counts the extra attempt on the same slot and records the retry body', async () => {
   resetOpenAIAccountRuntime()
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-hist-'))

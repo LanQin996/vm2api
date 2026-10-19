@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -7,9 +7,14 @@ import {
   isRetryableCodexTransport,
   runCodexKernelHop,
   handleCodexProtocol,
+  codexFailureHold,
+  codexFailoverBudget,
 } from '../../src/lib/protocol/handle-codex.mjs'
 import { persistCodexUsage, getVm } from '../../src/lib/vm/vm-registry.mjs'
 import { StickyRouter } from '../../src/lib/pool/sticky-router.mjs'
+import { resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-runtime.mjs'
+
+beforeEach(() => resetOpenAIAccountRuntime())
 
 test('502 upstream_transport is retryable before commit', () => {
   assert.equal(
@@ -796,7 +801,7 @@ function codexArgs(root, ops, extras = {}) {
     stats: { errors: 0, requests: 0, by_route: {} },
     json: (_res, status, body) => ({ status, body }),
     writeSSEHeaders() {},
-    routing: { pool: { fallback_wait_timeout_ms: 5000 } },
+    routing: extras.routing || { pool: { fallback_wait_timeout_ms: 5000 } },
     projectRoot: root,
     stickyRouter: extras.stickyRouter || null,
     ops: { writeCodexKernelConfig() {}, ...ops },
@@ -831,11 +836,11 @@ test('502/503 retries exhaust one slot before failing over, with cumulative atte
         ),
       )
       assert.equal(out.status, 200)
-      const expectedSeen = status === 503 ? ['vm-gpt-a', 'vm-gpt-b'] : ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b']
+      const expectedSeen = ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b']
       assert.deepEqual(seen, expectedSeen)
-      assert.deepEqual(delays, status === 503 ? [] : [500, 1000])
-      assert.equal(logBag.attempt_count, status === 503 ? 2 : 4)
-      assert.equal(logBag.codex_server_retries || 0, status === 503 ? 0 : 2)
+      assert.deepEqual(delays, [100, 100, 100])
+      assert.equal(logBag.attempt_count, 5)
+      assert.equal(logBag.codex_same_account_retried, 3)
       assert.equal(logBag.codex_failed_over, true)
       assert.equal(rt.openAIRuntimeSignals('vm-gpt-a').inFlight, 0)
       assert.equal(rt.openAIRuntimeSignals('vm-gpt-b').inFlight, 0)
@@ -846,7 +851,7 @@ test('502/503 retries exhaust one slot before failing over, with cumulative atte
   }
 })
 
-test('when every slot returns 503, each is tried at most three times and the final upstream error is returned', async () => {
+test('when every slot returns 503, each gets three retries and the final upstream error is returned', async () => {
   const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
   rt.resetOpenAIAccountRuntime()
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-server-exhaust-'))
@@ -876,8 +881,17 @@ test('when every slot returns 503, each is tried at most three times and the fin
     )
     assert.equal(out.status, 503)
     assert.equal(out.body.error.message, 'vm-gpt-b')
-    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
-    assert.equal(logBag.attempt_count, 2)
+    assert.deepEqual(seen, [
+      'vm-gpt-a',
+      'vm-gpt-a',
+      'vm-gpt-a',
+      'vm-gpt-a',
+      'vm-gpt-b',
+      'vm-gpt-b',
+      'vm-gpt-b',
+      'vm-gpt-b',
+    ])
+    assert.equal(logBag.attempt_count, 8)
   } finally {
     rt.resetOpenAIAccountRuntime()
     fs.rmSync(root, { recursive: true, force: true })
@@ -991,7 +1005,7 @@ test('previous_response_id retries on its account without failing over to anothe
       ),
     )
     assert.equal(out.status, 503)
-    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a'])
+    assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a'])
   } finally {
     rt.resetOpenAIAccountRuntime()
     fs.rmSync(root, { recursive: true, force: true })
@@ -1058,7 +1072,7 @@ test('#A04: the fifth GPT slot is reached after four slots fail over', async () 
           return { ok: true, status: 200, terminalState: 'verified' }
         },
       },
-      { logBag },
+      { logBag, routing: { failover: { max_account_switches: 10 } } },
     ),
   )
   assert.equal(out.status, 200)
@@ -1096,7 +1110,7 @@ test('uncommitted 503 server_error fails over to the next GPT slot', async () =>
           return { ok: true, status: 200, terminalState: 'verified' }
         },
       },
-      { logBag },
+      { logBag, routing: { failover: { max_same_account_retries: 0 } } },
     ),
   )
   assert.equal(out.status, 200)
@@ -1105,6 +1119,193 @@ test('uncommitted 503 server_error fails over to the next GPT slot', async () =>
   assert.equal(logBag.attempt_count, 2)
   rt.resetOpenAIAccountRuntime()
   fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('uncommitted 500 server_error fails over to the next GPT slot', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-500-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b']) writeGptVm(root, id)
+  const seen = []
+  const out = await handleCodexProtocol(
+    codexArgs(
+      root,
+      {
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ exec, onEvent }) => {
+          seen.push(exec.vm.id)
+          if (seen.length === 1) {
+            return {
+              ok: false,
+              status: 500,
+              committed: false,
+              body: { error: { type: 'server_error', code: 'server_error', message: 'upstream' } },
+            }
+          }
+          await onEvent('data: {"type":"response.completed"}')
+          return { ok: true, status: 200, terminalState: 'verified' }
+        },
+      },
+      { routing: { failover: { max_same_account_retries: 0 } } },
+    ),
+  )
+  assert.equal(out.status, 200)
+  assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('transient GPT failures retry the same account three times before switching', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-same-retry-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b']) writeGptVm(root, id)
+  const seen = []
+  const logBag = {}
+  const out = await handleCodexProtocol(
+    codexArgs(
+      root,
+      {
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ exec, onEvent }) => {
+          seen.push(exec.vm.id)
+          if (exec.vm.id === 'vm-gpt-a') {
+            return {
+              ok: false,
+              status: 500,
+              committed: false,
+              body: { error: { type: 'server_error', code: 'server_error', message: 'upstream' } },
+            }
+          }
+          await onEvent('data: {"type":"response.completed"}')
+          return { ok: true, status: 200, terminalState: 'verified' }
+        },
+      },
+      {
+        logBag,
+        routing: { failover: { max_total_attempts: 12, max_same_account_retries: 3, max_account_switches: 3 } },
+      },
+    ),
+  )
+  assert.equal(out.status, 200)
+  assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-a', 'vm-gpt-b'])
+  assert.equal(logBag.attempt_count, 5)
+  assert.equal(logBag.codex_same_account_retried, 3)
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('same-account retry never replays after the first SSE event', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-same-emitted-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b']) writeGptVm(root, id)
+  const seen = []
+  const out = await handleCodexProtocol(
+    codexArgs(root, {
+      ensureCodexKernel: async () => ({ ok: true }),
+      streamCodexKernel: async ({ exec, onEvent }) => {
+        seen.push(exec.vm.id)
+        await onEvent('data: {"type":"response.created"}')
+        return { ok: false, status: 500, committed: false, body: { error: { code: 'server_error' } } }
+      },
+    }),
+  )
+  assert.equal(out, undefined)
+  assert.deepEqual(seen, ['vm-gpt-a'])
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('Codex failover stops at the configured attempt budget', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  assert.deepEqual(codexFailoverBudget({ failover: { max_total_attempts: 3, max_account_switches: 2 } }), {
+    maxAttempts: 3,
+    maxSwitches: 2,
+    maxSameAccountRetries: 3,
+  })
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-budget-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b', 'vm-gpt-c']) writeGptVm(root, id)
+  const seen = []
+  const out = await handleCodexProtocol(
+    codexArgs(
+      root,
+      {
+        ensureCodexKernel: async () => ({ ok: true }),
+        streamCodexKernel: async ({ exec }) => {
+          seen.push(exec.vm.id)
+          return { ok: false, status: 500, committed: false, body: { error: { code: 'server_error' } } }
+        },
+      },
+      { routing: { failover: { max_total_attempts: 2, max_account_switches: 10 } } },
+    ),
+  )
+  assert.equal(out.status, 500)
+  assert.equal(seen.length, 2)
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('a 401 parks the GPT slot so the next request skips it', async () => {
+  const rt = await import('../../src/lib/pool/openai-account-runtime.mjs')
+  rt.resetOpenAIAccountRuntime()
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-codex-401-'))
+  for (const id of ['vm-gpt-a', 'vm-gpt-b']) writeGptVm(root, id)
+  const seen = []
+  const ops = {
+    ensureCodexKernel: async () => ({ ok: true }),
+    streamCodexKernel: async ({ exec, onEvent }) => {
+      seen.push(exec.vm.id)
+      if (exec.vm.id === 'vm-gpt-a') {
+        return {
+          ok: false,
+          status: 401,
+          committed: false,
+          body: { error: { type: 'authentication_error', code: 'oauth_401', message: 'token expired' } },
+        }
+      }
+      await onEvent('data: {"type":"response.completed"}')
+      return { ok: true, status: 200, terminalState: 'verified' }
+    },
+  }
+  const first = await handleCodexProtocol(codexArgs(root, ops))
+  assert.equal(first.status, 200)
+  assert.deepEqual(seen, ['vm-gpt-a', 'vm-gpt-b'])
+  assert.ok(rt.openAIAccountHold('vm-gpt-a'))
+  seen.length = 0
+  const second = await handleCodexProtocol(codexArgs(root, ops))
+  assert.equal(second.status, 200)
+  assert.deepEqual(seen, ['vm-gpt-b'])
+  rt.resetOpenAIAccountRuntime()
+  fs.rmSync(root, { recursive: true, force: true })
+})
+
+test('failure holds ignore committed streams and request-shaped 400s', () => {
+  const now = 1_700_000_000_000
+  assert.equal(codexFailureHold({ ok: false, status: 401, committed: true }, now), null)
+  assert.equal(
+    codexFailureHold({ ok: false, status: 400, body: { error: { code: 'invalid_request_error' } } }, now),
+    null,
+  )
+  assert.deepEqual(codexFailureHold({ ok: false, status: 401, committed: false }, now), {
+    until: now + 5 * 60_000,
+    reason: 'oauth_401',
+  })
+  assert.equal(
+    codexFailureHold(
+      { ok: false, status: 401, body: { error: { code: 'invalid_request', message: 'token expired' } } },
+      now,
+    ).reason,
+    'oauth_401',
+  )
+  assert.equal(
+    codexFailureHold(
+      { ok: false, status: 403, body: { error: { code: 'content_policy_violation', message: 'blocked' } } },
+      now,
+    ),
+    null,
+  )
 })
 
 test('#A11: an OpenAI pool that stays full answers 429 pool_overloaded', async () => {

@@ -5,7 +5,7 @@
  * resolver is used by config, admission, persistence and panel projections so
  * a value cannot silently acquire a different meaning at another boundary.
  */
-import { buildCodexUsageView } from '../protocol/codex-usage.mjs'
+import { buildCodexUsageView, hasSpendableCodexCredits } from '../protocol/codex-usage.mjs'
 
 export const OPENAI_QUOTA_DEFAULTS = Object.freeze({
   limit_5h: 1,
@@ -115,7 +115,10 @@ function resetIsLive(value, now) {
   return Number.isFinite(at) ? at > now : null
 }
 
+const OPEN_GATE = Object.freeze({ limited: false, reason: null, window: null, used: null, limit: null, until: null })
+
 export function evaluateOpenAIQuotaGate(vm, policy = OPENAI_QUOTA_DEFAULTS, now = Date.now()) {
+  if (hasSpendableCodexCredits(vm, now)) return OPEN_GATE
   const effective = normalizeOpenAIQuotaPolicy(policy)
   const extra = vm?.codex?.extra || vm?.codex_extra || {}
   const usage = Object.keys(extra).length
@@ -133,9 +136,7 @@ export function evaluateOpenAIQuotaGate(vm, policy = OPENAI_QUOTA_DEFAULTS, now 
     if (Number.isFinite(at) && at > now) until = until == null ? at : Math.min(until, at)
     first ||= { limited: true, reason: `quota_${key}_local`, window: key, used, limit: effective[`limit_${key}`] }
   }
-  return first
-    ? { ...first, until }
-    : { limited: false, reason: null, window: null, used: null, limit: null, until: null }
+  return first ? { ...first, until } : OPEN_GATE
 }
 
 export function effectiveOpenAIPolicy(vm, globalPolicy = OPENAI_QUOTA_DEFAULTS) {

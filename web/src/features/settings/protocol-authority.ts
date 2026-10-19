@@ -1,3 +1,8 @@
+import {
+  SESSION_IDLE_TTL_SECONDS_DEFAULT,
+  SESSION_IDLE_TTL_SECONDS_MAX,
+  SESSION_IDLE_TTL_SECONDS_MIN,
+} from '@/types/panel-routing'
 import type { Vm } from '@/types/panel-vm'
 import { patchVm, type VmPatch } from '@/lib/api'
 import { isCodexVm } from '@/lib/vm-kind'
@@ -10,6 +15,28 @@ export type ProtocolSlot = {
   family?: string | null
   kind?: string | null
   codex_kernel?: boolean
+}
+
+/** `routing.compatibility.cch_enabled`：缺省开，只有显式 false 才关。 */
+export function cchEnabledFromCompat(
+  compat: Record<string, unknown> | undefined
+): boolean {
+  return compat?.cch_enabled !== false
+}
+
+/** `routing.inference.session_idle_ttl_seconds`：kernel 原生 sticky 槽空闲，默认 600。 */
+export function sessionIdleTtlFromInference(
+  inference: Record<string, unknown> | undefined
+): number {
+  const n = Number(inference?.session_idle_ttl_seconds)
+  if (
+    !Number.isInteger(n) ||
+    n < SESSION_IDLE_TTL_SECONDS_MIN ||
+    n > SESSION_IDLE_TTL_SECONDS_MAX
+  ) {
+    return SESSION_IDLE_TTL_SECONDS_DEFAULT
+  }
+  return n
 }
 
 /** 槽位显式 persona 会盖掉 system提示词。空 PATCH 表示跟随全局。

@@ -180,6 +180,12 @@ export function verifyPanelSession(token) {
     const admin = getPanelAdmin()
     s.role = admin.username && s.user === admin.username ? 'admin' : 'user'
   }
+  const now = Date.now()
+  const remaining = s.exp - now
+  if (remaining > 0 && remaining < SESSION_TTL_MS / 2) {
+    s.exp = now + SESSION_TTL_MS
+    saveSessions()
+  }
   return s
 }
 

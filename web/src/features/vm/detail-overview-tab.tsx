@@ -17,6 +17,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { TabsContent } from '@/components/ui/tabs'
 import { VmCostByModel } from '@/features/vm/detail-cost-by-model'
 import { VmStatusBoard } from '@/features/vm/detail-status-board'
+import type { VmTodayCounts } from '@/features/vm/detail-today'
 import { VmEngineEditor } from '@/features/vm/engine-editor'
 import { VmPersonaEditor } from '@/features/vm/persona-editor'
 
@@ -34,6 +35,7 @@ type VmOverviewTabProps = {
   split: WeeklySplitSummary | null
   conc: ConcurrencyInfo
   rpm: RpmInfo | null
+  today: VmTodayCounts
   costByModel?: VmBillingModelRow[]
   billing?: Record<string, unknown> | null
 }

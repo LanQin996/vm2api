@@ -11,6 +11,7 @@ import {
   slotPersonaPatchValue,
 } from '@/features/vm/persona-contract'
 import { vmQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 export function VmPersonaEditor({ id, vm }: { id: string; vm: Vm }) {
   const qc = useQueryClient()
@@ -20,6 +21,7 @@ export function VmPersonaEditor({ id, vm }: { id: string; vm: Vm }) {
     configured
   )
   const inherits = configured === 'inherit'
+  const canEdit = useVmPerms().admin
   const inherit = useMutation({
     mutationFn: () =>
       patchVm(id, { persona_preset: slotPersonaPatchValue('inherit') }),
@@ -54,7 +56,7 @@ export function VmPersonaEditor({ id, vm }: { id: string; vm: Vm }) {
         </Link>{' '}
         修改。槽位覆盖会盖掉全局方案，这是上次第三方请求没带上官方完整提示词的原因。
       </p>
-      {inherits ? null : (
+      {inherits || !canEdit ? null : (
         <Button
           className='mt-3'
           variant='outline'

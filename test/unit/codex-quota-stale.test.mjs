@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -7,6 +7,9 @@ import { handleCodexProtocol } from '../../src/lib/protocol/handle-codex.mjs'
 import { getVm, listVms, persistCodexUsage } from '../../src/lib/vm/vm-registry.mjs'
 import { persistCodexQuotaSnapshot } from '../../src/lib/vm/codex-slot.mjs'
 import { codexQuotaPark, CODEX_DEFAULT_PARK_MS } from '../../src/lib/protocol/codex-usage.mjs'
+import { resetOpenAIAccountRuntime } from '../../src/lib/pool/openai-account-runtime.mjs'
+
+beforeEach(() => resetOpenAIAccountRuntime())
 
 function fixture(t, extra = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-stale-'))

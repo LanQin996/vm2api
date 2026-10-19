@@ -26,13 +26,22 @@ export function isAuthCooldownReason(reason) {
   return AUTH_COOLDOWN_REASON.test(String(reason || ''))
 }
 const REFRESH_FAILURE =
-  /credential_refresh_failed|oauth_refresh|refresh_token_missing|invalid_grant|token has been revoked/i
+  /credential_refresh_failed|oauth_refresh|refresh_token_missing|refresh_token_invalid|invalid_grant|token has been revoked|worker_output_invalid|refresh_rejected|refresh_denied/i
 const GRANT_REVOKED = /access token has been revoked|token has been revoked|oauth_revoked/i
 
 export function isRefreshFailure(workerStatus) {
   if (String(workerStatus?.last_error_class || workerStatus?.refresh_class || '').toLowerCase() === 'retryable')
     return false
-  const err = String(workerStatus?.last_error || workerStatus?.error || workerStatus?.code || '')
+  const credential = workerStatus?.credential || {}
+  const err = String(
+    workerStatus?.last_error ||
+      workerStatus?.error ||
+      workerStatus?.code ||
+      credential.last_error ||
+      credential.refresh_error ||
+      credential.credential_state ||
+      '',
+  )
   return REFRESH_FAILURE.test(err)
 }
 
@@ -181,7 +190,14 @@ export function evaluateCredentialEligibility({ vm, workerStatus = null, now = D
   if (leftoverRevoke && !accessFresh && !workerLive) {
     return { ok: false, reason: 'oauth_revoked' }
   }
-  if (!workerLive && (isRefreshFailure(workerStatus) || isRefreshFailure({ last_error: vm?.claude?.refresh_error }))) {
+  const refreshFailure = isRefreshFailure(workerStatus) || isRefreshFailure({ last_error: vm?.claude?.refresh_error })
+  // Expired access is only a short "refresh pending" window while the refresh
+  // channel is healthy. Once the worker has recorded a refresh failure, the
+  // slot would answer every request with 401: take it out until re-login.
+  if (expMs && expMs <= now && refreshFailure) {
+    return { ok: false, reason: 'oauth_invalid_grant' }
+  }
+  if (!workerLive && refreshFailure) {
     return { ok: false, reason: 'oauth_invalid_grant' }
   }
   if (expMs && expMs <= now && !refreshPresent) {
@@ -222,6 +238,11 @@ export function credPanelUnavailable(extras = {}, expiresAt = null, now = Date.n
       extras.runtime?.worker_status?.error ||
       '',
   )
+  const refreshFailure = isRefreshFailure({
+    last_error: `${extras.refresh_error || ''} ${err}`,
+    last_error_class: extras.worker_credential?.last_error_class || extras.runtime?.worker_status?.last_error_class,
+  })
+  if (refreshFailure && !isLiveAccess({ extras, expiresAt, now, requireTtl: true })) return true
   const fatalGrant = /oauth_invalid_grant|invalid_grant|refresh_token_missing|refresh token not found/i.test(
     `${reason} ${err}`,
   )

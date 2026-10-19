@@ -15,15 +15,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { proxiesQueryOptions } from '@/features/proxies/queries'
+import { type ProxyEditResult, editOutcome } from './proxy-results'
 import { proxyBoundIds } from './proxy-sort'
 
 /** 与网关 PROXY_LABEL_MAX 一致。 */
 const PROXY_LABEL_MAX = 64
 
-type EditResult = {
-  proxy?: VmProxySnap
-  workers?: { vm_id: string; ok: boolean; error?: string | null }[]
-}
+type EditResult = ProxyEditResult & { proxy?: VmProxySnap }
 
 /**
  * 编辑单条代理。账密**不预填** —— 后端不返回账密（只给 has_auth 布尔），
@@ -92,17 +90,9 @@ export function ProxyEditDialog({
       )
     },
     onSuccess: async (data) => {
-      const failed = (data.workers || []).filter((w) => !w.ok)
-      if (failed.length) {
-        // 池已经改了，只是部分槽位没重载成功 —— 说清楚而不是笼统报成功。
-        toast.warning(
-          `已保存，但 ${failed.length} 台槽位重载失败：${failed
-            .map((w) => w.vm_id)
-            .join('、')}`
-        )
-      } else {
-        toast.success('已保存')
-      }
+      // 池已经改了，只是部分槽位或出口转发没跟上 —— 说清楚而不是笼统报成功。
+      const out = editOutcome(data)
+      toast[out.level](out.text)
       onOpenChange(false)
       await Promise.all([
         qc.invalidateQueries({ queryKey: proxiesQueryOptions().queryKey }),

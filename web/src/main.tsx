@@ -14,11 +14,20 @@ import { toast } from 'sonner'
 import { useAuthStore } from '@/stores/auth-store'
 import { ApiError } from '@/lib/api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { onPanelSessionExpired } from '@/lib/session'
 import { DirectionProvider } from './context/direction-provider'
 import { FontProvider } from './context/font-provider'
 import { ThemeProvider } from './context/theme-provider'
 import { routeTree } from './routeTree.gen'
 import './styles/index.css'
+
+onPanelSessionExpired(() => {
+  useAuthStore.setState({ token: '', user: '', me: null })
+  toast.error('登录已过期')
+  if (!window.location.hash.startsWith('#/login')) {
+    window.location.hash = '/login'
+  }
+})
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,14 +44,7 @@ const queryClient = new QueryClient({
   },
   queryCache: new QueryCache({
     onError: (error) => {
-      if (error instanceof ApiError && error.status === 401) {
-        useAuthStore.getState().signOut()
-        toast.error('鉴权失效，请重新登录')
-        if (!window.location.hash.startsWith('#/login')) {
-          window.location.hash = '/login'
-        }
-        return
-      }
+      if (error instanceof ApiError && error.status === 401) return
       handleServerError(error)
     },
   }),

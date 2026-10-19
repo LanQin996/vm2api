@@ -309,8 +309,10 @@ func classifySplice(dest string, errs []error) error {
 	return &spliceError{class: classSpliceRST, dest: dest, err: firstBad}
 }
 
+const dnsMaxUDPSize = 65535
+
 func (s *Server) serveDNS(ctx context.Context, ln net.PacketConn) {
-	buf := make([]byte, 4096)
+	buf := make([]byte, dnsMaxUDPSize)
 	for {
 		_ = ln.SetReadDeadline(time.Now().Add(2 * time.Second))
 		n, addr, err := ln.ReadFrom(buf)
@@ -346,7 +348,14 @@ func (s *Server) handleDNS(ctx context.Context, ln net.PacketConn, addr net.Addr
 	reply, err := s.ResolveDNS(ctx, query)
 	if err != nil {
 		log.Printf("kin-egress dns: %v", err)
-		return
+		if ctx.Err() != nil {
+			return
+		}
+		servfail, ok := dnsServFail(query)
+		if !ok {
+			return
+		}
+		reply = servfail
 	}
 	_, _ = ln.WriteTo(reply, addr)
 }

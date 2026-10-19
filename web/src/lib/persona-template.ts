@@ -138,11 +138,11 @@ export const DEFAULT_PERSONA_TEMPLATES: Record<PersonaPreset, PersonaBlock[]> =
         drop_if_empty: true,
         type: 'text',
         text: '{{agent_standing}}{{caller_agent}}',
-        cache_control: { type: 'ephemeral', ttl: '1h', scope: 'global' },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
       },
       {
         id: 'env',
-        note: '槽位 Environment（时区），按档开关，排在 agent 之后不破 global 缓存',
+        note: '槽位 Environment（时区），按档开关，排在 agent 之后不破 1h 前缀缓存',
         drop_if_empty: true,
         type: 'text',
         text: '{{env}}',
@@ -170,10 +170,10 @@ export const DEFAULT_PERSONA_TEMPLATES: Record<PersonaPreset, PersonaBlock[]> =
       },
       {
         id: 'agent_official',
-        note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h global 缓存',
+        note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h 缓存',
         type: 'text',
         text: '{{agent_standing}}{{agent_official}}',
-        cache_control: { type: 'ephemeral', ttl: '1h', scope: 'global' },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
       },
       {
         id: 'env_official',
@@ -662,10 +662,23 @@ export function envTimezoneText(timezone: string): string {
   return `# Environment\n - Timezone: ${timezone.trim() || 'UTC'}`
 }
 
+/** 生成的 Environment 宏。关 persona_env_presets 时整块留空并丢弃，不当成零宽占位。 */
+const PERSONA_ENV_MACROS: readonly string[] = [
+  'env',
+  'env_official',
+  'env_timezone_only',
+]
+/** 宏 + 槽位 {{timezone}} 标量，均由 per-preset 环境开关控制。 */
+const PERSONA_ENV_VARS: readonly string[] = [...PERSONA_ENV_MACROS, 'timezone']
+
 /**
  * 某档模板对注入位的引用：`switch` = 模板写了开关变量，面板能开关；
- * `builtin` = 模板里另有固定写法（如官方完整的 env_official），总是开；
+ * `builtin` = 模板里另有固定写法，总是开；
  * `absent` = 模板没有这一位。
+ *
+ * 生成的 Environment 宏（env / env_official / env_timezone_only）和槽位
+ * {{timezone}} 都算 env 开关位，走 persona_env_presets；不再把官方完整
+ * env_official 当成总是开。
  */
 export function templateSlotState(
   blocks: readonly RawBlock[],
@@ -676,8 +689,26 @@ export function templateSlotState(
     blocks.flatMap((block) => extractTemplateVars(block.text))
   )
   if (used.has(switchVar)) return 'switch'
+  if (switchVar === 'env' && PERSONA_ENV_VARS.some((name) => used.has(name))) {
+    return 'switch'
+  }
   if (builtinVars.some((name) => used.has(name))) return 'builtin'
   return 'absent'
+}
+
+/**
+ * 预览侧按档关掉生成的 Environment / 槽位时区。personaPreviewVars 仍给真值，
+ * 调用方 system/agent 占位不动。
+ */
+export function applyPersonaEnvVars(
+  vars: Record<string, string>,
+  compat: Record<string, unknown> | undefined,
+  preset: PersonaPreset
+): Record<string, string> {
+  if (presetFlagEnabled(compat, 'persona_env_presets', preset)) return vars
+  const next = { ...vars }
+  for (const name of PERSONA_ENV_VARS) next[name] = ''
+  return next
 }
 
 const BILLING_VARS = ['billing', 'billing_semi']
@@ -745,6 +776,8 @@ function withStandingSlot(
  * 模板 → 出站 system[]，镜像 gateway `renderPersonaTemplate`。
  * 引用 {{billing}} / {{billing_semi}} 的块整块不展示：那一行是计费头。
  * 本档常驻开关打开时，即使保存的模板丢掉了 {{agent_standing}}，也写进 agent 块。
+ * 引用生成 Environment 宏且渲染后为空的块直接丢掉（即便没有 drop_if_empty），
+ * 避免关环境后留下带 cache 的零宽占位；字面 Environment 与「字面+空宏」仍保留。
  */
 export function previewSystemBlocks(
   blocks: readonly RawBlock[],
@@ -758,7 +791,12 @@ export function previewSystemBlocks(
     if (used.some((name) => BILLING_VARS.includes(name))) continue
     const text = fillTemplateVars(block.text, vars)
     const blank = !text.trim()
-    if (block.drop_if_empty && blank) continue
+    if (
+      blank &&
+      (block.drop_if_empty ||
+        used.some((name) => PERSONA_ENV_VARS.includes(name)))
+    )
+      continue
     const cc =
       block.cache_control && typeof block.cache_control === 'object'
         ? (block.cache_control as Record<string, unknown>)

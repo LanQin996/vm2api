@@ -3,17 +3,16 @@
  * and optionally disable Nagle so Claude Code subagent tokens are not delayed.
  */
 import { ErrorCode, ErrorType, makeError } from '../core/errors.mjs'
+import { CORS_ALLOW_HEADERS, corsHeadersForRequest } from './cors.mjs'
 
-export const CORS_ALLOW_HEADERS =
-  'authorization, content-type, x-api-key, anthropic-version, anthropic-beta, x-session-id, x-kin-rewrite, x-panel-token, x-request-id, x-kin-debug, x-kin-log, x-kin-vm, x-kin-backend'
+export { CORS_ALLOW_HEADERS } from './cors.mjs'
 
-export function corsHeaders(extra = {}) {
-  return {
-    'access-control-allow-origin': '*',
-    'access-control-allow-headers': CORS_ALLOW_HEADERS,
-    'access-control-allow-methods': 'GET,POST,OPTIONS,PUT,DELETE,PATCH',
-    ...extra,
-  }
+export function corsHeaders(extra = {}, req = null) {
+  return corsHeadersForRequest(req, extra)
+}
+
+function requestFromResponse(res) {
+  return res?.req || res?._kinReq || null
 }
 
 function collectBody(req, maxBytes) {
@@ -128,7 +127,7 @@ export function createRespond(cfg, options = {}) {
 
   function json(res, status, body) {
     const data = JSON.stringify(body)
-    const headers = corsHeaders({
+    const headers = corsHeadersForRequest(requestFromResponse(res), {
       'content-type': 'application/json; charset=utf-8',
       'x-kin-rewrite': cfg.rewrite.enabled ? 'on' : 'off',
     })
@@ -139,7 +138,7 @@ export function createRespond(cfg, options = {}) {
   }
 
   function writeSSEHeaders(res) {
-    const headers = corsHeaders({
+    const headers = corsHeadersForRequest(requestFromResponse(res), {
       'content-type': 'text/event-stream; charset=utf-8',
       'cache-control': 'no-cache, no-transform',
       connection: 'keep-alive',

@@ -86,6 +86,50 @@ test('expired access with refresh remains schedulable while worker can refresh',
   assert.equal(r.reason, 'refresh_pending')
 })
 
+test('expired access with a recorded refresh failure leaves the pool', () => {
+  const now = Date.now()
+  const r = evaluateCredentialEligibility({
+    vm: vm({
+      has_access: true,
+      has_refresh: true,
+      expires_at: Math.floor(now / 1000) - 6 * 3600,
+      refresh_error: 'worker_output_invalid',
+    }),
+    workerStatus: {
+      ok: false,
+      credential: {
+        has_access: true,
+        has_refresh: true,
+        needs_refresh: true,
+        expires_at: now - 6 * 3600_000,
+        credential_state: 'expired_refreshable',
+      },
+    },
+    now,
+  })
+  assert.equal(r.ok, false)
+  assert.equal(r.reason, 'oauth_invalid_grant')
+})
+
+test('worker_output_invalid does not eject a live access ticket', () => {
+  const now = Date.now()
+  const r = evaluateCredentialEligibility({
+    vm: vm({ has_access: true, has_refresh: true, expires_at: Math.floor(now / 1000) + 3600 }),
+    workerStatus: {
+      ok: true,
+      last_error: 'OAuth refresh failed (worker_output_invalid)',
+      credential: {
+        has_access: true,
+        has_refresh: true,
+        needs_refresh: false,
+        expires_at: now + 3600_000,
+      },
+    },
+    now,
+  })
+  assert.equal(r.ok, true)
+})
+
 test('invalid_grant takes the slot out of the pool', () => {
   const r = evaluateCredentialEligibility({
     vm: vm({ has_access: true, has_refresh: true, refresh_error: 'invalid_grant' }),
@@ -147,6 +191,13 @@ test('presence flags count as a credential without leftover tokens', () => {
 test('panel treats expired access with refresh as refreshable', () => {
   assert.equal(credPanelUnavailable({ has_refresh: true }, Date.now() - 60_000), false)
   assert.equal(credPanelUnavailable({}, Date.now() - 60_000), true)
+})
+
+test('panel does not paint an expired credential with worker_output_invalid as refreshable', () => {
+  assert.equal(
+    credPanelUnavailable({ has_refresh: true, refresh_error: 'worker_output_invalid' }, Date.now() - 6 * 3600_000),
+    true,
+  )
 })
 
 test('operator schedule off is not credential-unavailable', () => {

@@ -219,6 +219,19 @@ export class SshLink extends EventEmitter {
     }
   }
 
+  get generation() {
+    return this._generation
+  }
+
+  /** Keep the link object used by relay closures, but take over an already verified connection. */
+  adopt(result, expectedGeneration = this._generation) {
+    if (expectedGeneration !== this._generation) return false
+    this._teardown()
+    this._setState('connecting')
+    this._accept(result, this._generation)
+    return true
+  }
+
   start() {
     if (this.state !== 'idle') return
     this._connect()
@@ -276,7 +289,10 @@ export class SshLink extends EventEmitter {
       result.client.end()
       return
     }
-    const { client, hostKey } = result
+    this._accept(result, gen)
+  }
+
+  _accept({ client, hostKey }, gen) {
     this.client = client
     this.hostKey = hostKey
     this.error = null

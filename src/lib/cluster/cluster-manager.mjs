@@ -10,6 +10,14 @@ import net from 'node:net'
 import path from 'node:path'
 import { DOCKER_SOCKET_PATH, dockerInfo, dockerPing, sshDocker } from './docker-remote.mjs'
 import { collectLocalStatus } from './local-status.mjs'
+import {
+  mergeNodeEdit,
+  nodeEditConflict,
+  nodePlacementVersion,
+  readNodeHost,
+  validateNodeEditPatch,
+  verifyNodeRuntimes,
+} from './node-edit.mjs'
 import { shellQuote } from './remote-fs.mjs'
 import { SocketRelay } from './socket-relay.mjs'
 import { configuredIpv6Enabled } from '../vm/proxy-policy.mjs'
@@ -100,12 +108,14 @@ export class ClusterManager {
     logger = console,
     onNodesChanged = null,
     onLinkState = null,
+    assertNodeEditable = () => {},
   }) {
     this.listen = listen
     // Node add / remove: per-node resources (each VPS's local egress row) follow the list.
     this.onNodesChanged = onNodesChanged
     // Link settled (ready after its health check, or failed): per-node consumers refresh.
     this.onLinkState = onLinkState
+    this.assertNodeEditable = assertNodeEditable
     this.containerName = containerName
     this._local = null
     this._localAt = 0
@@ -311,6 +321,172 @@ export class ClusterManager {
     return this._view(node)
   }
 
+  _prepareEdit(id, input) {
+    const node = this.repo.get(id)
+    if (!node) throw new ClusterError(404, 'node_not_found', '节点不存在')
+    validateNodeEditPatch(node, input)
+    const labelOnly = Object.keys(input).every((key) => key === 'label' || key === 'expected_updated_at')
+    if (labelOnly) {
+      const label = Object.hasOwn(input, 'label') ? input.label.trim() || node.host : node.label
+      if (label.length > 64) throw new ClusterError(400, 'invalid_label', '备注过长')
+      return { id, node, spec: { label }, connectionEdit: false, labelOnly: true, vms: this.vmsOnNode(id) }
+    }
+    const next = mergeNodeEdit(node, this.repo.getSecrets(id), input)
+    const spec = parseNodeInput(next, { requireHostKey: true })
+    const link = this.links.get(id)
+    const vms = this.vmsOnNode(id)
+    const edit = {
+      id,
+      node,
+      spec,
+      // Explicit connection edits must authenticate, even if normalization yields the saved values.
+      connectionEdit: true,
+      link,
+      generation: link?.generation,
+      client: link?.client,
+      vms,
+      placementVersion: nodePlacementVersion(vms),
+    }
+    this._assertEditCurrent(edit)
+    return edit
+  }
+
+  _assertEditCurrent(edit) {
+    const current = this.repo.get(edit.id)
+    if (!current) throw new ClusterError(404, 'node_not_found', '节点不存在')
+    if (current.updated_at !== edit.node.updated_at) throw nodeEditConflict()
+    if (!edit.connectionEdit) return
+    if (
+      !edit.link ||
+      this.links.get(edit.id) !== edit.link ||
+      edit.link.generation !== edit.generation ||
+      edit.link.client !== edit.client
+    )
+      throw nodeEditConflict()
+    if (nodePlacementVersion(this.vmsOnNode(edit.id)) !== edit.placementVersion) throw nodeEditConflict()
+    if (edit.vms.length && edit.spec.username !== edit.node.username) {
+      throw new ClusterError(409, 'node_username_in_use', '节点上仍有虚拟机，不能更换 SSH 用户；请先迁移或删除虚拟机')
+    }
+    if (this.repo.dependentsOf(edit.id).length) {
+      throw new ClusterError(409, 'node_in_use', '仍有节点经由它跳转，暂不支持修改该节点的连接配置')
+    }
+    const duplicate = this.repo.findByEndpoint(edit.spec.host, edit.spec.port, edit.spec.username)
+    if (duplicate && duplicate !== edit.id) throw new ClusterError(409, 'node_exists', '该主机与用户已接入')
+    if (this.installs.get(edit.id)?.status === 'running')
+      throw new ClusterError(409, 'node_busy', '节点正在安装 Docker，请稍后重试')
+    this.assertNodeEditable(edit.id)
+  }
+
+  async _probeEdit(edit) {
+    let previousHost = null
+    if (edit.vms.length && edit.client && edit.link.state === 'ready') previousHost = await this.remoteHost(edit.id)
+    this._assertEditCurrent(edit)
+    const sock = await this._jumpSock(edit.spec.jump_node_id, edit.spec.host, edit.spec.port)
+    const result = await connectSsh({
+      host: edit.spec.host,
+      port: edit.spec.port,
+      username: edit.spec.username,
+      authType: edit.spec.auth_type,
+      password: edit.spec.password,
+      privateKey: edit.spec.private_key,
+      passphrase: edit.spec.passphrase,
+      expectedSha256: edit.node.host_key_sha256,
+      sock,
+    })
+    let closed = false
+    const lost = () => {
+      closed = true
+    }
+    result.client.once('close', lost)
+    result.client.once('error', lost)
+    const candidate = {
+      ...result,
+      live: () => !closed,
+      cleanup: () => {
+        result.client.off('close', lost)
+        result.client.off('error', lost)
+      },
+    }
+    try {
+      let docker
+      try {
+        await dockerPing(sshDocker(result.client))
+        docker = { ok: true, error: null }
+      } catch {
+        docker = { ok: false, error: 'Docker socket 不可用，请检查 SSH 用户权限与 Docker 服务' }
+      }
+      let host = null
+      if (edit.vms.length) {
+        if (!docker.ok)
+          throw new ClusterError(409, 'node_runtime_mismatch', '新连接无法访问 Docker，不能确认现有虚拟机')
+        host = await readNodeHost(result.client)
+        await verifyNodeRuntimes(result.client, host, edit.vms, previousHost)
+      }
+      this._assertEditCurrent(edit)
+      if (!candidate.live()) throw nodeEditConflict()
+      return { ...candidate, host, docker }
+    } catch (err) {
+      candidate.cleanup()
+      result.client.end()
+      throw err
+    }
+  }
+
+  async probeUpdate(id, input) {
+    const edit = this._prepareEdit(id, input)
+    if (!edit.connectionEdit) {
+      return {
+        host_key: { alg: edit.node.host_key_alg, sha256: edit.node.host_key_sha256 },
+        docker: this.health.get(id)?.docker || { ok: false, error: '未探测' },
+        vm_count: edit.vms.length,
+        dependent_count: this.repo.dependentsOf(id).length,
+      }
+    }
+    const candidate = await this._probeEdit(edit)
+    try {
+      return { host_key: candidate.hostKey, docker: candidate.docker, vm_count: edit.vms.length, dependent_count: 0 }
+    } finally {
+      candidate.cleanup()
+      candidate.client.end()
+    }
+  }
+
+  async update(id, input) {
+    const edit = this._prepareEdit(id, input)
+    const candidate = edit.connectionEdit ? await this._probeEdit(edit) : null
+    let adopted = false
+    try {
+      this._assertEditCurrent(edit)
+      if (candidate && !candidate.live()) throw nodeEditConflict()
+      let saved
+      try {
+        saved = edit.labelOnly
+          ? this.repo.updateLabel(id, edit.spec.label, edit.node.updated_at)
+          : this.repo.update(id, edit.spec, edit.node.updated_at)
+      } catch (err) {
+        if (String(err.message).includes('UNIQUE constraint failed: cluster_nodes.')) {
+          throw new ClusterError(409, 'node_exists', '该主机与用户已接入')
+        }
+        throw err
+      }
+      if (!saved) throw nodeEditConflict()
+      if (candidate) {
+        // No await between the final version check, SQLite CAS and adoption. Existing relay closures retain this link.
+        candidate.cleanup()
+        edit.link.adopt(candidate, edit.generation)
+        adopted = true
+        if (candidate.host) this.hosts.set(candidate.client, Promise.resolve(candidate.host))
+        for (const [ticket, entry] of this.tickets) if (entry.nodeId === id) this.tickets.delete(ticket)
+      }
+      return this._view(saved)
+    } finally {
+      if (candidate && !adopted) {
+        candidate.cleanup()
+        candidate.client.end()
+      }
+    }
+  }
+
   _linkState(id, state) {
     try {
       this.onLinkState?.(id, state)
@@ -377,21 +553,7 @@ export class ClusterManager {
     const client = this.client(id)
     const cached = this.hosts.get(client)
     if (cached) return cached
-    const script =
-      'id -u; id -g; printf "%s\\n" "$HOME"; if sudo -n true 2>/dev/null; then echo sudo; else echo nosudo; fi'
-    const pending = execCollect(client, `sh -c ${shellQuote(script)}`, { timeoutMs: 15_000 }).then((r) => {
-      const [uid, gid, home, sudo] = r.stdout.split('\n').map((s) => s.trim())
-      if (r.code !== 0 || !/^\d+$/.test(uid) || !/^\d+$/.test(gid) || !home.startsWith('/')) {
-        throw new ClusterError(502, 'remote_host_unknown', `读取节点用户信息失败：${(r.stderr || r.stdout).trim()}`)
-      }
-      return {
-        uid: Number(uid),
-        gid: Number(gid),
-        home,
-        root: `${home.replace(/\/+$/, '')}/.vm2api`,
-        sudo: sudo === 'sudo',
-      }
-    })
+    const pending = readNodeHost(client)
     pending.catch(() => this.hosts.delete(client))
     this.hosts.set(client, pending)
     return pending

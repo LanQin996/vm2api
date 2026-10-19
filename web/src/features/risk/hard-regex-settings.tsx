@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { JevInterceptConfig, PolicyRule } from '@/types/panel-routing'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useServerDraft } from '@/hooks/use-server-draft'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
@@ -59,6 +60,17 @@ function draftOf(data: JevInterceptConfig): Draft {
   }
 }
 
+function draftDiffers(draft: Draft, saved: Draft) {
+  return (
+    draft.hard_regex_enabled !== saved.hard_regex_enabled ||
+    draft.openai_platform_enabled !== saved.openai_platform_enabled ||
+    draft.expand_base64 !== saved.expand_base64 ||
+    draft.strip_reminders !== saved.strip_reminders ||
+    ruleKey(draft.rules) !== ruleKey(saved.rules) ||
+    linesOf(draft.patterns).join('\n') !== linesOf(saved.patterns).join('\n')
+  )
+}
+
 /** The stored hit carries `rule.source.slice(0, 120)`; find the rule it came from. */
 function ruleIndexOf(rules: PolicyRule[], source: string) {
   const want = source.trim()
@@ -76,12 +88,8 @@ export function HardRegexSettings({
 }) {
   const qc = useQueryClient()
   const q = useQuery(jevInterceptQueryOptions())
-  const [draft, setDraft] = useState<Draft | null>(null)
+  const [draft, setDraft] = useServerDraft(q.data, draftOf, draftDiffers)
   const listRef = useRef<HTMLUListElement>(null)
-
-  useEffect(() => {
-    if (q.data) setDraft(draftOf(q.data))
-  }, [q.data])
 
   const focusIndex =
     draft && focusRule ? ruleIndexOf(draft.rules, focusRule) : -1
@@ -93,15 +101,7 @@ export function HardRegexSettings({
   }, [focusIndex, focusRule])
 
   const saved = q.data ? draftOf(q.data) : null
-  const dirty =
-    !!draft &&
-    !!saved &&
-    (draft.hard_regex_enabled !== saved.hard_regex_enabled ||
-      draft.openai_platform_enabled !== saved.openai_platform_enabled ||
-      draft.expand_base64 !== saved.expand_base64 ||
-      draft.strip_reminders !== saved.strip_reminders ||
-      ruleKey(draft.rules) !== ruleKey(saved.rules) ||
-      linesOf(draft.patterns).join('\n') !== linesOf(saved.patterns).join('\n'))
+  const dirty = !!draft && !!saved && draftDiffers(draft, saved)
   useEffect(() => onDirtyChange(dirty), [dirty, onDirtyChange])
 
   const save = useMutation({
@@ -127,6 +127,7 @@ export function HardRegexSettings({
     },
     onSuccess: (data) => {
       toast.success('已保存硬正则关')
+      setDraft(draftOf(data))
       qc.setQueryData(jevInterceptQueryOptions().queryKey, data)
     },
     onError: (error: Error) => toast.error(error.message),

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import {
   useMutation,
+  useQuery,
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query'
@@ -15,12 +16,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { meQueryOptions } from '@/features/auth/queries'
 import {
   dashboardQueryOptions,
   usageQueryOptions,
 } from '@/features/overview/queries'
 import { proxiesQueryOptions } from '@/features/proxies/queries'
 import { vmsListQueryOptions } from '@/features/vm/queries'
+import type { WrapSyncReport } from '@/features/wrap/queries'
+import {
+  syncReportFromError,
+  syncReportSummary,
+} from '@/features/wrap/sync-report'
 
 type FleetAction = 'roll' | 'collect'
 
@@ -73,6 +80,9 @@ async function invalidateFleet(qc: QueryClient) {
 
 export function FleetActions() {
   const qc = useQueryClient()
+  const me = useQuery(meQueryOptions())
+  // 额度探测、全槽更新、重装内核都是管理员接口，其它角色点了只会 403。
+  const canManage = me.data?.role === 'admin'
   const [fleetOpen, setFleetOpen] = useState(false)
   const refresh = useMutation({
     mutationFn: () => invalidateFleet(qc),
@@ -129,29 +139,30 @@ export function FleetActions() {
   })
   const wrapSync = useMutation({
     mutationFn: () =>
-      api<{
-        ok_count?: number
-        total?: number
-        failed_count?: number
-        items?: { ok?: boolean; kernel?: { ok?: boolean } }[]
-      }>('/api/panel/wrap-cli/sync', {
+      api<WrapSyncReport>('/api/panel/wrap-cli/sync', {
         method: 'POST',
         body: JSON.stringify({ restart: true }),
       }),
-    onSuccess: async (report) => {
+    onSuccess: (report) => {
       const total = report.total ?? 0
       const ok = report.ok_count ?? 0
       const kernelFail = wrapSyncKernelFails(report.items)
       if ((report.failed_count || 0) > 0) {
-        toast.error(`kernel 重装 ${ok}/${total}`)
+        toast.error(`kernel 重装 ${syncReportSummary(report)}`)
       } else if (kernelFail > 0) {
         toast.error(`kernel 文件 ${ok}/${total}，进程未起来 ${kernelFail}`)
       } else {
         toast.success(`kernel 重装 ${ok}/${total}`)
       }
-      await invalidateFleet(qc)
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error) => {
+      // 部分槽失败时网关回 400，正文仍是逐槽报告。
+      const report = syncReportFromError(error)
+      toast.error(
+        report ? `kernel 重装 ${syncReportSummary(report)}` : error.message
+      )
+    },
+    onSettled: () => invalidateFleet(qc),
   })
 
   return (
@@ -165,33 +176,37 @@ export function FleetActions() {
       >
         刷新
       </Button>
-      <Button
-        variant='outline'
-        size='sm'
-        onClick={() => probe.mutate()}
-        disabled={probe.isPending}
-        loading={probe.isPending}
-      >
-        额度探测
-      </Button>
-      <Button
-        variant='outline'
-        size='sm'
-        onClick={() => setFleetOpen(true)}
-        disabled={fleet.isPending}
-        loading={fleet.isPending}
-      >
-        全槽更新
-      </Button>
-      <Button
-        variant='outline'
-        size='sm'
-        onClick={() => wrapSync.mutate()}
-        disabled={wrapSync.isPending}
-        loading={wrapSync.isPending}
-      >
-        重装当前内核
-      </Button>
+      {canManage ? (
+        <>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => probe.mutate()}
+            disabled={probe.isPending}
+            loading={probe.isPending}
+          >
+            额度探测
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => setFleetOpen(true)}
+            disabled={fleet.isPending}
+            loading={fleet.isPending}
+          >
+            全槽更新
+          </Button>
+          <Button
+            variant='outline'
+            size='sm'
+            onClick={() => wrapSync.mutate()}
+            disabled={wrapSync.isPending}
+            loading={wrapSync.isPending}
+          >
+            重装当前内核
+          </Button>
+        </>
+      ) : null}
 
       <Dialog open={fleetOpen} onOpenChange={setFleetOpen}>
         <DialogContent>

@@ -197,10 +197,7 @@ export function SystemPromptWorkspace({
             preset={viewing}
             blocks={blocks}
             standing='switch'
-            env={templateSlotState(blocks, 'env', [
-              'env_official',
-              'env_timezone_only',
-            ])}
+            env={templateSlotState(blocks, 'env')}
             onChange={onChange}
           />
 

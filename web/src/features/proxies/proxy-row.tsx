@@ -49,15 +49,16 @@ import {
 } from './proxy-tone'
 import { VM_DRAG_TYPE, VmChip } from './vm-chip'
 
+/** 测通 / 测地理 / 启停 / 绑定只有管理员能调；不给对应回调就不显示入口。 */
 export type ProxyRowActions = {
-  onProbe: (id: string) => void
-  onGeo: (id: string) => void
+  onProbe?: (id: string) => void
+  onGeo?: (id: string) => void
   onCopy: (id: string) => void
   onEdit: (id: string) => void
-  onToggleEnabled: (proxy: VmProxySnap) => void
+  onToggleEnabled?: (proxy: VmProxySnap) => void
   onDelete: (id: string) => void
-  onBind: (id: string, vmId: string) => void
-  onUnbind: (id: string, vmId: string) => void
+  onBind?: (id: string, vmId: string) => void
+  onUnbind?: (id: string, vmId: string) => void
   onVmDragChange: (vmId: string) => void
 }
 
@@ -108,6 +109,7 @@ export function ProxyRow({
   actions: ProxyRowActions
 }) {
   const id = proxy.id || ''
+  const { onBind, onUnbind, onProbe } = actions
   const lit = useProxyHovered(hover, id)
   const [over, setOver] = useState(false)
   const [open, setOpen] = useState(false)
@@ -122,6 +124,7 @@ export function ProxyRow({
     proxy.last_error && !proxy.blocked_reason ? proxy.last_error : ''
   // 本地代理只接它所在 VPS 上的槽位。
   const accepts =
+    !!onBind &&
     !!dragVm &&
     bindable &&
     free > 0 &&
@@ -159,9 +162,9 @@ export function ProxyRow({
       onDrop={(e) => {
         setOver(false)
         const vmId = e.dataTransfer.getData(VM_DRAG_TYPE)
-        if (!accepts || !vmId) return
+        if (!accepts || !vmId || !onBind) return
         e.preventDefault()
-        actions.onBind(id, vmId)
+        onBind(id, vmId)
       }}
       className={cn(
         'scroll-mt-24 transition-[background-color,opacity,box-shadow] duration-200',
@@ -279,8 +282,8 @@ export function ProxyRow({
               vm={vmById.get(vmId)}
               vmId={vmId}
               tone={dead ? 'bad' : 'ok'}
-              disabled={pending.binding}
-              onUnbind={() => actions.onUnbind(id, vmId)}
+              disabled={pending.binding || !onBind}
+              onUnbind={onUnbind ? () => onUnbind(id, vmId) : undefined}
               onDragChange={actions.onVmDragChange}
             />
           ))}
@@ -298,7 +301,7 @@ export function ProxyRow({
             <span className='inline-flex h-6 shrink-0 items-center rounded-md border border-dashed border-primary px-2 text-xs text-primary'>
               松开绑定
             </span>
-          ) : bindable && free > 0 ? (
+          ) : onBind && bindable && free > 0 ? (
             <ProxyBindPicker
               compact
               vms={vms}
@@ -306,7 +309,7 @@ export function ProxyRow({
               ownerOf={ownerOf}
               free={free}
               disabled={pending.binding}
-              onBind={(vmId) => actions.onBind(id, vmId)}
+              onBind={(vmId) => onBind(id, vmId)}
             />
           ) : !ids.length ? (
             <span className='truncate text-xs text-muted-foreground'>
@@ -316,18 +319,20 @@ export function ProxyRow({
         </div>
 
         <div className='ms-auto flex shrink-0 items-center @3xl/plist:ms-0'>
-          <Button
-            size='icon'
-            variant='ghost'
-            className='size-7'
-            onClick={() => actions.onProbe(id)}
-            loading={pending.probe === id}
-            disabled={!!proxy.blocked_reason}
-            aria-label='测通'
-            title='测通：只测 SOCKS TCP，不打 Anthropic'
-          >
-            <Activity />
-          </Button>
+          {onProbe ? (
+            <Button
+              size='icon'
+              variant='ghost'
+              className='size-7'
+              onClick={() => onProbe(id)}
+              loading={pending.probe === id}
+              disabled={!!proxy.blocked_reason}
+              aria-label='测通'
+              title='测通：只测 SOCKS TCP，不打 Anthropic'
+            >
+              <Activity />
+            </Button>
+          ) : null}
           <RowMenu
             proxy={proxy}
             local={local}
@@ -370,6 +375,7 @@ function RowMenu({
   actions: ProxyRowActions
 }) {
   const id = proxy.id || ''
+  const { onGeo, onToggleEnabled } = actions
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -386,13 +392,15 @@ function RowMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align='end' className='w-44'>
-        <DropdownMenuItem
-          disabled={!!proxy.blocked_reason}
-          onSelect={() => actions.onGeo(id)}
-        >
-          <Globe />
-          测地理
-        </DropdownMenuItem>
+        {onGeo ? (
+          <DropdownMenuItem
+            disabled={!!proxy.blocked_reason}
+            onSelect={() => onGeo(id)}
+          >
+            <Globe />
+            测地理
+          </DropdownMenuItem>
+        ) : null}
         {local ? null : (
           <>
             <DropdownMenuItem onSelect={() => actions.onCopy(id)}>
@@ -405,10 +413,12 @@ function RowMenu({
             </DropdownMenuItem>
           </>
         )}
-        <DropdownMenuItem onSelect={() => actions.onToggleEnabled(proxy)}>
-          {proxy.enabled === false ? <Power /> : <PowerOff />}
-          {proxy.enabled === false ? '启用' : '禁用'}
-        </DropdownMenuItem>
+        {onToggleEnabled ? (
+          <DropdownMenuItem onSelect={() => onToggleEnabled(proxy)}>
+            {proxy.enabled === false ? <Power /> : <PowerOff />}
+            {proxy.enabled === false ? '启用' : '禁用'}
+          </DropdownMenuItem>
+        ) : null}
         <DropdownMenuSeparator />
         <DropdownMenuItem
           variant='destructive'
@@ -453,6 +463,7 @@ function ProxyDetail({
   actions: ProxyRowActions
 }) {
   const pxId = proxy.id || ''
+  const { onBind, onUnbind, onGeo, onToggleEnabled } = actions
   const geo = proxy.geo
   // 本地代理一台 VPS 一条：绑定入口只列这台机器上的槽位。
   const pickable = local
@@ -464,8 +475,8 @@ function ProxyDetail({
       vm={vmById.get(vmId)}
       vmId={vmId}
       tone={dead ? 'bad' : 'ok'}
-      disabled={pending.binding}
-      onUnbind={() => actions.onUnbind(pxId, vmId)}
+      disabled={pending.binding || !onBind}
+      onUnbind={onUnbind ? () => onUnbind(pxId, vmId) : undefined}
       onDragChange={actions.onVmDragChange}
     />
   )
@@ -538,14 +549,14 @@ function ProxyDetail({
                 <span className='text-muted-foreground'>还没有绑定槽位</span>
               ) : null}
             </div>
-            {bindable && free > 0 ? (
+            {!onBind ? null : bindable && free > 0 ? (
               <ProxyBindPicker
                 vms={pickable}
                 boundHere={ids}
                 ownerOf={ownerOf}
                 free={free}
                 disabled={pending.binding}
-                onBind={(vmId) => actions.onBind(pxId, vmId)}
+                onBind={(vmId) => onBind(pxId, vmId)}
               />
             ) : (
               <p className='text-muted-foreground'>
@@ -560,17 +571,19 @@ function ProxyDetail({
         </DetailField>
       </dl>
       <div className='flex flex-wrap gap-1.5'>
-        <Button
-          size='sm'
-          variant='outline'
-          className='h-7 text-xs'
-          onClick={() => actions.onGeo(pxId)}
-          loading={pending.geo === pxId}
-          disabled={!!proxy.blocked_reason}
-        >
-          <Globe aria-hidden='true' />
-          测地理
-        </Button>
+        {onGeo ? (
+          <Button
+            size='sm'
+            variant='outline'
+            className='h-7 text-xs'
+            onClick={() => onGeo(pxId)}
+            loading={pending.geo === pxId}
+            disabled={!!proxy.blocked_reason}
+          >
+            <Globe aria-hidden='true' />
+            测地理
+          </Button>
+        ) : null}
         {local ? null : (
           <>
             <Button
@@ -594,20 +607,22 @@ function ProxyDetail({
             </Button>
           </>
         )}
-        <Button
-          size='sm'
-          variant='outline'
-          className='h-7 text-xs'
-          onClick={() => actions.onToggleEnabled(proxy)}
-          loading={pending.toggle === pxId}
-        >
-          {proxy.enabled === false ? (
-            <Power aria-hidden='true' />
-          ) : (
-            <PowerOff aria-hidden='true' />
-          )}
-          {proxy.enabled === false ? '启用' : '禁用'}
-        </Button>
+        {onToggleEnabled ? (
+          <Button
+            size='sm'
+            variant='outline'
+            className='h-7 text-xs'
+            onClick={() => onToggleEnabled(proxy)}
+            loading={pending.toggle === pxId}
+          >
+            {proxy.enabled === false ? (
+              <Power aria-hidden='true' />
+            ) : (
+              <PowerOff aria-hidden='true' />
+            )}
+            {proxy.enabled === false ? '启用' : '禁用'}
+          </Button>
+        ) : null}
         <Button
           size='sm'
           variant='ghost'

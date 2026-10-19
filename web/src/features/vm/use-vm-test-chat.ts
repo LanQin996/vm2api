@@ -6,12 +6,17 @@ import { api, isApiError } from '@/lib/api'
 import { isCodexVm } from '@/lib/vm-kind'
 import { testModelsQueryOptions } from '@/features/vm/queries'
 import type { TestChatResult } from '@/features/vm/test-chat-types'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 /** 详情页测试 Tab 与列表弹窗共用：模型列表、参数、发送与结果。 */
 export function useVmTestChat(vm: Vm) {
   const id = vm.id
   const qc = useQueryClient()
-  const testModels = useQuery(testModelsQueryOptions(id))
+  const canTest = useVmPerms().testModels
+  const testModels = useQuery({
+    ...testModelsQueryOptions(id),
+    enabled: canTest && !!id,
+  })
   const [prompt, setPrompt] = useState('hello')
   const [model, setModel] = useState('')
   const [maxTokens, setMaxTokens] = useState(8192)
@@ -119,6 +124,19 @@ export function useVmTestChat(vm: Vm) {
     },
   })
 
+  const refreshModels = useMutation({
+    mutationFn: () =>
+      api<TestModelsPayload>(
+        `/api/panel/test-models?vm_id=${encodeURIComponent(id)}&refresh=1`
+      ),
+    onSuccess: (data) => {
+      qc.setQueryData(testModelsQueryOptions(id).queryKey, data)
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || '刷新模型失败')
+    },
+  })
+
   return {
     models,
     model,
@@ -127,7 +145,8 @@ export function useVmTestChat(vm: Vm) {
     reasoningEffort,
     result,
     running: send.isPending,
-    modelsRefreshing: testModels.isFetching,
+    modelsRefreshing: testModels.isFetching || refreshModels.isPending,
+    canRefreshModels: canTest,
     onModelChange,
     onPromptChange,
     onMaxTokensChange,
@@ -138,16 +157,7 @@ export function useVmTestChat(vm: Vm) {
       send.mutate()
     },
     onRefreshModels: () => {
-      void (async () => {
-        try {
-          const data = await api<TestModelsPayload>(
-            `/api/panel/test-models?vm_id=${encodeURIComponent(id)}&refresh=1`
-          )
-          qc.setQueryData(testModelsQueryOptions(id).queryKey, data)
-        } catch (error) {
-          toast.error((error as Error).message || '刷新模型失败')
-        }
-      })()
+      if (!refreshModels.isPending) refreshModels.mutate()
     },
   }
 }

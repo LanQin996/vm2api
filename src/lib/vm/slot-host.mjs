@@ -101,7 +101,7 @@ const LOCAL_HOST = Object.freeze({
         child.once('exit', exited)
       })
     }
-    if (enabled) return ensureProxyEgress(projectRoot, vm.proxy)
+    if (enabled) return await ensureProxyEgress(projectRoot, vm.proxy)
     const stopped = stopEgressProcess(projectRoot, vm.proxy?.id)
     if (!stopped.ok) return stopped
     const deadline = Date.now() + 2000

@@ -21,6 +21,12 @@ const PUBLIC_COLUMNS = [
   'updated_at',
 ]
 
+function nextUpdatedAt(expectedUpdatedAt) {
+  const previousMs = Date.parse(expectedUpdatedAt)
+  if (!Number.isFinite(previousMs)) return null
+  return new Date(Math.max(Date.now(), previousMs + 1)).toISOString()
+}
+
 export class ClusterNodesRepo {
   constructor(db = getDb()) {
     this.db = db
@@ -33,6 +39,17 @@ export class ClusterNodesRepo {
       INSERT INTO cluster_nodes (id, label, host, port, username, auth_type, password, private_key, passphrase,
         host_key_alg, host_key_sha256, jump_node_id, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `)
+    this._update = db.prepare(`
+      UPDATE cluster_nodes SET label = ?, host = ?, port = ?, username = ?, auth_type = ?,
+        password = ?, private_key = ?, passphrase = ?, updated_at = ?
+      WHERE id = ? AND updated_at = ?
+      RETURNING ${PUBLIC_COLUMNS.join(', ')}
+    `)
+    this._updateLabel = db.prepare(`
+      UPDATE cluster_nodes SET label = ?, updated_at = ?
+      WHERE id = ? AND updated_at = ?
+      RETURNING ${PUBLIC_COLUMNS.join(', ')}
     `)
     this._remove = db.prepare('DELETE FROM cluster_nodes WHERE id = ?')
   }
@@ -82,6 +99,34 @@ export class ClusterNodesRepo {
       now,
     )
     return this.get(node.id)
+  }
+
+  /** Replace normalized connection fields only if the caller's version is still current. */
+  update(id, node, expectedUpdatedAt) {
+    const now = nextUpdatedAt(expectedUpdatedAt)
+    if (!now) return null
+    const row = this._update.get(
+      node.label,
+      node.host,
+      node.port,
+      node.username,
+      node.auth_type,
+      maybeEncrypt(node.password ?? null),
+      maybeEncrypt(node.private_key ?? null),
+      maybeEncrypt(node.passphrase ?? null),
+      now,
+      id,
+      expectedUpdatedAt,
+    )
+    return row ? { ...row } : null
+  }
+
+  /** Rename without reading, decrypting or rewriting stored credentials. */
+  updateLabel(id, label, expectedUpdatedAt) {
+    const now = nextUpdatedAt(expectedUpdatedAt)
+    if (!now) return null
+    const row = this._updateLabel.get(label, now, id, expectedUpdatedAt)
+    return row ? { ...row } : null
   }
 
   remove(id) {

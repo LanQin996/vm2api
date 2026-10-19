@@ -89,6 +89,57 @@ test('direct console resolves a configured proxy id and ignores a typed proxy UR
   )
 })
 
+test('batch check keeps the original row index when empty keys are skipped', async () => {
+  const result = await runAnthropicConsole({
+    cfg: {},
+    input: {
+      model: 'claude-sonnet-4-5',
+      message: 'Hi',
+      keys: [{ api_key: '' }, { api_key: 'sk-one' }, { api_key: 'sk-two' }],
+    },
+    forward: async (request) => ({
+      statusCode: 200,
+      async *[Symbol.asyncIterator]() {
+        yield Buffer.from(
+          JSON.stringify({
+            content: [{ type: 'text', text: request.headers['x-api-key'] }],
+          }),
+        )
+      },
+    }),
+  })
+  assert.equal(result.items.length, 2)
+  assert.equal(result.items[0].row, 1)
+  assert.equal(result.items[0].text, 'sk-one')
+  assert.equal(result.items[1].row, 2)
+  assert.equal(result.items[1].text, 'sk-two')
+})
+
+test('single row test follows the endpoint row index, not the filtered key offset', async () => {
+  let seen = ''
+  const result = await runAnthropicConsole({
+    cfg: {},
+    input: {
+      model: 'claude-sonnet-4-5',
+      message: 'Hi',
+      key_index: 2,
+      keys: [{ api_key: '' }, { api_key: 'sk-one' }, { api_key: 'sk-two' }],
+    },
+    forward: async (request) => {
+      seen = request.headers['x-api-key']
+      return {
+        statusCode: 200,
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from(JSON.stringify({ content: [{ type: 'text', text: 'pong' }] }))
+        },
+      }
+    },
+  })
+  assert.equal(seen, 'sk-two')
+  assert.equal(result.items.length, 1)
+  assert.equal(result.items[0].row, 2)
+})
+
 test('batch check tests each key through its own configured proxy', async () => {
   const seen = []
   const pool = {

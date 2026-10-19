@@ -11,9 +11,8 @@ import {
   CRS_OFFICIAL_SYSTEM,
   CRS_AGENT_EXPANSION,
   AGENT_EXPANSION_CACHE_CONTROL,
-  DEFAULT_CLI_VERSION,
 } from '../../src/lib/identity/crs-persona.mjs'
-import { loadVmIdentity, OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
+import { loadVmIdentity, OFFICIAL_CLI_VERSION, OFFICIAL_CLAUDE_CLI_UA } from '../../src/lib/identity/vm-identity.mjs'
 import { prepareOutboundEnvelope } from '../../src/lib/protocol/outbound-attempt.mjs'
 
 test('unofficial outbound envelope matches official 2.1.281 capture keys', () => {
@@ -146,9 +145,7 @@ const CAPTURE_281_FIRST_USER = (() => {
   return buf.toString('utf8')
 })()
 
-test('outbound headers align with Claude Code 2.1.293 and keep the 2.1.281 fingerprint vector', () => {
-  assert.equal(OFFICIAL_CLI_VERSION, '2.1.293')
-  assert.equal(DEFAULT_CLI_VERSION, '2.1.293')
+test('outbound headers use the official CLI pin and keep the 2.1.281 fingerprint vector', () => {
   assert.equal(computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.281'), '6f0')
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-281-'))
   const identity = loadVmIdentity({
@@ -181,7 +178,7 @@ test('outbound headers align with Claude Code 2.1.293 and keep the 2.1.281 finge
     firstUserText: CAPTURE_281_FIRST_USER,
   })
   const { headers, body } = envelope
-  assert.equal(headers['user-agent'], 'claude-cli/2.1.293 (external, sdk-cli)')
+  assert.equal(headers['user-agent'], OFFICIAL_CLAUDE_CLI_UA)
   assert.equal(headers['anthropic-version'], '2023-06-01')
   assert.equal(headers['x-app'], 'cli')
   assert.equal(headers['anthropic-dangerous-direct-browser-access'], 'true')
@@ -194,7 +191,9 @@ test('outbound headers align with Claude Code 2.1.293 and keep the 2.1.281 finge
   assert.equal(headers['x-stainless-timeout'], '600')
   assert.match(
     body.system[2].text,
-    new RegExp(`cc_version=2\\.1\\.293\\.${computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, '2.1.293')}`),
+    new RegExp(
+      `cc_version=${OFFICIAL_CLI_VERSION.replaceAll('.', '\\.')}\\.${computeClaudeCodeFingerprint(CAPTURE_281_FIRST_USER, OFFICIAL_CLI_VERSION)}`,
+    ),
   )
   assert.match(body.system[2].text, /cc_prompt_index=0; cc_turn_index=1;/)
   const uid = JSON.parse(body.metadata.user_id)

@@ -33,11 +33,8 @@ import {
 } from './column-visibility'
 import { ColumnVisibilityDropdown } from './column-visibility-dropdown'
 import { ErrorCollectionPanel } from './error-collection-panel'
-import {
-  ExportDialog,
-  type ExportOptions,
-  type ExportWindow,
-} from './export-dialog'
+import { ExportDialog, type ExportOptions } from './export-dialog'
+import { exportQuery } from './export-query'
 import { UsageLogsFilters } from './filters/usage-logs-filters'
 import {
   LogDetailDialog,
@@ -60,16 +57,6 @@ import { UsageLogsStatsPanel } from './usage-logs-stats-panel'
 import { VirtualizedLogsTable, type OpenDetail } from './virtualized-logs-table'
 
 const route = getRouteApi('/_authenticated/logs')
-
-/** 导出窗口起点。`opsSince` 只认 1h/6h/24h，7d 在这里补。 */
-function exportSince(window: ExportWindow): string | null {
-  if (!window) return null
-  if (window === '7d') {
-    const t = Date.now() - 7 * 86400_000
-    return new Date(t - (t % 60_000)).toISOString()
-  }
-  return opsSince(window)
-}
 
 export function LogsPage() {
   const qc = useQueryClient()
@@ -195,38 +182,7 @@ export function LogsPage() {
 
   async function handleExport(opts: ExportOptions) {
     try {
-      const qs = new URLSearchParams({
-        format: opts.format,
-        limit: String(opts.limit),
-      })
-      // 后端 `_mutedExclude` 分支序：error_class > include_muted > exclude > 服务端默认。
-      // 「全部日志」必须带 include_muted=1，否则服务端默认屏蔽仍会吃掉数据。
-      if (opts.scope === 'all') {
-        qs.set('include_muted', '1')
-      } else {
-        const cls = opts.scope === 'errors' ? opts.errorClass : errorClass
-        if (opts.scope === 'errors' || filters.excludeStatus200)
-          qs.set('status', 'error')
-        if (cls) qs.set('error_class', cls)
-        else if (opts.includeMuted) qs.set('include_muted', '1')
-        else if (muted.length) qs.set('exclude_error_class', muted.join(','))
-        if (opts.scope === 'current') {
-          if (filters.model) qs.set('model', filters.model)
-          if (filters.protocol) qs.set('protocol', filters.protocol)
-          if (filters.vmId) qs.set('vm_id', filters.vmId)
-          if (filters.keyId) qs.set('api_key_id', filters.keyId)
-          if (filters.userId) qs.set('user_id', filters.userId)
-          if (filters.endTime != null)
-            qs.set('until', new Date(filters.endTime).toISOString())
-        }
-      }
-      const windowSince = exportSince(opts.window)
-      const since =
-        windowSince ??
-        (opts.scope === 'current' && filters.startTime != null
-          ? new Date(filters.startTime).toISOString()
-          : null)
-      if (since) qs.set('since', since)
+      const qs = exportQuery(opts, filters, muted)
       const res = await panelFetch(`/api/panel/request-logs/export?${qs}`)
       if (!res.ok) throw new ApiError('导出失败', res.status)
       // 三个头未列入 Access-Control-Expose-Headers，跨域代理下会是 null。
@@ -256,12 +212,19 @@ export function LogsPage() {
   }
 
   const currentSummary = [
-    filters.excludeStatus200 ? '仅错误' : '全部状态',
+    filters.statusCode != null
+      ? `状态码 ${filters.statusCode}`
+      : filters.excludeStatus200
+        ? '仅非 2xx'
+        : '全部状态',
     errorClass
       ? `错误类 ${ERROR_CLASS_META[errorClass]?.label || errorClass}`
       : null,
     !errorClass && muted.length ? `不含 ${muted.length} 个已屏蔽类` : null,
     filters.model ? `模型 ${filters.model}` : null,
+    filters.sessionId ? `会话 ${filters.sessionId}` : null,
+    filters.endpoint ? `端点 ${filters.endpoint}` : null,
+    filterCount > 0 ? `共 ${filterCount} 项筛选` : null,
   ]
     .filter(Boolean)
     .join(' · ')

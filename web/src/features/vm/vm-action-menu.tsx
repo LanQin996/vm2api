@@ -29,6 +29,7 @@ import { restrictionTitle } from '@/features/vm/clear-restriction'
 import { useVmActions } from '@/features/vm/vm-actions-context'
 import { canReclaimVm } from '@/features/vm/vm-owner'
 import { VmPackageDialog } from '@/features/vm/vm-package-dialog'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 /** 无法刷新时给出原因，与详情页 refreshBlocked 文案一致。 */
 export function refreshBlockedReason(vm: Vm): string {
@@ -55,6 +56,7 @@ export function VmActionMenu({
   const blocked = refreshBlockedReason(vm)
   const restricted = restrictionTitle(vm)
   const admin = me.data?.role === 'admin'
+  const perms = useVmPerms()
   return (
     <>
       <DropdownMenu>
@@ -74,26 +76,32 @@ export function VmActionMenu({
           className='w-44'
           onClick={(e) => e.stopPropagation()}
         >
-          <DropdownMenuItem onSelect={() => actions.openTest(vm)}>
-            <Play className='text-[color:var(--status-ok)]' />
-            测试链接
-          </DropdownMenuItem>
+          {perms.test ? (
+            <DropdownMenuItem onSelect={() => actions.openTest(vm)}>
+              <Play className='text-[color:var(--status-ok)]' />
+              测试链接
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem onSelect={() => actions.openStats(vm)}>
             <BarChart3 className='text-[color:var(--tier-pro-solid)]' />
             查看统计
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => actions.openReauth(vm)}>
-            <Link2 />
-            重新授权
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={Boolean(blocked) || actions.refreshingId === vm.id}
-            title={blocked || undefined}
-            onSelect={() => actions.refreshToken(vm)}
-          >
-            <RefreshCw />
-            刷新令牌
-          </DropdownMenuItem>
+          {perms.credential ? (
+            <>
+              <DropdownMenuItem onSelect={() => actions.openReauth(vm)}>
+                <Link2 />
+                重新授权
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={Boolean(blocked) || actions.refreshingId === vm.id}
+                title={blocked || undefined}
+                onSelect={() => actions.refreshToken(vm)}
+              >
+                <RefreshCw />
+                刷新令牌
+              </DropdownMenuItem>
+            </>
+          ) : null}
           {admin ? (
             <DropdownMenuItem onSelect={() => setPackOpen(true)}>
               <Download />
@@ -127,10 +135,12 @@ export function VmActionMenu({
             <RotateCcw />
             恢复状态
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => actions.openRecovery(vm)}>
-            <LifeBuoy />
-            恢复服务
-          </DropdownMenuItem>
+          {perms.power ? (
+            <DropdownMenuItem onSelect={() => actions.openRecovery(vm)}>
+              <LifeBuoy />
+              恢复服务
+            </DropdownMenuItem>
+          ) : null}
           {actions.reset || actions.remove ? <DropdownMenuSeparator /> : null}
           {actions.reset ? (
             <DropdownMenuItem onSelect={() => actions.reset?.(vm)}>

@@ -286,7 +286,7 @@ test('official_prompt attaches caller agent and keeps leftover overlay', () => {
     })
     assert.equal(withAgent.system.length, 4)
     assert.equal(withAgent.system[2].text, `${DEFAULT_AGENT_STANDING}\n${CRS_OFFICIAL_AGENT_PROMPT}`)
-    assert.deepEqual(withAgent.system[2].cache_control, { type: 'ephemeral', ttl: '1h', scope: 'global' })
+    assert.deepEqual(withAgent.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
     assert.match(envTextAt(withAgent), /^# Environment\n - Timezone: /)
 
     const withLeftover = applyFromSettings(file, {

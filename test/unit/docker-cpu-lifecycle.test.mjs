@@ -26,7 +26,7 @@ function fixture(t, { quota = 'bad', kind = 'docker', remote = false } = {}) {
 }
 
 for (const cached of [false, true]) {
-  test(`local reload validates before config write or cached-file fallback (cached=${cached})`, (t) => {
+  test(`local reload validates before config write or cached-file fallback (cached=${cached})`, async (t) => {
     const { root, vm } = fixture(t)
     const run = path.join(root, 'vms', vm.id, 'run')
     if (cached) {
@@ -34,7 +34,7 @@ for (const cached of [false, true]) {
       fs.writeFileSync(path.join(run, 'worker.json'), 'sentinel-config')
       fs.writeFileSync(path.join(run, 'internal.token'), 'synthetic-token')
     }
-    assert.throws(() => reloadSlotWorker(vm, root), /docker_cpus/)
+    await assert.rejects(() => reloadSlotWorker(vm, root), /docker_cpus/)
     if (cached) assert.equal(fs.readFileSync(path.join(run, 'worker.json'), 'utf8'), 'sentinel-config')
     else assert.equal(fs.existsSync(run), false)
   })

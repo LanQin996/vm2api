@@ -178,6 +178,11 @@ ANTI-PATTERN: Equal SaaS server cards, VM fleet filters, nested cards, decorativ
       <SshPanel
         node={panelNode}
         nodes={apiNodes}
+        vmCount={
+          dashReady
+            ? dashVms.filter((vm) => vm.node_id === panelId).length
+            : null
+        }
         onOpenChange={(open) => {
           if (!open) setPanelId(null)
         }}

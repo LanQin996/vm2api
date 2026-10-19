@@ -90,11 +90,11 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
       drop_if_empty: true,
       type: 'text',
       text: '{{agent_standing}}{{caller_agent}}',
-      cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h', scope: 'global' }),
+      cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h' }),
     }),
     Object.freeze({
       id: 'env',
-      note: '槽位 Environment（时区），按档开关，排在 agent 之后不破 global 缓存',
+      note: '槽位 Environment（时区），按档开关，排在 agent 之后不破 1h 前缀缓存',
       drop_if_empty: true,
       type: 'text',
       text: '{{env}}',
@@ -122,10 +122,10 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'agent_official',
-      note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h global 缓存',
+      note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h 缓存',
       type: 'text',
       text: '{{agent_standing}}{{agent_official}}',
-      cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h', scope: 'global' }),
+      cache_control: Object.freeze({ type: 'ephemeral', ttl: '1h' }),
     }),
     Object.freeze({
       id: 'env_official',
@@ -391,7 +391,12 @@ export function renderPersonaTemplate(blocks, vars = {}) {
     if (!block || typeof block !== 'object') continue
     const text = renderText(block.text, vars)
     const blank = !text.trim()
-    if (block.drop_if_empty && blank) continue
+    const emptyEnvironment =
+      blank &&
+      extractTemplateVars(block.text).some((name) =>
+        ['env', 'env_official', 'env_timezone_only', 'timezone'].includes(name),
+      )
+    if (blank && (block.drop_if_empty || emptyEnvironment)) continue
     const next = { type: 'text', text: blank ? EMPTY_BLOCK_TEXT : text }
     if (block.cache_control && typeof block.cache_control === 'object') {
       next.cache_control = { ...block.cache_control }

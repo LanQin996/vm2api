@@ -35,7 +35,11 @@ import { mergeNotifyConfig } from './notify.mjs'
 import { normalizeLoggingConfig } from './request-log.mjs'
 import { markVmRefreshError } from '../oauth/oauth-credentials.mjs'
 import { shouldMarkMissingRefresh } from '../pool/schedule-eligibility.mjs'
-import { normalizeCodexRouting } from '../protocol/codex-route.mjs'
+import {
+  normalizeCodexRouting,
+  normalizeInferenceWebsocket,
+  validateInferenceWebsocketPatch,
+} from '../protocol/codex-route.mjs'
 import {
   validateOpenAIQuotaPatch,
   mergeOpenAIQuotaPolicy,
@@ -374,8 +378,14 @@ export function createRoutingRuntime(ctx) {
     if (!compatibility || typeof compatibility !== 'object') return false
     return (
       Object.prototype.hasOwnProperty.call(compatibility, 'cache_ttl') ||
-      Object.prototype.hasOwnProperty.call(compatibility, 'persona_preset')
+      Object.prototype.hasOwnProperty.call(compatibility, 'persona_preset') ||
+      Object.prototype.hasOwnProperty.call(compatibility, 'cch_enabled')
     )
+  }
+
+  function inferenceTouchesKernel(inference) {
+    if (!inference || typeof inference !== 'object') return false
+    return Object.prototype.hasOwnProperty.call(inference, 'session_idle_ttl_seconds')
   }
 
   function syncKernelPanelConfig(routingConfig) {
@@ -398,6 +408,7 @@ export function createRoutingRuntime(ctx) {
   function persistRoutingPatch(body = {}) {
     const hasCodexQuota = body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')
     if (hasCodexQuota) validateOpenAIQuotaPatch(body.codex.quota)
+    validateInferenceWebsocketPatch(body)
     let routingConfig = getRouting()
     const prevOfficialCc = routingConfig.official_cc
     const prevHealthProbe = routingConfig.health_probe
@@ -422,8 +433,21 @@ export function createRoutingRuntime(ctx) {
       })
     }
     const nextSessionSlots = normalizeSessionSlots(routingConfig.inference?.session_slots)
-    if (body.compatibility)
+    if (body.compatibility) {
       routingConfig.compatibility = { ...(routingConfig.compatibility || {}), ...body.compatibility }
+      if (
+        Object.prototype.hasOwnProperty.call(body.compatibility, 'cch_enabled') ||
+        routingConfig.compatibility.cch_enabled == null
+      ) {
+        routingConfig.compatibility.cch_enabled = routingConfig.compatibility.cch_enabled !== false
+      }
+    }
+    if (body.websocket) {
+      routingConfig.websocket = normalizeInferenceWebsocket({
+        ...(routingConfig.websocket || {}),
+        ...body.websocket,
+      })
+    }
     if (body.codex) {
       const nextCodex = { ...(routingConfig.codex || {}), ...body.codex }
       if (hasCodexQuota) {
@@ -468,9 +492,13 @@ export function createRoutingRuntime(ctx) {
     const requestBytesChanged = maxRequestBytes(routingConfig) !== prevRequestBytes
     // Body limit is applied once, when axum builds DefaultBodyLimit.
     const kernelPersona =
-      compatibilityTouchesKernel(body.compatibility) || idleChanged || requestBytesChanged
+      compatibilityTouchesKernel(body.compatibility) ||
+      inferenceTouchesKernel(body.inference) ||
+      idleChanged ||
+      requestBytesChanged
         ? syncKernelPanelConfig(routingConfig)
         : null
+    // Stream idle / body-limit still need an idle restart; CCH and sticky-slot TTL hot-read kernel.json.
     const kernelReload = idleChanged || requestBytesChanged ? reloadClaudeKernelsWhenIdle(routingConfig) : 0
     // Pool and failover settings hot-reload into the live scheduler and runner.
     // Rebuilding them would drop the seat book and queues while their requests
@@ -521,6 +549,7 @@ export function createRoutingRuntime(ctx) {
     try {
       const doc = JSON.parse(raw)
       const hasOpenAIQuota = Object.prototype.hasOwnProperty.call(doc.codex || {}, 'quota')
+      doc.websocket = normalizeInferenceWebsocket(doc.websocket)
       doc.codex = normalizeCodexRouting(doc.codex)
       doc.pool = normalizePoolRouting(doc.pool)
       doc.vm = normalizeVmConfig(doc.vm)

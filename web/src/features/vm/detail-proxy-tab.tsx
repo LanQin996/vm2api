@@ -46,7 +46,11 @@ type VmProxyTabProps = {
   free: VmProxySnap[]
   /** 整个池（父组件仍传入；标签已改走节点名，不再读出口 IP）。 */
   pool: VmProxySnap[]
+  /** 已按候选回落过：不在 free 里的旧值不会传进来。 */
   bindId: string
+  /** 只有管理员能绑定 / 解绑 / 测通 / 测地理 / 分配。 */
+  canManage: boolean
+  busy: (key: string) => boolean
   onBindIdChange: (id: string) => void
   onUnbind: () => void
   onAllocate: () => void
@@ -62,6 +66,8 @@ export function VmProxyTab(props: VmProxyTabProps) {
     boundId,
     free,
     bindId,
+    canManage,
+    busy,
     onBindIdChange,
     onUnbind,
     onAllocate,
@@ -75,7 +81,7 @@ export function VmProxyTab(props: VmProxyTabProps) {
   const labelOpts = localProxyOptsFromProxy(proxy, fallbackOpts)
   const localLabel = localProxyText(labelOpts)
   // 本地代理行的地理/延迟是控制面那台；节点槽从节点出网，那份探测不代表它。
-  const selectedId = bindId || free[0]?.id || ''
+  const selectedId = bindId
   const selected = free.find((p) => p.id === selectedId)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [nodeQuery, setNodeQuery] = useState('')
@@ -172,7 +178,8 @@ export function VmProxyTab(props: VmProxyTabProps) {
                       />
                       {proxy.geo.timezone !== vm.timezone ? (
                         <span className='text-[11px] text-muted-foreground'>
-                          槽位为 {vm.timezone || '—'}，可在「运维 · 环境」跟随
+                          槽位为 {vm.timezone || '—'}
+                          {canManage ? '，可在「运维 · 环境」跟随' : ''}
                         </span>
                       ) : null}
                     </>
@@ -196,40 +203,55 @@ export function VmProxyTab(props: VmProxyTabProps) {
           </div>
         </CardContent>
       </Card>
-      <div className='flex flex-wrap gap-2'>
-        {boundId ? (
-          <>
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={onProbe}
-              disabled={!!proxy.blocked_reason}
-            >
-              测通
-            </Button>
-            <Button
-              size='sm'
-              variant='outline'
-              onClick={onGeo}
-              disabled={!!proxy.blocked_reason}
-            >
-              测地理
-            </Button>
-            <Button size='sm' variant='outline' onClick={onUnbind}>
-              解绑
-            </Button>
-          </>
-        ) : null}
-        <Button size='sm' variant='outline' onClick={onAllocate}>
-          分配空闲出口
-        </Button>
-        <Button size='sm' variant='ghost' asChild>
-          <Link to='/settings/$tab' params={{ tab: 'socks5' }}>
-            设置里管理池
-          </Link>
-        </Button>
-      </div>
-      {free.length ? (
+      {canManage ? (
+        <div className='flex flex-wrap gap-2'>
+          {boundId ? (
+            <>
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={onProbe}
+                loading={busy('proxy:probe')}
+                disabled={!!proxy.blocked_reason}
+              >
+                测通
+              </Button>
+              <Button
+                size='sm'
+                variant='outline'
+                onClick={onGeo}
+                loading={busy('proxy:geo')}
+                disabled={!!proxy.blocked_reason}
+              >
+                测地理
+              </Button>
+              <Button
+                size='sm'
+                variant='outline'
+                loading={busy('proxy:unbind')}
+                disabled={busy('proxy:bind')}
+                onClick={onUnbind}
+              >
+                解绑
+              </Button>
+            </>
+          ) : null}
+          <Button
+            size='sm'
+            variant='outline'
+            loading={busy('/allocate-proxy')}
+            onClick={onAllocate}
+          >
+            分配空闲出口
+          </Button>
+          <Button size='sm' variant='ghost' asChild>
+            <Link to='/settings/$tab' params={{ tab: 'socks5' }}>
+              设置里管理池
+            </Link>
+          </Button>
+        </div>
+      ) : null}
+      {!canManage ? null : free.length ? (
         <div className='flex gap-2'>
           <Popover
             open={pickerOpen}
@@ -294,7 +316,10 @@ export function VmProxyTab(props: VmProxyTabProps) {
           <Button
             size='sm'
             onClick={onBind}
-            disabled={!selectedId || selectedId === boundId}
+            loading={busy('proxy:bind')}
+            disabled={
+              !selectedId || selectedId === boundId || busy('proxy:unbind')
+            }
           >
             绑定
           </Button>

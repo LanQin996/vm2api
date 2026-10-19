@@ -53,6 +53,24 @@ test('Claude seats keep using the Claude credential probe', () => {
   assert.equal(vmHasSchedulableCredential(empty), false)
 })
 
+test('expired Claude access with a failed refresh is not schedulable', () => {
+  const expired = Math.floor(Date.now() / 1000) - 6 * 3600
+  const dead = {
+    id: 'vm-04',
+    platform: 'anthropic',
+    family: 'claude',
+    claude: { has_access: true, has_refresh: true, expires_at: expired, refresh_error: 'worker_output_invalid' },
+  }
+  const refreshable = {
+    id: 'vm-05',
+    platform: 'anthropic',
+    family: 'claude',
+    claude: { has_access: true, has_refresh: true, expires_at: expired },
+  }
+  assert.equal(vmHasSchedulableCredential(dead), false)
+  assert.equal(vmHasSchedulableCredential(refreshable), true)
+})
+
 test('missing record is never credential-ready', () => {
   assert.equal(vmHasSchedulableCredential(null), false)
   assert.equal(vmHasSchedulableCredential(undefined, '/tmp'), false)

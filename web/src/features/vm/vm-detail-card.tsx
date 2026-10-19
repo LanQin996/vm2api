@@ -62,6 +62,7 @@ import {
   resolveOwnerUsername,
   vmOriginLabel,
 } from '@/features/vm/vm-owner'
+import { useVmPerms } from '@/features/vm/vm-perms'
 import { VmSchedulingBlock } from '@/features/vm/vm-scheduling'
 
 function Section({
@@ -85,6 +86,7 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
   const actions = useVmActions()
   const me = useQuery(meQueryOptions())
   const admin = me.data?.role === 'admin'
+  const perms = useVmPerms()
   const users = useQuery({
     ...usersQueryOptions(),
     enabled: admin,
@@ -237,13 +239,15 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
       </div>
 
       <div className='flex flex-wrap gap-1.5 border-t pt-3'>
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => actions.openTest(vm)}
-        >
-          <Play /> 测试链接
-        </Button>
+        {perms.test ? (
+          <Button
+            size='sm'
+            variant='outline'
+            onClick={() => actions.openTest(vm)}
+          >
+            <Play /> 测试链接
+          </Button>
+        ) : null}
         <Button
           size='sm'
           variant='outline'
@@ -251,22 +255,26 @@ function CardBody({ vm, accounts }: { vm: Vm; accounts?: UsageAccountRow[] }) {
         >
           <BarChart3 /> 查看统计
         </Button>
-        <Button
-          size='sm'
-          variant='outline'
-          onClick={() => actions.openReauth(vm)}
-        >
-          <Link2 /> 重新授权
-        </Button>
-        <Button
-          size='sm'
-          variant='outline'
-          disabled={Boolean(blocked) || actions.refreshingId === vm.id}
-          title={blocked || undefined}
-          onClick={() => actions.refreshToken(vm)}
-        >
-          <RefreshCw /> 刷新令牌
-        </Button>
+        {perms.credential ? (
+          <>
+            <Button
+              size='sm'
+              variant='outline'
+              onClick={() => actions.openReauth(vm)}
+            >
+              <Link2 /> 重新授权
+            </Button>
+            <Button
+              size='sm'
+              variant='outline'
+              disabled={Boolean(blocked) || actions.refreshingId === vm.id}
+              title={blocked || undefined}
+              onClick={() => actions.refreshToken(vm)}
+            >
+              <RefreshCw /> 刷新令牌
+            </Button>
+          </>
+        ) : null}
         <Button
           size='sm'
           variant='outline'

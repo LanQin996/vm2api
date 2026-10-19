@@ -39,11 +39,30 @@ export function hasSession(): boolean {
   return Boolean(sessionToken())
 }
 
+type PanelSessionExpiredListener = () => void
+const panelSessionExpiredListeners = new Set<PanelSessionExpiredListener>()
+let panelSessionExpiredHandled = false
+
+/** Register UI handler: toast + redirect after panel 401 (see panelFetch). */
+export function onPanelSessionExpired(listener: PanelSessionExpiredListener) {
+  panelSessionExpiredListeners.add(listener)
+  return () => panelSessionExpiredListeners.delete(listener)
+}
+
+export function expirePanelSession() {
+  if (panelSessionExpiredHandled) return
+  panelSessionExpiredHandled = true
+  clearSession()
+  for (const listener of panelSessionExpiredListeners) listener()
+}
+
 export function setSession(token: string, user?: string) {
   clearClientCookie(COOKIE)
   clearClientCookie('kin_console_token')
-  if (token) localStorage.setItem(LS_TOKEN, token)
-  else localStorage.removeItem(LS_TOKEN)
+  if (token) {
+    panelSessionExpiredHandled = false
+    localStorage.setItem(LS_TOKEN, token)
+  } else localStorage.removeItem(LS_TOKEN)
   if (user) localStorage.setItem(LS_USER, user)
 }
 

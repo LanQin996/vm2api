@@ -1,5 +1,92 @@
 # Changelog
 
+## 未发布
+
+## 1.3.196 — 2026-10-19
+
+- 面板 billingStats 10s 进程内缓存（按账号窗口签名）+ backfillMissingCosts 60s 限频，缓解大 usage_logs 库控制台卡顿（#574）
+
+已部署机升级：仅需更新 Node 控制面并重启；不必重建槽；不要更换 kernel/CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.195 — 2026-10-19
+
+- 修复控制面跨挂载时 slot-guest-bin 复制分支用 size+mtime 误判「已最新」：同大小新二进制改为 size+sha256 比较，复制只保留权限位、不再回写 mtime。（#572，续 #569）
+
+已部署机升级：仅需更新 Node 控制面并重启；不必重建槽；不要更换 kernel / CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.194 — 2026-10-19
+
+- 修复 #514 的槽位 bin 目录：移到 `data/run/slot-guest-bin/`（原 `run/` 不在控制面 compose 挂载内，只存在于控制面容器里，宿主侧是空目录，槽内挂进来是空的）；条目改为硬链接（跨挂载时复制）并以 rename 原子替换，不再是指向宿主绝对路径的符号链接（槽内只挂载该目录，符号链接悬空导致 `kin-worker`/`kin-kernel` not found）；控制面启动时刷新目录；不传 kernel 的槽不再删除共享目录里的 `kin-kernel`；`containerHasKernelMount` 识别目录挂载。（#569）
+
+已部署机升级：更新 Node 控制面并重启；**仍挂旧路径 `run/slot-guest-bin/` 或旧单文件挂载的槽须重建一次**；已对新路径硬链接的槽重启控制面刷新即可；不要更换 kernel / CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.193 — 2026-10-18
+
+- 修复客户端取消推理后仍在同一 VM 上重建出站 Session 的问题：取消只终止当前任务并释放请求占用，保留出站 Session 与席位绑定；跨 50 / 100 次请求不会按次数换代。换 VM、凭据失效和空响应恢复规则不变。此项仅需更新 Node 控制面并重启，不需要更换 kernel / CLI 或重建槽位。（#568）
+
+已部署机升级：仅需更新 Node 控制面并重启；不要更换 kernel / CLI，不必重建槽位，无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.192 — 2026-10-18
+
+- 管理→连接支持编辑已接入节点名称与 SSH 配置：先测后存、有槽禁改用户、忙碌拒绝切换，凭证不回传。（#559/#560）
+- kin-egress UDP DNS 接收缓冲扩至 65535 字节；上游解析失败时与 TCP 一致向客户端返回带原 ID 的 SERVFAIL，避免 UDP 请求空等超时。（#531）
+- 设置 → 协议新增统一 CCH 开关（`compatibility.cch_enabled`，默认开）：开启则缺失也补并在最终请求体计算真实五位摘要；关闭仍固定写入 `cch=00000;`（5 个 0），不重新密封。不按试用 / 订阅状态分流，密封不改提示词中的同名字面量；固定 billing 参数策略和 296 / 293 两套标准 UA 不变。
+- 设置 → 协议集中提供原生 sticky 槽空闲超时（`inference.session_idle_ttl_seconds`，默认 600 秒，范围 1–86400 秒），账号池不再重复显示：kernel 热读，基于最后任务完成时间回收，活动任务不回收；不复用账号绑定 TTL，不因保存设置重启 kernel / CLI。
+- 修复内置 `official_full` / `official` 模板自动生成 `cache_control.scope=global` 导致上游参数级 400；Node、预览与旧模板 agent 回填一致移除自产 scope，保留调用方 / 自定义显式字段，不增加重试或换号。（#536）
+- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.18-cch-sticky`；Codex kernel 与其余原生产物保持不变。
+- 重载 kin-egress 时先 SIGTERM 并等待旧进程退出（超时 SIGKILL）且监听端口释放后再启动新进程；spawn 失败返回明确错误。（#530）
+- 跨源管理台/API（`credentials: include`）在配置的受信 Origin 上回显 `Access-Control-Allow-Origin` 并启用 `Access-Control-Allow-Credentials`；未列入 `PANEL_CORS_ORIGINS` / `PUBLIC_BASE_URL` 的 Origin 仍为 `*`，不带 credentials。预检与 JSON/SSE 统一允许 `PATCH` 与完整 header 列表。（#529）
+- KVM / Docker 槽位改为挂载宿主 `run/slot-guest-bin/`（仅含 `kin-worker`、`kin-kernel`，不暴露整个 `bin/` 里其它 helper），避免单文件 bind mount 在升级替换二进制后容器内仍粘旧 inode；**已用旧单文件挂载创建的容器须重建一次** 才能切换到 staging 目录挂载。（#514）
+
+已部署机升级：更新 Node 控制面、web/dist 与配套 Claude kernel / CLI ELF（`payload-2026.10.18-cch-sticky`）；本机槽按正常流程排空后同步并重启；镜像内置 payload 的集群槽须新镜像并单独授权重建。#562 重载 egress 行为随 Node 重启生效。跨源管理台/API 若需带凭证，请配置 `PANEL_CORS_ORIGINS` / `PUBLIC_BASE_URL`（#529）。**仍用旧单文件 bind mount 创建的槽位容器须重建一次** 才能切换到 `run/slot-guest-bin/` staging 目录挂载（#514）；重建后升级 worker/kernel 不必再重建。#536 默认模板修复本身只需更新 Node / 前端。Go 服务标准 UA 不变，无新依赖或数据库迁移；保留 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.191 — 2026-10-18
+
+- `deploy/install.sh` 的 schedule hold/resume 内联 Python 兼容 3.8–3.11，避免旧宿主升级时 SyntaxError。（#535）
+- access 已过期且刷新失败的凭证退出调度池；GPT 上游失败施加进程内短期账号冷却（401/403 5 分钟、429 1 分钟、408/5xx/传输 30 秒），与换号上限协同。（#537）
+- 修复未配置 PUBLIC_BASE_URL / PUBLIC_HOST 且 HOST=0.0.0.0 时 /health、/v1/meta 返回不可访问的 base_url；监听地址不再作为对外 URL 回退。（#534/#543）
+- GPT/Codex 默认同账号重试 3 次、最多换号 3 次（401/403/429 直接换号；总尝试仍为 12；首条 SSE 发出后不再重试）。已有 `routing.json` 里写过 `failover` 字段的部署，仅重启不会自动变成上述新默认，须在面板「重试与切号」修改或手动合并配置。（#538）
+- 修复 API 后端非流式路径在上游 SSE 仅有 `message_start`、或仅有 `stop_reason` 而无 `message_stop` 时仍返回 200 的问题；须见到 `message_stop`（或 SSE `error` 终态）才视为 verified，否则 `incomplete_response`（502）。（#528/#550）
+- 修复新建 KVM 槽位因 kin-computer 空 UUID 被写成 `qemu -uuid -` 而崩溃：控制面校验指纹 UUID、坏档案重生成，并在启动前强制回填合法 RFC4122 UUID。（#513/#541）
+- 默认控制面镜像在 helpers 阶段编译并落地 `kin-api-kernel`，入口脚本同步刷新该二进制；缺失或无法就绪时在启动阶段失败，避免 API Endpoint 请求才报 `api_kernel_transport`。（#527/#549）
+- 修复删除租户后已分配 VM 残留 `owner_user_id`、无法回到公共号池参与额度切号的问题：删除时收回管理员分配的 VM，启动时补修已删除用户的旧记录；租户自建 VM 保持隔离，调度开关、额度冷却与凭证不变。升级只需更新 Node 控制面并重启，无数据库迁移或槽位重建。（#557）
+- 面板会话在 `verifyPanelSession` 成功时滑动续期：剩余有效期不足一半（7 天 TTL）时写回 `exp` 并持久化；控制台请求 `/api/panel/*` 若返回 401 则清本地登录态、跳转登录页并提示「登录已过期」。（#516/#553）
+- Anthropic 控制台「全部测试」按后端返回的行号绑定结果，空密钥行不再把其它行的测试结果错位显示。（#532/#554）
+
+已部署机升级：更新 Node 控制面与 web/dist 后重启；升级脚本请同步 `deploy/install.sh`（#535，支持 Python 3.8–3.11 的 schedule hold/resume）。使用默认控制面镜像的部署须重建或更新镜像，使 helpers 阶段编译的 `kin-api-kernel` 落地且入口脚本刷新该二进制（#527/#549）；缺失或无法就绪时控制面会在启动阶段失败，而非等到 API Endpoint 请求才报 `api_kernel_transport`。Codex/GPT：默认同账号重试 3 次、最多换号 3 次（#538）；已在 `routing.json` 中写过 `failover` 字段的部署仅重启不会自动套用新默认，须在面板「重试与切号」修改或手动合并配置。另 #537：access 已过期且刷新失败的凭证不再参与调度，GPT 上游失败会施加进程内短期账号冷却（401/403 5 分钟、429 1 分钟、408/5xx/传输 30 秒），与上述换号策略一并生效。无数据库迁移；不必 wrap-cli/sync；不必重建槽位。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.190 — 2026-10-18
+
+- 增加 Responses WebSocket 入口及全局/GPT 两级推理 WS 开关；关闭 WS 不关闭 HTTP/SSE，也不影响终端/集群连接。每轮复用原鉴权、范围、调度、日志与计费链路；连接内续接回放完整历史，未知 ID 明确要求全量重放，不伪造原生上游连接复用。
+- 设置新增独立 OpenAI 页面，调度与槽位导航均指向它；集中 GPT 协议/客户端准入、配额/并发/RPM/会话容量、目录版本和上游传输/UA，移除原页重复 GPT 控件。
+- Codex kernel 增加每请求传输与画像选项，修复取消后上游仍等待的问题。安装 UUID/client_metadata 和独立运行环境 Analytics 各自可选、默认关闭；Analytics 使用官方 `codex_thread_initialized` 结构并标明 vm2api 来源，沿用槽位出口，不上传提示词、文件、主机名或 MAC。字段与边界见 [PANEL_API.md](docs/PANEL_API.md#openai-传输与隐私)。
+
+已部署机升级：更新 Node 控制面、web/dist 与 Codex kernel ELF。已有宿主 Codex kernel 须排空在途请求后随 Node 一次重启加载新二进制，不必重建 GPT 容器。Anthropic kernel / CLI 不变，不必 wrap-cli/sync。既有 `routing.json`、`vms/`、`data/`、`.env` 不覆盖；安装元数据与 Analytics 默认关闭。nginx 的 `/v1/responses`（或 `/responses`）必须保留 Upgrade 并直连 Node。无新依赖或数据库迁移。
+
+## 1.3.189 — 2026-10-18
+
+- VM 详情页按角色收起无权限的查询与按钮，租户与 super 不再反复弹「当前权限无法执行此操作」；切换槽位重置页面状态（代理选择、测试结果、时区、凭证输入）；账号页与概览「今日」改用当日计数；开机 kernel 未就绪时给出警告，关机提示会关闭调度；确认框回车不再重复提交；各按钮单独显示进行中；内存提升弹窗重置目标档位。（#521）
+- 面板其它页面：Anthropic 控制台保存已有地址只提交变更字段，不再覆盖模型、名称与代理；代理池、顶栏与计费页按角色隐藏无权限操作，租户计费不再把 GPT 费用算进 Claude；全槽更新与数据面切换部分失败时显示逐槽明细；风控与模型页不再冲掉未保存草稿，「恢复默认」需确认；日志导出遵循当前筛选；系统提示词页只回写 compatibility；Key 额度用完显示「额度用完」；禁用代理前确认；若干失败误报为成功的提示改为如实报告；健康缓存间隔输入不再逐键钳制。
+- 修复集群节点上的槽被 kernel 看门狗每隔几分钟重启：节点槽改经本地中转探测 kernel（超时 3 秒，跨洋往返约 110ms 时 800ms 会误判）；中转未就绪时只在容器确实缺失、停止或重启中才拉起；节点槽启动后写回中转 socket 路径。
+- 定时测试「同步到全部槽」改为整块复制：启用开关、频率、时刻/分钟、星期、时区、模型、Prompt、token/effort；Claude 与 Codex 互为另一类的槽只同步开关与时间，保留各自模型与 Prompt；请求先整体校验，不会写一半。定时测试表单每 30 秒刷新，外部修改在未编辑时自动载入，编辑中给出提示而不再静默覆盖；切换槽位重新载入。
+
+已部署机升级：更新 Node 控制面与 web/dist 后重启；无迁移、不必 wrap-cli/sync，不必重建槽位 / 无新 kernel payload。不要覆盖 `routing.json`、`vms/`、`data/` 或 `.env`。
+
+## 1.3.188 — 2026-10-18
+
+- 修复同一会话反复回放已被上游拒绝的搜索历史时，每轮都先 400 再修复成功的问题：仅在同 VM / 账号 / 模型 / 凭据代际确认修复成功后，进程内有界记录精确历史指纹，后续相同历史首跳复用原修复；新搜索内容或执行上下文不预先改写，不改变占位释放、出站 session、缓存 TTL 或签名修复开关。
+- 设置 → 协议新增「默认缓存写入 TTL」，可选 5 分钟（`5m`）或 1 小时（`1h`）；复用已有配置保存与槽位热投影，不改变断点布局、透传边界、显式 TTL 或会话 pin 规则。
+- system 提示词关闭「Environment」时，统一停止生成环境 / 时区宏，直接省略环境块；官方完整档也可关闭。保留调用方提供的 Environment 与时区，避免 native 预处理误删或 HTTP 槽位选择后覆盖；预览、保存和最终线序按档一致。
+- 对齐 Claude Code `2.1.296` 的面板出站身份与 CLI 运行时版本投影，避免新 CLI 被旧 `CLAUDE_CODE_VERSION` 降回 `2.1.293`。
+- native 官方透传同时保留 system/tools/messages 的 caller cache marker、显式 TTL 与缺失 TTL；超四点、thinking marker、非法 TTL / 顺序在调度前报 `400 invalid_cache_control`，不静默修复。
+- native 重写模式只补齐、裁剪自产 marker，保留模板显式 TTL；非法模板零上游执行，不换号、不冷却。日志和计费保留上游真实 5m/1h usage 分桶。
+- CLI 保留带 billing 的官方 / 子代理 wire system，不再要求 SDK identity 才能透传；原生工具预算只保护调用方前缀，保留其显式 TTL 和缺失 TTL。
+- GPT 槽在 TTL（10 分钟）内有可用 credits（`has_credits || unlimited`）时仅豁免窗口 cap；显式 park 仍优先；上游 429 清除 credits 并 park。（#508）
+- 修复 KVM 交互终端：交互/非 detach 不再包 `timeout 8`（仅保留 SSH ConnectTimeout）；`-e` 按次独立转义，保留值内换行（含 `KIN_PANEL_RC`）。（#509）
+- Claude Desktop local-agent（UA 含 local-agent 与 agent-sdk、平台 desktop_app、合法 anthropic-client-version）不再仅凭 cc_entrypoint=local-agent 判成 OMP，避免 claude_code_only 误 403；OMP 专属与 body-only relay 仍保守。（#511）
+
+已部署机升级：搜索历史修复本身只需更新 Node 控制面并重启，不需要同步或重启槽位。要启用本版 2.1.296 的完整 native 缓存契约，还需安装相应 kernel / CLI payload；本机槽定向同步，镜像内置 payload 的集群槽需要新镜像和单独授权重建。已安装 kernel `98357559…` / CLI `244ef884…` 的槽无需重复更新。不要覆盖 `routing.json`、`vms/`、`data/` 或 `.env`。
+
 ## 1.3.187 — 2026-10-17
 
 - 更新 Claude kernel：保留未知消息块，以及已知类型中的扩展字段（如 thinking 绑定、引用和工具调用来源），不再在传给 CLI 时静默丢弃；扩展 tool_result 仍参与 continuation ID 校验和大小限制。

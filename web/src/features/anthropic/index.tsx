@@ -23,33 +23,20 @@ import { PageHeader } from '@/components/page-header'
 import { apiEndpointsQueryOptions } from '@/features/api-endpoints/queries'
 import { proxyLabel } from '@/features/proxies/proxy-sort'
 import { proxiesQueryOptions } from '@/features/proxies/queries'
-
-const DEFAULT_URL = 'https://api.anthropic.com'
-const DIRECT = '__direct__'
-
-type AuthScheme = 'x_api_key' | 'authorization_bearer'
-
-type EndpointDraft = {
-  id: string
-  storedId?: string
-  keyId?: string
-  baseUrl: string
-  authScheme: AuthScheme
-  apiKey: string
-  proxyId: string
-}
-
-type KeyResult = {
-  ok?: boolean
-  status?: number
-  text?: string
-  error?: string
-  proxy?: boolean
-}
-
-type ConsoleResult = KeyResult & {
-  items?: KeyResult[]
-}
+import {
+  applyConsoleResults,
+  type ConsoleResult,
+  type KeyResult,
+  endpointHasTestableKey,
+} from './console-results'
+import {
+  type AuthScheme,
+  DEFAULT_URL,
+  DIRECT,
+  type EndpointDraft,
+  draftFromStored,
+  endpointSaveRequest,
+} from './endpoint-save'
 
 type ModelList = {
   models?: { id?: string; name?: string; alias?: string }[]
@@ -83,18 +70,7 @@ export function AnthropicConsolePage() {
     if (loaded || !stored.data) return
     const rows = (stored.data.items || [])
       .filter((item) => item.protocol !== 'openai')
-      .map((item) => ({
-        id: item.id,
-        storedId: item.id,
-        baseUrl: item.base_url || DEFAULT_URL,
-        authScheme:
-          item.auth_scheme === 'authorization_bearer'
-            ? ('authorization_bearer' as const)
-            : ('x_api_key' as const),
-        apiKey: '',
-        proxyId: DIRECT,
-        keyId: item.api_key_entries?.[0]?.id || '',
-      }))
+      .map(draftFromStored)
     if (rows.length) setEndpoints(rows)
     setLoaded(true)
   }, [loaded, stored.data])
@@ -111,16 +87,15 @@ export function AnthropicConsolePage() {
   }
 
   function storeResults(data: ConsoleResult, index: number | null) {
-    const incoming = data.items?.length ? data.items : [data]
-    setResults((current) => {
-      const next = { ...current }
-      const targets =
-        index == null ? endpoints : [endpoints[index]].filter(Boolean)
-      targets.forEach((endpoint, offset) => {
-        if (incoming[offset]) next[endpoint.id] = incoming[offset]
-      })
-      return next
-    })
+    setResults((current) =>
+      applyConsoleResults(
+        endpoints,
+        (row) => endpointHasTestableKey(endpoints[row]),
+        current,
+        data,
+        index
+      )
+    )
   }
 
   const send = useMutation({
@@ -190,35 +165,13 @@ export function AnthropicConsolePage() {
 
   const save = useMutation({
     mutationFn: async (item: EndpointDraft) => {
-      const body: Record<string, unknown> = {
-        kind: item.baseUrl.trim() === DEFAULT_URL ? 'claude' : 'custom',
-        protocol: 'anthropic',
-        name: item.baseUrl.trim() || DEFAULT_URL,
-        base_url: item.baseUrl.trim() || DEFAULT_URL,
-        auth_scheme: item.authScheme,
-        proxy_id: item.proxyId === DIRECT ? '' : item.proxyId,
-        key_id: item.keyId || '',
-        api_key: item.apiKey.trim(),
-        models: [
-          {
-            name: model.trim() || 'claude-sonnet-4-5',
-            alias: model.trim() || 'claude-sonnet-4-5',
-          },
-        ],
-      }
-      if (!item.storedId)
-        body.api_key_entries = item.apiKey.trim()
-          ? [{ api_key: item.apiKey.trim() }]
-          : []
-      const path = item.storedId
-        ? `/api/panel/api-endpoints/${encodeURIComponent(item.storedId)}`
-        : '/api/panel/api-endpoints'
+      const request = endpointSaveRequest(item, model)
       return api<{
         item?: { id?: string; api_key_entries?: { id?: string }[] }
-      }>(path, {
-        method: item.storedId ? 'PATCH' : 'POST',
+      }>(request.path, {
+        method: request.method,
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
+        body: JSON.stringify(request.body),
       })
     },
     onSuccess: async (data, item) => {
@@ -232,6 +185,11 @@ export function AnthropicConsolePage() {
                   storedId: saved.id,
                   keyId: saved.api_key_entries?.[0]?.id || row.keyId,
                   apiKey: '',
+                  stored: {
+                    baseUrl: item.baseUrl.trim() || DEFAULT_URL,
+                    authScheme: item.authScheme,
+                    proxyId: item.proxyId,
+                  },
                 }
               : row
           )

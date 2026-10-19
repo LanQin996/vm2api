@@ -170,6 +170,60 @@ test('credential refresh failure is 无效凭证 even if usage snapshot exists',
   assert.equal(av.reason, 'credential_refresh_failed')
 })
 
+test('expired access with worker_output_invalid is 无效凭证', () => {
+  const now = Date.now()
+  const av = evaluateAccount({
+    vm: {
+      has_token: true,
+      has_refresh: true,
+      expires_at: Math.floor((now - 6 * 3600_000) / 1000),
+      refresh_error: 'worker_output_invalid',
+    },
+    hasToken: true,
+    hasRefresh: true,
+    schedulable: true,
+    expiresAt: now - 6 * 3600_000,
+    workerCredential: {
+      has_access: true,
+      has_refresh: true,
+      needs_refresh: true,
+      expires_at: now - 6 * 3600_000,
+    },
+    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
+    now,
+  })
+  assert.equal(av.key, 'bad')
+  assert.equal(av.text, '无效凭证')
+  assert.equal(av.reason, 'credential_refresh_failed')
+  assert.equal(av.accept, false)
+})
+
+test('live access is kept despite a transient refresh error', () => {
+  const now = Date.now()
+  const av = evaluateAccount({
+    vm: {
+      has_token: true,
+      has_refresh: true,
+      expires_at: Math.floor((now + 3600_000) / 1000),
+      refresh_error: 'worker_output_invalid',
+    },
+    hasToken: true,
+    hasRefresh: true,
+    schedulable: true,
+    expiresAt: now + 3600_000,
+    workerCredential: {
+      has_access: true,
+      has_refresh: true,
+      needs_refresh: false,
+      expires_at: now + 3600_000,
+    },
+    quota: { utilization_5h: 0.1, status_5h: 'allowed' },
+    now,
+  })
+  assert.notEqual(av.key, 'bad')
+  assert.equal(av.accept, true)
+})
+
 test('leftover invalid_grant after a live refresh does not block the pool', () => {
   const now = Date.now()
   const av = evaluateAccount({

@@ -73,6 +73,7 @@ curl -sS --noproxy '*' http://127.0.0.1:8787/health
 ```
 
 `bin/` 与 `share/wrap-cli` 由镜像入口写入挂载目录，`src/config` 缺文件时用镜像内默认值补齐。
+KVM / Docker 槽位将宿主 `data/run/slot-guest-bin/`（仅含 `kin-worker`、`kin-kernel` 两个文件，**不会**挂载整个 `bin/`）只读挂进容器，避免单文件 bind mount 在升级替换二进制后仍粘旧 inode，也避免把 `kin-egress`、`kin-api-kernel` 等其它 helper 暴露进槽位 PATH。此后升级 worker/kernel **不必重建槽位**；若容器仍是旧版单文件挂载创建的，须 **重建该槽位容器一次** 才能切换到 staging 目录挂载。
 槽位系统镜像优先 `docker pull ghcr.io/dofastted/kin-os-*`，拉不到时在建槽阶段用仓内 Dockerfile 兜底构建（启动不阻塞）。
 
 **新建槽位的闭源依赖**：`kin-computer` 只分发编译后二进制，不公开源码。它由 `deploy/payload.json` 固定大小与 SHA256，随 Release 和控制面镜像交付；镜像入口自动安装到 `bin/kin-computer`，无需额外挂载私有源码目录。源码直接运行前执行 `npm run fetch:payload`；默认读取仓库的 `bin/kin-computer`，也可用 `KIN_COMPUTER_BIN` 指定绝对路径。二进制为 linux amd64，按 Ubuntu 22.04 / GLIBC 2.35 构建，Debian 12 与 Ubuntu 24.04 可向上兼容；ARM64 控制面通过 QEMU 运行。Docker 身份生成还需 Bash 和 Python 3（控制面镜像已安装）。缺失时面板建槽返回 HTTP 400 `computer_service_missing`，生成失败返回 `computer_create_failed`。已有容器启动不会重新发布身份或改写主机名。
@@ -174,6 +175,18 @@ location ~ ^/api/panel/(cluster/nodes|vms)/[^/]+/shell$ {
   proxy_read_timeout 3600s;
 }
 
+# Responses WebSocket 与 HTTP 共用路径，也必须直连 Node 并保留 Upgrade。
+location ~ ^/(v1/)?responses$ {
+  proxy_pass http://127.0.0.1:8787;
+  proxy_http_version 1.1;
+  proxy_set_header Host $host;
+  proxy_set_header Authorization $http_authorization;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+  proxy_buffering off;
+  proxy_read_timeout 3600s;
+}
+
 location / {
   proxy_pass http://127.0.0.1:8787;
   proxy_http_version 1.1;
@@ -185,7 +198,7 @@ location / {
 }
 ```
 
-`Connection ""` 会剥掉 Upgrade，终端握手拿不到 101，面板里一直连不上；所以 shell 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788`，这条 location 必须 `proxy_pass` 到 Node。症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
+`Connection ""` 会剥掉 Upgrade，终端或 Responses WS 握手拿不到 101，所以 shell / responses 路径单独放在前面。生产机的 Go 前门在 `:8787`、Node 在 `:8788` 时，这些 location 必须 `proxy_pass` 到 Node。终端症状和核对命令见 [nginx-shell.md](nginx-shell.md)。
 
 登录限流：`POST /api/panel/login` 同时最多 2 个密码校验（`KIN_LOGIN_MAX_INFLIGHT`），超出直接 429 + `Retry-After`；按来源 IP 每分钟 10 次、突发 20（`KIN_LOGIN_IP_PER_MIN` / `KIN_LOGIN_IP_BURST`，登录成功退回额度）；同一用户名失败 5 次后每分钟只放 1 次（`KIN_LOGIN_USER_BURST` / `KIN_LOGIN_USER_PER_MIN`，成功即清零）。来源 IP 默认取 TCP 对端；走反代时所有请求都来自 `127.0.0.1`，按 IP 限流会变成全局共享。此时在 nginx 加 `proxy_set_header X-Forwarded-For $remote_addr;`（覆盖，不用 `$proxy_add_x_forwarded_for`，否则客户端可伪造首跳），并设 `KIN_TRUST_PROXY=1`。Node 直接暴露公网时不要开。
 

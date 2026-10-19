@@ -292,3 +292,21 @@ export function kvmAvailabilityFromCheck(
   if (check.level === 'warn') return { status: 'ok', accel: 'tcg' }
   return { status: 'disabled', reason: check.message || '宿主无 /dev/kvm' }
 }
+
+/** 可在线提升到的内存档（只升不降）；当前值不在档位里按 512m 算。 */
+export function memoryRaiseOptions(current: string): VmMemoryOption[] {
+  const idx = VM_MEMORY_OPTIONS.indexOf(current as VmMemoryOption)
+  const base = idx >= 0 ? idx : VM_MEMORY_OPTIONS.indexOf('512m')
+  return VM_MEMORY_OPTIONS.filter((_, i) => i > base)
+}
+
+/** 记住的目标已不在可选档里（刚提升过、配置变了）时回落到最小可提档。 */
+export function memoryRaiseTarget(
+  picked: string | null | undefined,
+  options: readonly VmMemoryOption[]
+): VmMemoryOption | null {
+  if (picked && options.includes(picked as VmMemoryOption)) {
+    return picked as VmMemoryOption
+  }
+  return options[0] ?? null
+}

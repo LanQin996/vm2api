@@ -1,5 +1,5 @@
 /**
- * Claude Code 2.1.293 1P env / event / GrowthBook payloads.
+ * Claude Code 2.1.296 1P env / event / GrowthBook payloads.
  * device_id is the install userID (64 hex). Betas, node_version,
  * is_running_with_bun, model, and additional_metadata are not sent.
  */

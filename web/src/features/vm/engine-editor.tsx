@@ -20,6 +20,7 @@ import {
 } from '@/features/vm/engine-contract'
 import { isRemoteVm, REMOTE_UNSUPPORTED_TEXT } from '@/features/vm/placement'
 import { vmQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 export function VmEngineEditor({
   id,
@@ -44,6 +45,7 @@ export function VmEngineEditor({
     resolved
   )
   const inherits = configured === 'auto'
+  const canEdit = useVmPerms().admin
   const remote = isRemoteVm(vm)
   const status = useMemo(
     () => ({
@@ -87,7 +89,7 @@ export function VmEngineEditor({
         </Link>{' '}
         切换。Go HTTP 转发不再启用。
       </p>
-      {inherits ? null : (
+      {inherits || !canEdit ? null : (
         <Button
           className='mt-3'
           variant='outline'
@@ -97,7 +99,7 @@ export function VmEngineEditor({
           {inherit.isPending ? '恢复中…' : '恢复跟随全局'}
         </Button>
       )}
-      {remote ? (
+      {remote && canEdit ? (
         <p className='mt-2 text-xs text-muted-foreground'>
           切换推理内核：{REMOTE_UNSUPPORTED_TEXT}
         </p>

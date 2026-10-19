@@ -38,6 +38,7 @@ def elf(path, machine, static=False):
 for name in ('kin-worker', 'kin-egress'):
     elf(root / 'image-bin' / name, 183, static=True)
     elf(root / 'cluster-bin-amd64' / name, 62, static=True)
+elf(root / 'image-bin' / 'kin-api-kernel', 183, static=True)
 elf(Path('/usr/local/bin/docker'), 183, static=True)
 subprocess.run(['docker', '--version'], check=True, timeout=10)
 for name in ('kin-kernel', 'kin-codex-kernel', 'kin-oauth-auth', 'kin-computer'):
@@ -71,7 +72,7 @@ try:
             time.sleep(0.5)
     with urllib.request.urlopen('http://127.0.0.1:18787/console', timeout=5) as response:
         assert response.status == 200
-    for name in ('kin-worker', 'kin-egress'):
+    for name in ('kin-worker', 'kin-egress', 'kin-api-kernel'):
         elf(root / 'bin' / name, 183, static=True)
         assert (root / 'bin' / name).read_bytes() == (root / 'image-bin' / name).read_bytes()
     subprocess.run(['node', '--input-type=module', '-e', r"""

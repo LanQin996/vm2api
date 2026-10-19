@@ -123,6 +123,13 @@ export function slotImageJob(nodeId, kernel, runtime) {
   return imageJobs.get(imageJobKey(nodeId, kernel, runtime)) || null
 }
 
+export function nodeImageBuildRunning(nodeId) {
+  for (const [key, job] of imageJobs) {
+    if (key.startsWith(`${nodeId}:`) && job.status === 'running') return true
+  }
+  return false
+}
+
 /** Resolves when the node's running build for `kernel` ends; `{status}` is 'done' or 'failed'. */
 export function awaitSlotImageBuild(job) {
   return imageJobDone.get(job) || Promise.resolve(job)

@@ -473,3 +473,37 @@ test('PUT /api/panel/routing rejects an invalid vm patch before persist', async 
   assert.equal(response.body?.error?.code, 'invalid_vm_config')
   assert.match(response.body?.error?.message, /memory/)
 })
+
+test('persistRoutingPatch round-trips websocket gates and analytics', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-routing-ws-persist-'))
+  const routingFile = path.join(root, 'routing.json')
+  const routingConfig = { concurrency: {}, tiers: {}, codex: { enabled: true } }
+  fs.mkdirSync(root, { recursive: true })
+  fs.writeFileSync(routingFile, JSON.stringify(routingConfig))
+  try {
+    const runtime = persistHarness(root, routingFile, routingConfig)
+    runtime.persistRoutingPatch({
+      websocket: { enabled: false },
+      codex: {
+        websocket: { enabled: false },
+        upstream_transport: 'http',
+        user_agent: 'codex_cli_rs/9.9.9 (linux x86_64)',
+        client_features: { enabled: true },
+        analytics: { enabled: true },
+      },
+    })
+    const saved = JSON.parse(fs.readFileSync(routingFile, 'utf8'))
+    assert.equal(saved.websocket.enabled, false)
+    assert.equal(saved.codex.websocket.enabled, false)
+    assert.equal(saved.codex.upstream_transport, 'http')
+    assert.equal(saved.codex.user_agent, 'codex_cli_rs/9.9.9 (linux x86_64)')
+    assert.equal(saved.codex.client_features.enabled, true)
+    assert.equal(saved.codex.analytics.enabled, true)
+    const loaded = runtimeFor(routingFile).loadRoutingConfig()
+    assert.equal(loaded.websocket.enabled, false)
+    assert.equal(loaded.codex.analytics.enabled, true)
+    assert.equal(loaded.codex.upstream_transport, 'http')
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})

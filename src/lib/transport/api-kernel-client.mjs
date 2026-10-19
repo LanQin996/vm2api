@@ -49,6 +49,58 @@ export function startApiKernelProcess(cfg) {
   return { ok: true, pid: child.pid, socketPath }
 }
 
+export function apiKernelHealth(cfg, { timeoutMs = 500 } = {}) {
+  const { socketPath, tokenPath } = apiKernelPaths(cfg)
+  const token = readToken(tokenPath)
+  return new Promise((resolve) => {
+    const headers = {}
+    if (token) {
+      headers['x-kin-internal-token'] = token
+      headers['x-internal-token'] = token
+    }
+    const req = http.request(
+      {
+        socketPath,
+        path: '/internal/health',
+        method: 'GET',
+        headers,
+      },
+      (res) => {
+        resolve({ ok: res.statusCode === 200, status: res.statusCode })
+      },
+    )
+    req.setTimeout(Math.max(1, timeoutMs), () => {
+      req.destroy()
+      resolve({ ok: false, reason: 'health_timeout' })
+    })
+    req.on('error', (err) => resolve({ ok: false, reason: 'health_error', error: err.message, code: err.code }))
+    req.end()
+  })
+}
+
+/** Spawn kin-api-kernel and wait until its unix socket answers /internal/health. */
+export async function bootApiKernel(cfg, { waitMs = 8000 } = {}) {
+  if (process.env.KIN_CRS_MOCK === '1') {
+    ensureApiKernelToken(apiKernelPaths(cfg).tokenPath)
+    return { ok: true, skipped: 'mock' }
+  }
+  ensureApiKernelToken(apiKernelPaths(cfg).tokenPath)
+  const started = startApiKernelProcess(cfg)
+  if (!started.ok) {
+    console.error(`[api-kernel] boot failed: ${started.reason}${started.binPath ? ` (${started.binPath})` : ''}`)
+    process.exit(1)
+  }
+  const deadline = Date.now() + Math.max(200, Number(waitMs) || 8000)
+  let last = { ok: false, reason: 'not_ready' }
+  while (Date.now() < deadline) {
+    last = await apiKernelHealth(cfg)
+    if (last.ok) return { ok: true, ...started }
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  console.error('[api-kernel] health timeout', last)
+  process.exit(1)
+}
+
 export function apiKernelSnapshot(cfg) {
   const { socketPath, binPath } = apiKernelPaths(cfg)
   return {

@@ -57,6 +57,7 @@ export function ProxyOverview({
   visible,
   onLocate,
   onVmDragChange,
+  canBind = true,
 }: {
   /** 已排序的全集（不受筛选影响，保证图形稳定）。 */
   proxies: VmProxySnap[]
@@ -77,6 +78,8 @@ export function ProxyOverview({
   visible: (prx: VmProxySnap) => boolean
   onLocate: (id: string) => void
   onVmDragChange: (vmId: string) => void
+  /** 无绑定权限时待接代理只展示，不能拖。 */
+  canBind?: boolean
 }) {
   const counts = useMemo(() => {
     const out = Object.fromEntries(
@@ -284,7 +287,9 @@ export function ProxyOverview({
       {loose.length ? (
         <div
           className='mt-2 flex items-center gap-x-3 border-t pt-2'
-          title='拖到表格行上即可绑定；已绑的槽位也能拖去换绑'
+          title={
+            canBind ? '拖到表格行上即可绑定；已绑的槽位也能拖去换绑' : undefined
+          }
         >
           <h4 className='flex shrink-0 items-center gap-2 text-xs font-medium'>
             待接代理 {loose.length}
@@ -301,11 +306,12 @@ export function ProxyOverview({
                 compact
                 vm={v}
                 tone={v.has_token ? 'bad' : 'none'}
+                disabled={!canBind}
                 onDragChange={onVmDragChange}
               />
             ))}
           </div>
-          {proxies.length ? (
+          {canBind && proxies.length ? (
             <p className='hidden shrink-0 text-[11px] text-muted-foreground xl:block'>
               拖到表格行上绑定
             </p>

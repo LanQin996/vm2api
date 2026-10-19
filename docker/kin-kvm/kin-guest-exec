@@ -9,8 +9,8 @@ workdir=''
 interactive=0
 tty=0
 detach=0
-# Newline-separated KEY=VAL so values may contain spaces.
-env_lines=''
+# Accumulated export statements; each -e is quoted at parse time (values may contain newlines).
+env_exports=''
 
 usage() {
   echo "usage: kin-guest-exec [-u uid[:gid]] [-e K=V]... [-w dir] [-i] [-t] [-d] -- argv..." >&2
@@ -36,8 +36,11 @@ while [ $# -gt 0 ]; do
     -e)
       [ $# -ge 2 ] || usage
       case "$2" in
-        *=*) env_lines="${env_lines}${2}
-" ;;
+        *=*)
+          _ek=${2%%=*}
+          _ev=${2#*=}
+          env_exports="${env_exports}export ${_ek}=$(posix_quote "$_ev"); "
+          ;;
         *) echo "kin-guest-exec: -e expects KEY=VAL" >&2; exit 2 ;;
       esac
       shift 2
@@ -68,17 +71,8 @@ fi
 inner=''
 
 # Build the remote script without a pipe so we keep the current shell.
-if [ -n "$env_lines" ]; then
-  oldifs=$IFS
-  IFS='
-'
-  for line in $env_lines; do
-    [ -n "$line" ] || continue
-    key=${line%%=*}
-    val=${line#*=}
-    inner="${inner}export ${key}=$(posix_quote "$val"); "
-  done
-  IFS=$oldifs
+if [ -n "$env_exports" ]; then
+  inner="${inner}${env_exports}"
 fi
 if [ -n "$workdir" ]; then
   inner="${inner}cd $(posix_quote "$workdir") || exit; "
@@ -111,7 +105,17 @@ if [ "$detach" -eq 0 ] && [ "$interactive" -eq 1 ]; then
   set -- "$@" -o RequestTTY=auto
 fi
 
-if ! timeout 8 ssh "$@" root@127.0.0.1 "$remote"; then
+run_ssh() {
+  # Interactive foreground: no wall-clock timeout (ConnectTimeout still bounds connect).
+  # Detach and non-interactive paths keep a bounded timeout for short guest commands.
+  if [ "$detach" -eq 1 ] || [ "$interactive" -eq 0 ]; then
+    timeout 8 ssh "$@" root@127.0.0.1 "$remote"
+  else
+    ssh "$@" root@127.0.0.1 "$remote"
+  fi
+}
+
+if ! run_ssh "$@"; then
   st=$?
   if [ "$st" -eq 255 ] || [ "$st" -eq 124 ]; then
     echo "guest ssh unavailable" >&2

@@ -74,30 +74,73 @@ test('sealClaudeCodeCch hashes the 2.1.280 projection then writes digest', () =>
   assert.equal(JSON.stringify(sealed), raw.replace(/cch=00000/, `cch=${expected}`))
 })
 
-test('projectClaudeCodeCchText edits the original text and clears every model string', () => {
-  const raw =
-    '{"z":1,"model":"sonnet","messages":[{"model":"other"}],"max_tokens":9,"fallbacks":["haiku",{"model":"inside"}],"fallback_credit_token":"tok","system":[{"text":"cch=3180f"}]}'
-  const projected = projectClaudeCodeCchText(raw)
-  assert.equal(projected, '{"z":1,"model":"","messages":[{"model":""}],"system":[{"text":"cch=00000"}]}')
-  assert.equal(
-    projectClaudeCodeCchText('{"model":"","max_tokens":"nope","system":"cch=00000"}'),
-    '{"model":"","max_tokens":"nope","system":"cch=00000"}',
-  )
+test('CCH projection resets billing only, preserving prompt literals before system', () => {
+  const raw = {
+    model: 'sonnet',
+    messages: [{ model: 'other', content: 'literal cch=3180f;' }],
+    max_tokens: 9,
+    fallbacks: ['haiku', { model: 'inside' }],
+    fallback_credit_token: 'tok',
+    system: [{ text: 'x-anthropic-billing-header: cc_version=2.1.296; cch=fffff;' }],
+  }
+  const projected = JSON.parse(projectClaudeCodeCchText(JSON.stringify(raw)))
+  assert.equal(projected.system[0].text, 'x-anthropic-billing-header: cc_version=2.1.296; cch=00000;')
+  assert.equal(projected.messages[0].content, raw.messages[0].content)
+  assert.equal(projected.model, '')
+  assert.equal(projected.messages[0].model, '')
+  assert.equal(Object.hasOwn(projected, 'max_tokens'), false)
+  assert.equal(Object.hasOwn(projected, 'fallbacks'), false)
+  assert.equal(Object.hasOwn(projected, 'fallback_credit_token'), false)
 })
 
-test('sealClaudeCodeCch is a no-op when billing already has a real cch', () => {
+test('CCH fills missing values and replaces stale values without changing billing parameters', () => {
+  const billing =
+    'x-anthropic-billing-header: cc_version=2.1.296.abc; cc_entrypoint=sdk-cli; cc_prompt_id=11111111-2222-4333-8444-555555555555;'
+  for (const suffix of ['', ' cch=cc746;', ' cch=bad; cch=fffff;']) {
+    const body = {
+      model: 'claude-opus-5-5',
+      max_tokens: 32,
+      system: [{ type: 'text', text: billing + suffix }],
+      messages: [{ role: 'user', content: 'hi' }],
+    }
+    const sealed = sealClaudeCodeCch(body)
+    const text = sealed.system[0].text
+    const cch = text.match(/cch=([0-9a-f]{5});/)[1]
+    assert.equal((text.match(/cch=/g) || []).length, 1)
+    assert.equal(cch, computeClaudeCodeCch(Buffer.from(projectClaudeCodeCchText(JSON.stringify(sealed)))))
+    assert.equal(text.replace(/ cch=[0-9a-f]{5};/, ''), billing)
+    assert.equal(body.system[0].text, billing + suffix)
+    assert.equal(sealClaudeCodeCch(sealed).system[0].text, text)
+    assert.equal(sealClaudeCodeCch(JSON.stringify(body, null, 2)), JSON.stringify(sealed))
+    const disabled = sealClaudeCodeCch(body, { enabled: false })
+    assert.match(disabled.system[0].text, /cch=00000;/)
+    assert.equal((disabled.system[0].text.match(/cch=/g) || []).length, 1)
+    assert.equal(disabled.system[0].text.replace(/ cch=00000;/, ''), billing)
+  }
+})
+
+test('CCH settings apply per hop and native sealing waits for final CLI serialization', () => {
   const body = {
+    model: 'claude-opus-5-5',
     system: [
-      {
-        type: 'text',
-        text: 'x-anthropic-billing-header: cc_version=2.1.241.abc; cc_entrypoint=cli; cch=cc746;',
-      },
+      { type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.296.abc; cc_entrypoint=sdk-cli; cch=cc746;' },
     ],
     messages: [{ role: 'user', content: 'hi' }],
   }
-  const sealed = sealClaudeCodeCch(body)
-  assert.equal(sealed.system[0].text, body.system[0].text)
-  assert.equal(sealed, body)
+  const options = { body, reqHeaders: {}, exec: { vm: { claude: { mode: 'oauth' } } } }
+  const routing = { compatibility: { cch_enabled: true } }
+  const native = finalizeWorkerPayload({ ...options, routing, cliHop: true }).body
+  assert.match(native.system[0].text, /cch=00000;/)
+  routing.compatibility.cch_enabled = false
+  for (const cliHop of [false, true]) {
+    const disabled = finalizeWorkerPayload({ ...options, routing, cliHop }).body
+    assert.match(disabled.system[0].text, /cch=00000;/)
+    assert.match(disabled.system[0].text, /cc_version=2.1.296.abc; cc_entrypoint=sdk-cli;/)
+  }
+  routing.compatibility.cch_enabled = true
+  const enabled = finalizeWorkerPayload({ ...options, routing }).body
+  assert.match(enabled.system[0].text, /cch=[0-9a-f]{5};/)
+  assert.doesNotMatch(enabled.system[0].text, /cch=(00000|cc746);/)
 })
 
 test('applyCrsUnofficialPersona keeps the placeholder until hop finalize', () => {
@@ -133,6 +176,6 @@ test('no inbound system still emits billing, identity, official prompt, and env'
   assert.match(out.system[0].text, /^x-anthropic-billing-header: /)
   assert.equal(out.system[1].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.")
   assert.equal(out.system[2].text, CRS_OFFICIAL_AGENT_PROMPT)
-  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h', scope: 'global' })
+  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.match(out.system[3].text, /^# Environment\n/)
 })

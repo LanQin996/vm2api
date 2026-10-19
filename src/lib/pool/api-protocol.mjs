@@ -1,7 +1,7 @@
 import { officialMessagesBody } from '../protocol/anthropic-messages.mjs'
 import { prepareClassifierBody } from '../protocol/request-purpose.mjs'
 import { consumeClaudeSSEData } from '../protocol/convert.mjs'
-import { mapUpstreamError } from '../core/errors.mjs'
+import { isCompleteAssistantMessage, mapUpstreamError } from '../core/errors.mjs'
 import { isContentPolicyErrorCode } from '../core/refusal-guard.mjs'
 import { forwardApi, readApiJson } from '../transport/api-kernel-client.mjs'
 import { messagesUrl, normalizeProtocol, resolvePreset, responsesUrl, upstreamAuthHeaders } from './api-presets.mjs'
@@ -259,20 +259,62 @@ export async function runApiInference({
   if (!clientStream) {
     const assembler = converters.createClaudeMessageAssembler()
     let committed = false
+    let sawMessageStop = false
+    let terminalError = null
     await readUpstreamLines(async (line) => {
       applyMaybeUsageHide(line, personaHideTokens, cacheTtl, converters)
       converters.applyClaudeSSELineToMessage(line, assembler)
-      if (!committed && String(line).startsWith('data:')) committed = true
+      const raw = String(line || '')
+      if (raw.startsWith('data:')) {
+        if (!committed) committed = true
+        const piece = raw.slice(5).trim()
+        if (piece && piece !== '[DONE]') {
+          try {
+            const evt = JSON.parse(piece)
+            if (evt?.type === 'message_stop') sawMessageStop = true
+            if (evt?.type === 'error') terminalError = evt
+          } catch {}
+        }
+      }
     })
     const failure = classifierFailure()
     if (failure) return { ...failure, committed: false }
+    if (terminalError) {
+      const declared = Number(terminalError.error?.status)
+      const status = declared >= 400 && declared < 600 ? declared : mapUpstreamError(200, terminalError).status
+      return {
+        ...resultBase,
+        ok: false,
+        status,
+        body: terminalError,
+        usage: assembler.message?.usage || null,
+        terminalState: 'rejected',
+        committed,
+        sawMessageStop,
+      }
+    }
+    const assembled = assembler.message
+    if (!sawMessageStop) {
+      return {
+        ...resultBase,
+        ok: false,
+        body: assembled || { type: 'error', error: { message: 'empty api upstream' } },
+        usage: assembled?.usage || null,
+        terminalState: assembled || committed ? 'incomplete' : 'rejected',
+        committed,
+        sawMessageStop: false,
+      }
+    }
+    const hop = { body: assembled, stopReason: assembled?.stop_reason, sawMessageStop: true }
+    const complete = resultBase.ok && isCompleteAssistantMessage(hop)
     return {
       ...resultBase,
-      ok: resultBase.ok && !!assembler.message,
-      body: assembler.message || assembler.error || { type: 'error', error: { message: 'empty api upstream' } },
-      usage: assembler.message?.usage || null,
-      terminalState: resultBase.ok ? 'verified' : 'rejected',
+      ok: complete,
+      body: assembled || { type: 'error', error: { message: 'empty api upstream' } },
+      usage: assembled?.usage || null,
+      terminalState: complete ? 'verified' : 'incomplete',
       committed,
+      sawMessageStop: true,
     }
   }
 
@@ -341,6 +383,7 @@ async function runOpenAIResponsesUpstream({
   let conversionError = null
   let committed = false
   let completed = false
+  let sawTerminal = false
   let ttftMs = null
   let streamedUsage = null
   const started = Date.now()
@@ -354,6 +397,7 @@ async function runOpenAIResponsesUpstream({
     if (!committed && raw.startsWith('data:')) committed = true
     if (!clientStream) {
       chunks.push(raw)
+      if (/response\.(completed|done)/.test(raw) || raw.trim() === 'data: [DONE]') sawTerminal = true
       return
     }
     if (!res.headersSent) converters.writeSSEHeaders(res)
@@ -403,12 +447,14 @@ async function runOpenAIResponsesUpstream({
         usage: streamedUsage,
       }
     }
+    const hasBody = !!(assembled && (assembled.output || assembled.id || outBody))
+    const complete = resultBase.ok && sawTerminal && hasBody
     return {
       ...resultBase,
-      ok: resultBase.ok && !!(assembled && (assembled.output || assembled.id || outBody)),
+      ok: complete,
       body: outBody,
       usage: assembled?.usage || streamedUsage || outBody?.usage || null,
-      terminalState: resultBase.ok ? 'verified' : 'rejected',
+      terminalState: complete ? 'verified' : hasBody ? 'incomplete' : 'rejected',
       committed: true,
     }
   }

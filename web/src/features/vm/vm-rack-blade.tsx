@@ -35,6 +35,7 @@ import {
 } from '@/features/vm/usage-windows'
 import { VmActionMenu } from '@/features/vm/vm-action-menu'
 import { useVmActions } from '@/features/vm/vm-actions-context'
+import { useVmPerms } from '@/features/vm/vm-perms'
 import {
   bladeState,
   zoneOf,
@@ -283,6 +284,7 @@ export function BladeCallout({
   state: BladeState
 }) {
   const actions = useVmActions()
+  const canCred = useVmPerms().credential
   if (state === 'dead') {
     const failed = vmFailedAt(vm)
     const ago = failed ? fmtAgo(new Date(failed).toISOString()) : ''
@@ -291,12 +293,14 @@ export function BladeCallout({
         tone='bad'
         title={`${credentialStatus(vm).text || '无效凭证'}${ago ? ` · ${ago}` : ''}`}
         action={
-          <CalloutAction
-            icon={<Link2 />}
-            onClick={() => actions.openReauth(vm)}
-          >
-            重新授权
-          </CalloutAction>
+          canCred ? (
+            <CalloutAction
+              icon={<Link2 />}
+              onClick={() => actions.openReauth(vm)}
+            >
+              重新授权
+            </CalloutAction>
+          ) : null
         }
       >
         {vm.refresh_error ? (
@@ -314,12 +318,14 @@ export function BladeCallout({
         tone='none'
         title='未绑定账号'
         action={
-          <CalloutAction
-            icon={<Download />}
-            onClick={() => actions.openReauth(vm)}
-          >
-            绑定凭证
-          </CalloutAction>
+          canCred ? (
+            <CalloutAction
+              icon={<Download />}
+              onClick={() => actions.openReauth(vm)}
+            >
+              绑定凭证
+            </CalloutAction>
+          ) : null
         }
       >
         <span>绑定后进入探测，再按结果入池。</span>
@@ -331,12 +337,14 @@ export function BladeCallout({
       tone='caution'
       title='额度未探测'
       action={
-        <CalloutAction
-          icon={<RefreshCw />}
-          onClick={() => actions.refreshToken(vm)}
-        >
-          刷新并探测
-        </CalloutAction>
+        canCred ? (
+          <CalloutAction
+            icon={<RefreshCw />}
+            onClick={() => actions.refreshToken(vm)}
+          >
+            刷新并探测
+          </CalloutAction>
+        ) : null
       }
     >
       <span>未探测的槽不计入可用余量。</span>

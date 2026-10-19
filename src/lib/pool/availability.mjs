@@ -27,8 +27,9 @@ export const INVALID_CREDENTIAL_TEXT = '无效凭证'
 export const AUTH_COOLDOWN_TEXT = '鉴权冷却'
 export const REVOKE_TEXT = 'revoke'
 /** Dead grant only. Do not match stale-access 401 (`authentication_failed_after_refresh`) or `/usage` 429. */
+export const TRANSIENT_CREDENTIAL_REFRESH_FAIL = /worker_output_invalid|refresh_rejected|refresh_denied/i
 export const CREDENTIAL_REFRESH_FAIL =
-  /oauth_invalid_grant|invalid_grant|refresh_token_missing|refresh token not found|oauth_revoked|oauth_no_refresh|oauth_cleared|credential_refresh_failed/i
+  /oauth_invalid_grant|invalid_grant|refresh_token_missing|refresh_token_invalid|refresh token not found|oauth_revoked|oauth_no_refresh|oauth_cleared|credential_refresh_failed|worker_output_invalid|refresh_rejected|refresh_denied/i
 
 function liveAccessTtlMs(vm = {}, workerCredential = {}, expiresAt = null) {
   return (
@@ -64,7 +65,11 @@ export function isCredentialRefreshFailed({
 } = {}) {
   if (isOfficialUsageRateLimited(probe)) return false
   const recordedError = currentRefreshError(vm, refreshError)
-  const accessLive = isLiveRefreshedAccess({ vm, expiresAt, workerCredential, now }) && !recordedError
+  const transientRecorded = TRANSIENT_CREDENTIAL_REFRESH_FAIL.test(String(recordedError || ''))
+  // A transient refresh write failure must not eject a ticket that is still
+  // live. Once the access expires, the same error becomes admission-fatal.
+  const accessLive =
+    isLiveRefreshedAccess({ vm, expiresAt, workerCredential, now }) && !(recordedError && !transientRecorded)
   const staleProbe = probeOlderThanRefresh(
     {
       last_probe: probe,
@@ -72,7 +77,8 @@ export function isCredentialRefreshFailed({
     },
     { last_probe: probe },
   )
-  const bits = [scheduleDisabledReason, vm.schedule_disabled_reason, recordedError]
+  const bits = [scheduleDisabledReason, vm.schedule_disabled_reason]
+  if (!(accessLive && transientRecorded)) bits.push(recordedError)
   // Leftover worker last_error must not keep a freshly rotated ticket out of the pool.
   if (!accessLive) bits.push(workerLastError)
   if (!staleProbe && !(accessLive && isUsageRefreshSuccess(probe))) {

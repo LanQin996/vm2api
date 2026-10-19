@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { vmQueryOptions, vmsListQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 type QuotaPayload = {
   reset_credits?: {
@@ -97,6 +98,9 @@ export function OpenaiQuotaActions({
     resetQuota,
     setConfirm,
   } = useOpenaiQuotaActions(vm)
+  const canUse = useVmPerms().credential
+
+  if (!canUse) return null
 
   return (
     <div

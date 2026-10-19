@@ -4,6 +4,8 @@ import {
   kvmAvailabilityFromCheck,
   kvmAvailabilityFromLocal,
   kvmAvailabilityFromPreflight,
+  memoryRaiseOptions,
+  memoryRaiseTarget,
   normalizeVmConfig,
   runtimeTypeLabel,
   runtimeTypeOf,
@@ -206,5 +208,22 @@ describe('kvm availability', () => {
         error: null,
       }).status
     ).toBe('loading')
+  })
+})
+
+describe('memory raise', () => {
+  it('only offers sizes above the configured one', () => {
+    expect(memoryRaiseOptions('1g')).toEqual(['2g', '4g', '8g', '16g'])
+    expect(memoryRaiseOptions('16g')).toEqual([])
+    expect(memoryRaiseOptions('weird')).toEqual(['1g', '2g', '4g', '8g', '16g'])
+  })
+
+  it('drops a stale target after a successful raise', () => {
+    // 刚从 1g 提到 2g：上次选的 2g 已不在可选档里，默认回到 4g。
+    const after = memoryRaiseOptions('2g')
+    expect(memoryRaiseTarget('2g', after)).toBe('4g')
+    expect(memoryRaiseTarget(null, after)).toBe('4g')
+    expect(memoryRaiseTarget('8g', after)).toBe('8g')
+    expect(memoryRaiseTarget('2g', [])).toBeNull()
   })
 })

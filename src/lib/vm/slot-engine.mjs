@@ -29,6 +29,22 @@ export const REMOTE_CC_NODE_BIN = `${REMOTE_KIN_DIR}/cc-node`
 export const KERNEL_NATIVE_SLOT_COUNT = 20
 export const SESSION_SLOT_MIN = 1
 export const SESSION_SLOT_MAX = KERNEL_NATIVE_SLOT_COUNT
+export const SESSION_IDLE_TTL_MIN = 1
+export const SESSION_IDLE_TTL_MAX = 86400
+export const SESSION_IDLE_TTL_DEFAULT = 600
+
+export function normalizeSessionIdleTtlSeconds(value, fallback = SESSION_IDLE_TTL_DEFAULT) {
+  const fallbackValue = Number(fallback)
+  const safeFallback =
+    Number.isInteger(fallbackValue) && fallbackValue >= SESSION_IDLE_TTL_MIN && fallbackValue <= SESSION_IDLE_TTL_MAX
+      ? fallbackValue
+      : SESSION_IDLE_TTL_DEFAULT
+  if (value == null || value === '') return safeFallback
+  const n = value
+  if (typeof n !== 'number' || !Number.isInteger(n) || n < SESSION_IDLE_TTL_MIN || n > SESSION_IDLE_TTL_MAX)
+    return safeFallback
+  return n
+}
 
 export function normalizeSessionSlots(value, fallback = SESSION_SLOT_MAX) {
   const fallbackValue = Number(fallback)
@@ -105,6 +121,7 @@ export function normalizeInferenceConfig(raw = {}) {
     health_ttl_ms: optionalTtlMs(raw.health_ttl_ms, 2000),
     tcp_nodelay: optionalBool(raw.tcp_nodelay, true),
     session_slots: normalizeSessionSlots(raw.session_slots),
+    session_idle_ttl_seconds: normalizeSessionIdleTtlSeconds(raw.session_idle_ttl_seconds),
     dataplane: normalizeKernelDataplane(raw.dataplane),
   }
 }
@@ -334,6 +351,12 @@ export function validateInferenceRoutingPatch(body = {}) {
     const n = Number(body.inference.session_slots)
     if (!Number.isInteger(n) || n < SESSION_SLOT_MIN || n > SESSION_SLOT_MAX) {
       errors.push(`inference.session_slots 必须是 ${SESSION_SLOT_MIN}–${SESSION_SLOT_MAX} 的整数`)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(body.inference, 'session_idle_ttl_seconds')) {
+    const n = body.inference.session_idle_ttl_seconds
+    if (typeof n !== 'number' || !Number.isInteger(n) || n < SESSION_IDLE_TTL_MIN || n > SESSION_IDLE_TTL_MAX) {
+      errors.push(`inference.session_idle_ttl_seconds 必须是 ${SESSION_IDLE_TTL_MIN}–${SESSION_IDLE_TTL_MAX} 的整数`)
     }
   }
   if (Object.prototype.hasOwnProperty.call(body.inference, 'health_ttl_ms')) {

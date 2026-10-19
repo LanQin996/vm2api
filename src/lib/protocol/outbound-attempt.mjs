@@ -27,6 +27,7 @@ import { hasClaudeCode1mSuffix } from './context-1m.mjs'
 import { withRequestProtocolBetas } from './claude-code-betas.mjs'
 import {
   refreshOfficialSystemEnvironment,
+  hasEnvironmentSection,
   stampBillingPromptId,
   collapseSystemBudgetReminders,
   CRS_OFFICIAL_SYSTEM,
@@ -47,6 +48,7 @@ import {
   normalizeCacheTtl,
   removeCacheControlFields,
   stripIllegalCacheControlFields,
+  validateCacheBreakpoints,
 } from './cache-ttl.mjs'
 import { apiKeyBetaHeader, setupTokenBetaHeader } from './claude-code-betas.mjs'
 import { applyModelRequestRules } from './model-policy.mjs'
@@ -74,11 +76,12 @@ export function isCliOwnedSystemText(text) {
   return false
 }
 
-export function stripCliOwnedSystem(system) {
+export function stripCliOwnedSystem(system, { preserveCallerEnvironment = false } = {}) {
   if (system == null) return undefined
-  if (typeof system === 'string') return isCliOwnedSystemText(system) ? undefined : system
+  const keep = (text) => (preserveCallerEnvironment && hasEnvironmentSection(text)) || !isCliOwnedSystemText(text)
+  if (typeof system === 'string') return keep(system) ? system : undefined
   if (!Array.isArray(system)) return system
-  const kept = system.filter((block) => !isCliOwnedSystemText(systemBlockText(block)))
+  const kept = system.filter((block) => keep(systemBlockText(block)))
   return kept.length ? kept : undefined
 }
 
@@ -180,21 +183,25 @@ export function prepareCliHopBody(
     requestContext = null,
     preserveSystem = false,
     preserveThinkingBlocks = false,
+    preserveCallerEnvironment = false,
   } = {},
 ) {
   if (requestContext?.purpose === 'auto_mode_classifier') return prepareClassifierBody(canonicalBody, { stream })
+  if (preserveSystem) validateCacheBreakpoints(canonicalBody)
   let body = officialMessagesBody(canonicalBody, { stream })
   delete body.metadata
   if (!preserveSystem) {
-    const leftover = stripCliOwnedSystem(body.system)
+    const leftover = stripCliOwnedSystem(body.system, { preserveCallerEnvironment })
     if (leftover == null) delete body.system
     else body.system = leftover
   }
-  body = stabilizeSystemBudget(body)
-  body = stabilizeMessageBudgets(body)
+  if (!preserveSystem) {
+    body = stabilizeSystemBudget(body)
+    body = stabilizeMessageBudgets(body)
+  }
   // cli-node sends mid-conversation-system. Only models that reject the role need the lift.
   if (!modelSupportsMidConversationSystem(body.model)) body = liftMidConversationSystemMessages(body)
-  body = collapseSystemBudgetReminders(body)
+  if (!preserveSystem) body = collapseSystemBudgetReminders(body)
 
   if (!repaired) {
     body = ensureUnofficialAdaptiveThinking(body)
@@ -207,9 +214,11 @@ export function prepareCliHopBody(
   body = applyModelRequestRules(body)
   body = ensureOutputConfigSchema(body)
   body = alignSamplingWithThinking(body)
-  body = stripIllegalCacheControlFields(body)
-  body = removeCacheControlFields(body, { keepSystem: preserveSystem })
-  body = applyMessageBreakpoints(body, normalizeCacheTtl(cacheTtl), 'rewrite')
+  if (!preserveSystem) {
+    body = stripIllegalCacheControlFields(body)
+    body = removeCacheControlFields(body)
+    body = applyMessageBreakpoints(body, normalizeCacheTtl(cacheTtl), 'rewrite')
+  }
   return body
 }
 /** Only legacy Haiku rejects thinking; Haiku 5.5 supports adaptive thinking. */
@@ -232,6 +241,7 @@ export function prepareOutboundAttempt({
   cacheTtl = null,
   cacheBreakpoints = null,
   preserveThinkingBlocks = false,
+  preserveCallerEnvironment = false,
   reqHeaders = {},
   officialClient,
   sessionId: sessionIdOverride,
@@ -285,7 +295,7 @@ export function prepareOutboundAttempt({
   )
   const callerSessionId = sessionIdFromOutboundBody(identified)
   if (identity && callerSessionId) identity.callerSessionId = callerSessionId
-  if (identity && !requestContext) {
+  if (identity && !requestContext && !preserveCallerEnvironment) {
     identified = refreshOfficialSystemEnvironment(identified, identity, identified.model)
   }
   const stampOwnedBilling = String(sessionIdOverride || '').trim() && (mode !== 'passthrough' || !keepCallerSession)
@@ -334,6 +344,7 @@ export function prepareOutboundEnvelope({
   cacheTtl = null,
   cacheBreakpoints = null,
   preserveThinkingBlocks = false,
+  preserveCallerEnvironment = false,
   reqHeaders = {},
   homeDir = '',
   officialClient,
@@ -367,6 +378,7 @@ export function prepareOutboundEnvelope({
     cacheTtl,
     cacheBreakpoints,
     preserveThinkingBlocks,
+    preserveCallerEnvironment,
     reqHeaders,
     officialClient,
     sessionId,
@@ -413,6 +425,8 @@ export function prepareOutboundEnvelope({
     String(headers['anthropic-beta'] || '').split(','),
     prepared.body,
   ).join(',')
-  const body = sealClaudeCodeCch(sanitizeAnthropicBodyForBetaTokens(prepared.body, headers?.['anthropic-beta'] || ''))
+  const body = sealClaudeCodeCch(sanitizeAnthropicBodyForBetaTokens(prepared.body, headers?.['anthropic-beta'] || ''), {
+    enabled: routing?.compatibility?.cch_enabled !== false,
+  })
   return { body, headers, toolNames: prepared.toolNames }
 }

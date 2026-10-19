@@ -33,6 +33,7 @@ import {
   officialCcQuotaSucceeded,
   finalizeOfficialCcTelemetry,
 } from '../../src/lib/oauth/official-cc-bootstrap.mjs'
+import { OFFICIAL_CLI_VERSION } from '../../src/lib/identity/vm-identity.mjs'
 
 test('uid follows vm index', () => {
   assert.deepEqual(officialCcUidGid('vm-30'), { uid: 10030, gid: 987 })
@@ -121,7 +122,7 @@ test('docker args use hello//usage bypassPermissions without CONNECT proxy', () 
   assert.ok(args.includes('ANTHROPIC_BASE_URL='))
   // Bootstrap must not race the host Go Refresher. cli-node reads this name.
   assert.ok(args.includes('CLAUDE_CODE_HOST_REFRESH=1'))
-  assert.ok(args.includes('CLAUDE_CODE_VERSION=2.1.293'))
+  assert.ok(args.includes(`CLAUDE_CODE_VERSION=${OFFICIAL_CLI_VERSION}`))
   assert.ok(args.includes('USER_TYPE=external'))
   assert.equal(args.includes('CI=1'), false)
   assert.equal(args[args.indexOf('kin-30') + 1], '/home/kincli/.kin/cli-node')

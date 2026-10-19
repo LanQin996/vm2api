@@ -5,6 +5,7 @@ import {
   shouldContinue,
 } from './upstream-error-policy.mjs'
 import { listQuotaFromHeaders } from './quota-window.mjs'
+import { flattenSearchResultHistory, searchHistoryFingerprint } from '../protocol/request-rectifier.mjs'
 import {
   CLIENT_POOL_BUSY_MESSAGE,
   CLIENT_POOL_RATE_LIMITED_MESSAGE,
@@ -23,6 +24,8 @@ import { SOFT_COOLDOWN_REASONS } from './pool-scheduler.mjs'
 
 // Seat wait for the one-shot repair hop when the rejected hop already spent the deadline.
 const REPAIR_HOP_WAIT_MS = 30_000
+const SEARCH_REPAIR_IDLE_MS = 60 * 60 * 1000
+const SEARCH_REPAIR_LIMIT = 512
 
 const DEFAULTS = {
   max_account_switches: 10,
@@ -41,6 +44,11 @@ const DEFAULTS = {
 
 function clone(value) {
   return structuredClone(value)
+}
+
+function searchRepairKey(stickyKey, model, selected) {
+  if (!stickyKey || !selected?.accountId || !selected?.vmId) return null
+  return JSON.stringify([stickyKey, selected.accountId, selected.vmId, model, credentialStamp(selected)])
 }
 
 function usageOf(result) {
@@ -452,6 +460,7 @@ export class FailoverRunner {
     this.onFablePlanDenied = onFablePlanDenied
     this.onFableSuccess = onFableSuccess
     this.sessionTails = new Map()
+    this.searchRepairs = new Map()
   }
 
   reloadConfig(config = {}) {
@@ -467,9 +476,9 @@ export class FailoverRunner {
   }
 
   /**
-   * An empty or cancelled hop leaves the outbound session behind: the next
-   * hop on this VM opens a new one. No seat is penalized and no CLI restarts;
-   * planner seat indexes are not kernel native slots.
+   * An empty hop leaves the outbound session behind for a fresh-session retry.
+   * Client cancellation only ends its job; kernel cancel_ack fences slot reuse.
+   * Planner seat indexes are not kernel native slots.
    */
   retireOutboundSession(selected, bindKeys) {
     if (!selected?.vmId) return
@@ -673,6 +682,12 @@ export class FailoverRunner {
     // turn it into the client's error. Bounded: repair is one-shot.
     let repairPending = false
     let requestBody = clone(canonicalBody)
+    let searchRepair = null
+    let searchFingerprint
+    const fingerprint = () => {
+      if (searchFingerprint === undefined) searchFingerprint = searchHistoryFingerprint(canonicalBody)
+      return searchFingerprint
+    }
     // A unit that just failed replayably waits behind every other free seat.
     let avoid = null
 
@@ -794,16 +809,21 @@ export class FailoverRunner {
         if (executions > 0) budget.noteHop(selected.accountId, selected.vmId, executions)
       }
       try {
+        const repairKey = searchRepairKey(stickyKey, model, selected)
+        const hint = this.searchRepairs.get(repairKey)
+        if (hint && hint.expiresAt <= Date.now()) this.searchRepairs.delete(repairKey)
+        const knownSearchRepair = hint && hint.expiresAt > Date.now() && hint.fingerprint === fingerprint()
+        const attemptBody = knownSearchRepair ? flattenSearchResultHistory(requestBody) : requestBody
         const prepared =
           typeof applyAttempt === 'function'
-            ? await applyAttempt(clone(requestBody), selected, {
+            ? await applyAttempt(clone(attemptBody), selected, {
                 attemptNo,
                 repaired,
                 attemptStartedAt: attemptStarted,
                 freshSlot,
                 stickyBound: attemptStickyBound,
               })
-            : clone(requestBody)
+            : clone(attemptBody)
         const wrappedAttempt =
           prepared &&
           typeof prepared === 'object' &&
@@ -846,7 +866,6 @@ export class FailoverRunner {
             terminalState: 'cancelled',
             latencyMs: Date.now() - attemptStarted,
           })
-          this.retireOutboundSession(selected, bindKeys)
           return { ...clientCancelledResult(result), via: result?.via || 'pool-failover', ...attribution() }
         }
         policy = classifyAttempt(
@@ -860,6 +879,11 @@ export class FailoverRunner {
           },
           this.scheduler?.accountQuota,
         )
+        if (knownSearchRepair && policy.reason === 'search_repairable') {
+          // Repeating the identical flatten cannot fix a second rejection.
+          this.searchRepairs.delete(repairKey)
+          policy = { ...policy, action: 'stop' }
+        }
         // One writer for rate_limit_reset_at / overload_until (sub2api HandleUpstreamError).
         const hardBlock =
           !result?.committed && !pinVmId
@@ -909,6 +933,16 @@ export class FailoverRunner {
           }
         }
         if (verifiedSuccess(result)) {
+          if (repairKey && (knownSearchRepair || searchRepair?.key === repairKey)) {
+            this.searchRepairs.delete(repairKey)
+            while (this.searchRepairs.size >= SEARCH_REPAIR_LIMIT) {
+              this.searchRepairs.delete(this.searchRepairs.keys().next().value)
+            }
+            this.searchRepairs.set(repairKey, {
+              fingerprint: fingerprint(),
+              expiresAt: Date.now() + SEARCH_REPAIR_IDLE_MS,
+            })
+          }
           this.scheduler.markSuccess(selected, { workerStatus: result.workerStatus || null, countUsage })
           if (isFableModel(model) && typeof this.onFableSuccess === 'function') {
             try {
@@ -921,6 +955,9 @@ export class FailoverRunner {
         if (policy.action === 'repair-and-retry' && !repaired && !result?.committed) {
           repaired = true
           repairPending = true
+          if (policy.reason === 'search_repairable' && repairKey && fingerprint()) {
+            searchRepair = { key: repairKey }
+          }
           requestBody = repairAnthropicRequest(requestBody, policy)
           continue
         }
@@ -948,7 +985,8 @@ export class FailoverRunner {
         }
         budget.noteSwitch(selected.accountId, selected.vmId, { spill: policy.reason === 'slot_busy' })
       } catch (error) {
-        noteHop(null)
+        const invalidCache = error?.status === 400 && error.body?.error?.code === 'invalid_cache_control'
+        noteHop(invalidCache ? { upstreamExecutions: 0 } : null)
         if (error?.code === 'response_sent') {
           this.attemptsRepo?.complete?.(requestId, attemptNo, {
             upstreamStatus: 403,
@@ -969,6 +1007,24 @@ export class FailoverRunner {
             finalState: 'policy_block',
           }
         }
+        if (invalidCache) {
+          this.attemptsRepo?.complete?.(requestId, attemptNo, {
+            upstreamStatus: 0,
+            errorScope: 'request',
+            action: 'stop',
+            downstreamCommitted: false,
+            terminalState: 'invalid_request',
+            latencyMs: Date.now() - attemptStarted,
+          })
+          return {
+            ok: false,
+            status: 400,
+            body: error.body,
+            terminalState: 'invalid_request',
+            finalState: 'invalid_request',
+            ...attribution(),
+          }
+        }
         if (signal?.aborted || error?.code === 'selection_cancelled' || error?.code === 'request_cancelled') {
           this.attemptsRepo?.complete?.(requestId, attemptNo, {
             upstreamStatus: 0,
@@ -978,7 +1034,6 @@ export class FailoverRunner {
             terminalState: 'cancelled',
             latencyMs: Date.now() - attemptStarted,
           })
-          this.retireOutboundSession(selected, bindKeys)
           return { ...clientCancelledResult({ committed }), via: 'pool-failover', ...attribution() }
         }
         result = {

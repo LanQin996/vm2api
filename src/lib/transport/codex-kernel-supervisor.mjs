@@ -12,6 +12,7 @@ import { assertProxyAllowed } from '../vm/proxy-policy.mjs'
 import { maxRequestBytes } from '../core/config.mjs'
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { codexKernelHealth, codexKernelPaths } from './codex-kernel-client.mjs'
+import { computedUpstreamTransport, normalizeCodexRouting } from '../protocol/codex-route.mjs'
 
 const starts = new Map()
 
@@ -42,6 +43,17 @@ export function codexKernelBinPath() {
   return existingBin(path.resolve('bin/kin-codex-kernel'))
 }
 
+/** Per-hop policy keeps settings live without interrupting another request's kernel. */
+export function codexKernelRequestOptions(routing = {}) {
+  const codex = normalizeCodexRouting(routing.codex)
+  return {
+    upstream_transport: computedUpstreamTransport(routing),
+    user_agent: codex.user_agent,
+    client_features: codex.client_features.enabled === true,
+    analytics: codex.analytics.enabled === true,
+  }
+}
+
 export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxyRequired, routing } = {}) {
   if (!projectRoot || !vm?.id) return null
   assertProxyAllowed(vm.proxy)
@@ -67,7 +79,18 @@ export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxy
   const proxy = hostLocal ? localEgressProxyUrl() : String(proxyUrl || boundProxyUrl(vm?.proxy) || '').trim()
   // A configured deployment proxy is this slot's exit: fail closed instead of going direct.
   const required = hostLocal ? !!proxy : proxyRequired == null ? !!proxy : !!proxyRequired
-  const deviceId = String(vm.device_id || vm.fingerprint?.device_id || vm.id).trim() || vm.id
+  const installationPath = path.join(runDir, 'codex-installation-id')
+  let deviceId = ''
+  try {
+    deviceId = fs.readFileSync(installationPath, 'utf8').trim()
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error
+  }
+  // Official installation identity is a random UUID, never a VM or hardware fingerprint.
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(deviceId)) {
+    deviceId = crypto.randomUUID()
+    fs.writeFileSync(installationPath, `${deviceId}\n`, { mode: 0o600 })
+  }
   const config = {
     vm_id: vm.id,
     device_id: deviceId,
@@ -77,10 +100,11 @@ export function writeCodexKernelConfig(projectRoot, vm, { token, proxyUrl, proxy
     proxy_required: required,
     internal_token: secret,
     max_request_bytes: maxRequestBytes(routing),
+    ...codexKernelRequestOptions(routing),
     test_endpoints: process.env.KIN_CODEX_TEST_ENDPOINTS === '1',
   }
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 })
-  return { runDir, socketPath, configPath, credentialPath, tokenPath }
+  return { runDir, socketPath, configPath, credentialPath, tokenPath, installationId: deviceId }
 }
 
 export function shouldRecycleCodexKernel({ wanted, stamped, inFlight } = {}) {

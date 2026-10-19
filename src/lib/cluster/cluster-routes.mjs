@@ -64,6 +64,14 @@ export function createClusterRoutes({ manager, json, readBody, ok }) {
     const sub = nm[2] || ''
 
     if (sub === '' && m === 'GET') return json(res, 200, ok(manager.get(id)))
+    if (sub === '' && m === 'PATCH') {
+      const body = await readBody(req, MAX_BODY)
+      return json(res, 200, ok(await manager.update(id, body)))
+    }
+    if (sub === '/probe' && m === 'POST') {
+      const body = await readBody(req, MAX_BODY)
+      return json(res, 200, ok(await manager.probeUpdate(id, body)))
+    }
     if (sub === '' && m === 'DELETE') {
       await manager.remove(id)
       return json(res, 200, ok({ id }))

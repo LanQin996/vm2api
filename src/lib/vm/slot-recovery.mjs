@@ -33,6 +33,7 @@ import { isCodexVm } from './vm-kind.mjs'
 import { isKvmRuntime } from './runtime-kind.mjs'
 import { slotDockerCpus } from './machine-spec.mjs'
 import { bindVmProxy, getVm, patchVmRecord, vmHasSchedulableCredential } from './vm-registry.mjs'
+import { isCredentialRefreshFailed } from '../pool/availability.mjs'
 
 const HEALTH_TIMEOUT_MS = 1500
 const BRIDGE_HEAL_MIN_MS = 60_000
@@ -136,7 +137,14 @@ function recordCheck(vm) {
 
 function credentialCheck(vm, projectRoot) {
   if (vmHasSchedulableCredential(vm, projectRoot)) return check('credential', '凭证', 'ok', null, '已导入可用凭证')
-  return check('credential', '凭证', 'error', 'no_credential', '未导入可用凭证，内核不会启动，测试对话必然失败')
+  const refreshFailed = isCredentialRefreshFailed({ vm, now: Date.now() })
+  return check(
+    'credential',
+    '凭证',
+    'error',
+    refreshFailed ? 'credential_refresh_failed' : 'no_credential',
+    refreshFailed ? '凭证已失效且刷新失败；请重新登录 / 导入凭证' : '未导入可用凭证；请登录 / 导入凭证',
+  )
 }
 
 function linkCheck(status, internal) {
@@ -637,7 +645,7 @@ export function createSlotBridgeHealer({
       if (seenProxies.has(proxy.id)) continue
       seenProxies.add(proxy.id)
       if (egressAlive(proxy.id) || !due(`egress:${proxy.id}`)) continue
-      const result = startEgress(proxy)
+      const result = await startEgress(proxy)
       if (result?.ok) logger.warn(`[bridge-heal] kin-egress ${proxy.id} was down; restarted`)
       else logger.warn(`[bridge-heal] kin-egress ${proxy.id} restart failed: ${result?.error || 'unknown'}`)
     }

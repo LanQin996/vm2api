@@ -3,15 +3,18 @@ import { Activity, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { Button } from '@/components/ui/button'
+import { type ProbeAllResult, probeAllOutcome } from './proxy-results'
 import { useRefreshProxies } from './queries'
 
 /** 整池测通 / 测地理。天天用的两下，放在页头而不是收进设置抽屉。 */
 export function ProxyBulkActions({ empty }: { empty: boolean }) {
   const refresh = useRefreshProxies()
   const probeAll = useMutation({
-    mutationFn: () => api('/api/panel/proxies/probe', { method: 'POST' }),
-    onSuccess: async () => {
-      toast.success('代理探测完成')
+    mutationFn: () =>
+      api<ProbeAllResult>('/api/panel/proxies/probe', { method: 'POST' }),
+    onSuccess: async (data) => {
+      const out = probeAllOutcome(data)
+      toast[out.level](out.text)
       await refresh()
     },
     onError: (error: Error) => toast.error(error.message),

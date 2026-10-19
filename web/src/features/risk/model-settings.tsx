@@ -4,6 +4,7 @@ import type { JevInterceptConfig, PolicyQuestion } from '@/types/panel-routing'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useServerDraft } from '@/hooks/use-server-draft'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -73,6 +74,14 @@ function ownedOf(data: JevInterceptConfig) {
   ])
 }
 
+function asDraft(data: JevInterceptConfig) {
+  return data
+}
+
+function ownedDiffers(a: JevInterceptConfig, b: JevInterceptConfig) {
+  return ownedOf(a) !== ownedOf(b)
+}
+
 /** Decision model: connection, scoring and the question bank, saved together. */
 export function ModelSettings({
   onDirtyChange,
@@ -81,7 +90,8 @@ export function ModelSettings({
 }) {
   const qc = useQueryClient()
   const q = useQuery(jevInterceptQueryOptions())
-  const [draft, setDraft] = useState<JevInterceptConfig | null>(null)
+  // 只同步本块字段：别的块保存会改写同一份缓存，本块有未保存改动时保留草稿。
+  const [draft, setDraft] = useServerDraft(q.data, asDraft, ownedDiffers)
   const [apiKey, setApiKey] = useState('')
   const [keysText, setKeysText] = useState('')
   const [clearKey, setClearKey] = useState(false)
@@ -93,9 +103,6 @@ export function ModelSettings({
     setKeysText('')
     setClearKey(false)
   }
-  useEffect(() => {
-    if (q.data) load(q.data)
-  }, [q.data])
 
   const dirty =
     !!draft &&
@@ -134,6 +141,7 @@ export function ModelSettings({
     },
     onSuccess: (data) => {
       toast.success('已保存决策模型关')
+      load(data)
       qc.setQueryData(jevInterceptQueryOptions().queryKey, data)
     },
     onError: (error: Error) => toast.error(error.message),

@@ -148,6 +148,12 @@ export function invalidateVmSlotReadCache(projectRoot, id) {
 }
 
 const locks = new Map()
+const pendingLocks = new Map()
+
+/** Includes queued operations: connection changes must not interrupt an awaiting VM mutation. */
+export function vmLockBusy(key) {
+  return (pendingLocks.get(key) || 0) > 0
+}
 
 /**
  * Optional post-write hook (installed by lib/vm-db-sync.mjs) so every
@@ -169,7 +175,12 @@ function notifyVmWrite(filePath) {
 
 export function withVmLock(key, fn) {
   const prev = locks.get(key) || Promise.resolve()
-  const run = prev.then(fn, fn)
+  pendingLocks.set(key, (pendingLocks.get(key) || 0) + 1)
+  const run = prev.then(fn, fn).finally(() => {
+    const pending = pendingLocks.get(key) - 1
+    if (pending) pendingLocks.set(key, pending)
+    else pendingLocks.delete(key)
+  })
   // Keep the chain alive but never reject the stored promise.
   locks.set(
     key,

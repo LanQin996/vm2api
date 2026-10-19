@@ -4,6 +4,7 @@
  * Official Claude Code may send assistant prefill and incomplete tool turns on purpose.
  * These fixes run on unofficial clients, plus always-on output_config schema fill.
  */
+import { createHash } from 'node:crypto'
 import { stripIllegalCacheControlFields } from './cache-ttl.mjs'
 import { blockHasEncryptedContent, isWebSearchArtifactBlock } from './web-search.mjs'
 
@@ -225,8 +226,24 @@ function messageNeedsFlatten(content, depth = 0) {
   return content.some((block) => isWebSearchArtifactBlock(block) || messageNeedsFlatten(block?.content, depth + 1))
 }
 
+/** Match only the same search-bearing history and tool contract, never later conversation turns. */
+export function searchHistoryFingerprint(body = {}) {
+  if (!Array.isArray(body.messages)) return null
+  let hash = null
+  for (let index = 0; index < body.messages.length; index++) {
+    const message = body.messages[index]
+    if (!messageNeedsFlatten(message?.content)) continue
+    hash ??= createHash('sha256')
+    hash.update(JSON.stringify([index, message.role, message.content]))
+    hash.update('\n')
+  }
+  if (!hash) return null
+  hash.update(JSON.stringify(body.tools || []))
+  return hash.digest('hex')
+}
+
 /**
- * Retry-only: replayed search history the current account cannot decrypt
+ * Retry or confirmed replay: search history the current account cannot decrypt
  * ("Invalid `encrypted_content` in `search_result` block") becomes plain text.
  * server_tool_use is flattened together with its result so no call is orphaned.
  */

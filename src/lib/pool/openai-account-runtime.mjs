@@ -14,6 +14,10 @@ export const OPENAI_MAX_WAITERS = 100
 const slots = new Map()
 const waiters = []
 const feedback = new Map()
+// Upstream failures park a GPT account for a short, process-local window.
+// This is deliberately not the operator switch, which must not be flipped by
+// a transient 401/429/5xx. The hold expires on its own.
+const holds = new Map()
 let roundRobinCursor = 0
 
 function slotOf(id) {
@@ -56,6 +60,34 @@ export function openAIRuntimeSignals(id, now = Date.now()) {
 
 export function openAIRuntimeSnapshot(id, now = Date.now()) {
   return openAIRuntimeSignals(id, now)
+}
+
+/** Live failure hold for a GPT account, or null once it has expired. */
+export function openAIAccountHold(id, now = Date.now()) {
+  const key = String(id || '')
+  const hold = holds.get(key)
+  if (!hold) return null
+  if (hold.until <= now) {
+    holds.delete(key)
+    return null
+  }
+  return { until: hold.until, reason: hold.reason, set_at: hold.set_at }
+}
+
+/** Park an account after an uncommitted upstream failure. Longest live hold wins. */
+export function holdOpenAIAccount(id, { until, reason = 'upstream_error', now = Date.now() } = {}) {
+  const key = String(id || '')
+  const at = Number(until) || 0
+  if (!key || !(at > now)) return null
+  const current = holds.get(key)
+  if (current && current.until >= at) return { ...current }
+  const next = { until: at, reason: String(reason || 'upstream_error'), set_at: now }
+  holds.set(key, next)
+  return { ...next }
+}
+
+export function clearOpenAIAccountHold(id) {
+  holds.delete(String(id || ''))
 }
 
 export function readOpenAICursor() {
@@ -152,6 +184,7 @@ export function waitForOpenAICapacity({ deadline, signal = null } = {}) {
 export function reportOpenAIAttempt(id, kind, firstOutputMs = null, now = Date.now()) {
   const key = String(id || '')
   if (!key) return
+  if (kind === 'succeeded') holds.delete(key)
   const entry = feedback.get(key) || { value: 0, updatedAt: null, latency: null }
   const sample = kind === 'succeeded' ? 0 : 1
   const alpha = kind === 'capacity_rejected' ? CAPACITY_ALPHA : FAILURE_ALPHA
@@ -168,6 +201,7 @@ export function reportOpenAIAttempt(id, kind, firstOutputMs = null, now = Date.n
 export function resetOpenAIAccountRuntime() {
   slots.clear()
   feedback.clear()
+  holds.clear()
   for (const entry of waiters.splice(0)) entry.wake()
   roundRobinCursor = 0
 }

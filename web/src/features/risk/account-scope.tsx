@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { JevInterceptConfig, JevScopeOption } from '@/types/panel-routing'
 import { ChevronDown } from 'lucide-react'
 import { toast } from 'sonner'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { useServerDraft } from '@/hooks/use-server-draft'
 import { Button } from '@/components/ui/button'
 import {
   Collapsible,
@@ -52,6 +53,10 @@ function sameScope(left: AccountScope, right: AccountScope) {
   )
 }
 
+function scopeDiffers(left: Draft, right: Draft) {
+  return !sameScope(scopeOf(left), scopeOf(right))
+}
+
 function Chip({
   option,
   active,
@@ -86,12 +91,8 @@ function Chip({
 export function AccountScopeSettings() {
   const qc = useQueryClient()
   const q = useQuery(jevInterceptQueryOptions())
-  const [draft, setDraft] = useState<Draft | null>(null)
+  const [draft, setDraft] = useServerDraft(q.data, draftOf, scopeDiffers)
   const [open, setOpen] = useState(false)
-
-  useEffect(() => {
-    if (q.data) setDraft(draftOf(q.data))
-  }, [q.data])
 
   const saved = q.data ? draftOf(q.data) : null
   const current = draft ? scopeOf(draft) : null
@@ -112,6 +113,7 @@ export function AccountScopeSettings() {
     },
     onSuccess: (data) => {
       toast.success('已保存账号范围')
+      setDraft(draftOf(data))
       qc.setQueryData(jevInterceptQueryOptions().queryKey, data)
     },
     onError: (error: Error) => toast.error(error.message),

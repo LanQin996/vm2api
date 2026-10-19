@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Vm } from '@/types/panel-vm'
 import { toast } from 'sonner'
@@ -17,12 +17,15 @@ import {
 import { Segmented } from '@/components/choice-tiles'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import {
+  memoryRaiseOptions,
+  memoryRaiseTarget,
   runtimeTypeOf,
   VM_MEMORY_LABELS,
   VM_MEMORY_OPTIONS,
   type VmMemoryOption,
 } from '@/features/vm/machine-spec'
 import { vmQueryOptions, vmsListQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 function configuredMemory(vm: Vm): VmMemoryOption | string {
   const raw =
@@ -32,29 +35,20 @@ function configuredMemory(vm: Vm): VmMemoryOption | string {
     : String(raw)
 }
 
-function memoryIndex(value: string) {
-  const idx = VM_MEMORY_OPTIONS.indexOf(value as VmMemoryOption)
-  return idx >= 0 ? idx : VM_MEMORY_OPTIONS.indexOf('512m')
-}
-
 function VmMemoryBlockInner({ vm }: { vm: Vm }) {
   const current = configuredMemory(vm)
   const runtimeMem =
     typeof vm.runtime?.memory === 'string' ? vm.runtime.memory : null
-  const minIdx = memoryIndex(String(current))
-  const raiseOptions = useMemo(
-    () =>
-      VM_MEMORY_OPTIONS.filter((_, i) => i > minIdx).map((id) => ({
-        value: id,
-        label: VM_MEMORY_LABELS[id],
-      })),
-    [minIdx]
-  )
+  const canRaise = useVmPerms().admin
+  const raiseIds = memoryRaiseOptions(String(current))
+  const raiseOptions = raiseIds.map((id) => ({
+    value: id,
+    label: VM_MEMORY_LABELS[id],
+  }))
 
   const [open, setOpen] = useState(false)
-  const [target, setTarget] = useState<VmMemoryOption | null>(
-    (raiseOptions[0]?.value as VmMemoryOption) ?? null
-  )
+  const [picked, setPicked] = useState<VmMemoryOption | null>(null)
+  const target = memoryRaiseTarget(picked, raiseIds)
   const qc = useQueryClient()
 
   const save = useMutation({
@@ -75,7 +69,7 @@ function VmMemoryBlockInner({ vm }: { vm: Vm }) {
     onError: (error: Error) => toast.error(error.message || '提升内存失败'),
   })
 
-  if (!raiseOptions.length) {
+  if (!raiseOptions.length || !canRaise) {
     return (
       <div className='space-y-1 rounded-md border px-2.5 py-2 text-xs'>
         <div className='font-medium'>内存</div>
@@ -84,7 +78,7 @@ function VmMemoryBlockInner({ vm }: { vm: Vm }) {
           {runtimeMem && runtimeMem !== current
             ? ` · 容器 ${VM_MEMORY_LABELS[runtimeMem as VmMemoryOption] || runtimeMem}`
             : ''}
-          {' · 已是可选上限'}
+          {raiseOptions.length ? '' : ' · 已是可选上限'}
         </div>
       </div>
     )
@@ -102,7 +96,14 @@ function VmMemoryBlockInner({ vm }: { vm: Vm }) {
               : ''}
           </div>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
+        <Dialog
+          open={open}
+          onOpenChange={(next) => {
+            if (save.isPending) return
+            if (next) setPicked(null)
+            setOpen(next)
+          }}
+        >
           <DialogTrigger asChild>
             <Button
               type='button'
@@ -127,7 +128,7 @@ function VmMemoryBlockInner({ vm }: { vm: Vm }) {
               <Segmented
                 label='目标内存'
                 value={target || raiseOptions[0].value}
-                onChange={(v) => setTarget(v as VmMemoryOption)}
+                onChange={(v) => setPicked(v as VmMemoryOption)}
                 options={raiseOptions}
               />
             </div>

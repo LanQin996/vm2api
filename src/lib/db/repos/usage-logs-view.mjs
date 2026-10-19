@@ -31,6 +31,10 @@ const SUMMARY_SCAN_CAP = 5000
 /** Recent rows mined for distinct filter values / empty-prefix session suggestions. */
 const RECENT_SCAN = 5000
 const OPTION_LIMIT = 200
+const EXPORT_LIMIT_DEFAULT = 2000
+const EXPORT_LIMIT_MAX = 5000
+/** Newest rows an export reads when classes must be filtered in JS. */
+const EXPORT_SCAN_CAP = 10000
 const DEFAULT_VIA = 'go-worker-pool'
 
 const BLOCKED_STATES = {
@@ -327,6 +331,8 @@ function buildFilter(filters, defaultMuted) {
     params.push(minAttempts)
   }
   if (filters.debug_only) where.push("log_mode = 'debug'")
+  // Legacy export `status=error`: the error predicate without picking a class.
+  if (filters.errors_only) where.push(ERROR_PRED)
   const start = isoOrNull(filters.start_time)
   if (start) {
     where.push('created_at >= ?')
@@ -353,6 +359,16 @@ function buildFilter(filters, defaultMuted) {
   if (errorClass) keep = (row) => row.error_class === errorClass
   else if (blocked.size) keep = (row) => !row.error_class || !blocked.has(row.error_class)
   return { where, params, keep, sqlOnlySummary: !errorClass && muted.every((c) => c === 'auth') }
+}
+
+function exportRow(raw) {
+  return enrichLogRow({
+    ...raw,
+    ts: raw.created_at,
+    ip: raw.ip_address,
+    stream: !!raw.stream,
+    has_tools: raw.has_tools == null ? null : !!raw.has_tools,
+  })
 }
 
 function whereSql(where) {
@@ -551,6 +567,37 @@ export class UsageLogsView {
       avg_duration_ms: durN ? durSum / durN : null,
       avg_ttft_ms: ttftN ? ttftSum / ttftN : null,
     })
+  }
+
+  /**
+   * Export rows under the same filters as the list, in the snake_case
+   * `/request-logs` shape. Muting beyond `auth` is decided per row: then at
+   * most EXPORT_SCAN_CAP newest rows are read and `capped` says the scan ended
+   * before the table did.
+   */
+  exportRows(filters = {}) {
+    const limit = clampInt(filters.limit, 1, EXPORT_LIMIT_MAX, EXPORT_LIMIT_DEFAULT)
+    const { where, params, keep, sqlOnlySummary } = buildFilter(filters, this.mutedErrorClasses)
+    const cond = whereSql(where)
+    const select = `SELECT * FROM usage_logs ${cond} ORDER BY created_at DESC, id DESC LIMIT ?`
+    if (!keep || sqlOnlySummary) {
+      const total = this.db.prepare(`SELECT COUNT(*) AS c FROM usage_logs ${cond}`).get(...params).c
+      return {
+        items: this.db
+          .prepare(select)
+          .all(...params, limit)
+          .map(exportRow),
+        total,
+        capped: false,
+      }
+    }
+    const scanned = this.db.prepare(select).all(...params, EXPORT_SCAN_CAP)
+    const matched = scanned.map(exportRow).filter(keep)
+    return {
+      items: matched.slice(0, limit),
+      total: matched.length,
+      capped: scanned.length >= EXPORT_SCAN_CAP,
+    }
   }
 
   /** Lazy dropdown values. Entity lists come from their tables; free-form columns from recent rows. */

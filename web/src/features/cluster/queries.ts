@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 import type {
+  ClusterNodePatch,
+  ClusterNodeUpdateProbe,
   ClusterApiNode,
   ClusterLocalStatus,
   DockerContainer,
@@ -63,6 +65,29 @@ export function dockerContainersQueryOptions(nodeId: string, enabled: boolean) {
 
 function nodePath(nodeId: string) {
   return `/api/panel/cluster/nodes/${encodeURIComponent(nodeId)}`
+}
+
+export function probeNodeUpdate(
+  nodeId: string,
+  body: ClusterNodePatch,
+  signal: AbortSignal
+) {
+  return api<ClusterNodeUpdateProbe>(`${nodePath(nodeId)}/probe`, {
+    ...jsonBody(body),
+    signal,
+  })
+}
+
+export function updateClusterNode(
+  nodeId: string,
+  body: ClusterNodePatch,
+  signal: AbortSignal
+) {
+  return api<ClusterApiNode>(nodePath(nodeId), {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+    signal,
+  })
 }
 
 /**

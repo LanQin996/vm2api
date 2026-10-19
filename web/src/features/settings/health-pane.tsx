@@ -1,3 +1,4 @@
+import { type ComponentProps, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { Badge } from '@/components/ui/badge'
@@ -12,6 +13,7 @@ import {
   type ModelTracePayload,
   type HealthSnapshotView,
 } from '@/features/settings/queries'
+import { settleInt, typingInt } from './int-input'
 
 type Obj = Record<string, unknown>
 
@@ -33,6 +35,47 @@ function clampInt(raw: string, min: number, max: number, fallback: number) {
   const n = Math.round(Number(raw))
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, n))
+}
+
+/**
+ * 输入时不限范围（否则键入「120」第一个键就被拉成 30），失焦时再限到 [min, max]。
+ * 未失焦直接保存时由网关按同样范围收口。
+ */
+function DeferredIntInput({
+  value,
+  min,
+  max,
+  fallback,
+  onCommit,
+  ...props
+}: Omit<ComponentProps<typeof Input>, 'value' | 'onChange' | 'onBlur'> & {
+  value: number
+  min: number
+  max: number
+  fallback: number
+  onCommit: (next: number) => void
+}) {
+  const [text, setText] = useState<string | null>(null)
+  return (
+    <Input
+      {...props}
+      type='number'
+      min={min}
+      max={max}
+      value={text ?? String(value)}
+      onChange={(event) => {
+        setText(event.target.value)
+        const n = typingInt(event.target.value)
+        if (n !== null) onCommit(n)
+      }}
+      onBlur={() => {
+        if (text === null) return
+        const settled = settleInt(text, min, max, fallback)
+        setText(null)
+        if (settled !== value) onCommit(settled)
+      }}
+    />
+  )
 }
 
 export function HealthPane(props: HealthPaneProps) {
@@ -332,17 +375,13 @@ function HealthCacheCard({
           />
         </SettingRow>
         <SettingRow label='探测间隔' desc='秒，30–86400'>
-          <Input
+          <DeferredIntInput
             className='w-28'
-            type='number'
             min={30}
             max={86400}
+            fallback={600}
             value={Number(probe.interval_sec ?? 600)}
-            onChange={(event) =>
-              onProbeChange({
-                interval_sec: clampInt(event.target.value, 30, 86400, 600),
-              })
-            }
+            onCommit={(next) => onProbeChange({ interval_sec: next })}
             aria-label='探测间隔'
           />
         </SettingRow>
@@ -359,17 +398,13 @@ function HealthCacheCard({
           />
         </SettingRow>
         <SettingRow label='缓存有效期' desc='秒，过期后探测请求照常进入调度'>
-          <Input
+          <DeferredIntInput
             className='w-28'
-            type='number'
             min={30}
             max={172800}
+            fallback={900}
             value={Number(probe.cache_ttl_sec ?? 900)}
-            onChange={(event) =>
-              onProbeChange({
-                cache_ttl_sec: clampInt(event.target.value, 30, 172800, 900),
-              })
-            }
+            onCommit={(next) => onProbeChange({ cache_ttl_sec: next })}
             aria-label='缓存有效期'
           />
         </SettingRow>

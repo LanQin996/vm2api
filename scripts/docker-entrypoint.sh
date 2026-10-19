@@ -37,12 +37,18 @@ ensure_bin() {
 ensure_bin kin-kernel
 ensure_bin kin-egress
 ensure_bin kin-worker
+ensure_bin kin-api-kernel
 ensure_bin kin-codex-kernel
 ensure_bin kin-oauth-auth
 ensure_bin kin-computer
 KERNEL="${KIN_KERNEL_BIN:-$ROOT/bin/kin-kernel}"
 if [ ! -x "$KERNEL" ]; then
   echo "vm2api: $KERNEL missing or not executable after image-bin copy. Rebuild with docker compose build, or put linux amd64 Release files in $ROOT/bin." >&2
+  exit 1
+fi
+API_KERNEL="${KIN_API_KERNEL_BIN:-$ROOT/bin/kin-api-kernel}"
+if [ ! -x "$API_KERNEL" ]; then
+  echo "vm2api: $API_KERNEL missing or not executable after image-bin copy. Rebuild the control-plane image so kin-api-kernel is staged in image-bin." >&2
   exit 1
 fi
 mkdir -p "$ROOT/share/wrap-cli"

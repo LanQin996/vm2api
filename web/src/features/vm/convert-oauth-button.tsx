@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { dashboardQueryOptions } from '@/features/overview/queries'
 import { vmQueryOptions } from '@/features/vm/queries'
+import { useVmPerms } from '@/features/vm/vm-perms'
 
 export type ConvertOauthResult = {
   official_cc_bootstrap?: { scheduled?: boolean; reason?: string } | null
@@ -25,6 +26,7 @@ export function ConvertOauthToSetupButton({
 }) {
   const qc = useQueryClient()
   const [open, setOpen] = useState(false)
+  const perms = useVmPerms()
   const convert = useMutation({
     mutationFn: () =>
       api<ConvertOauthResult>(
@@ -44,7 +46,9 @@ export function ConvertOauthToSetupButton({
     onError: (e: Error) => toast.error(importErrorMessage(e)),
   })
 
-  if (isCodexVm(vm) || credTypeOf(vm) !== 'oauth') return null
+  if (!perms.credential || isCodexVm(vm) || credTypeOf(vm) !== 'oauth') {
+    return null
+  }
 
   return (
     <>

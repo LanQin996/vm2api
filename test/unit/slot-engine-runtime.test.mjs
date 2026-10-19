@@ -170,7 +170,7 @@ test('rust switch recreates a slot missing the kernel mount before health commit
         inspectContainer: () => ({ running: true }),
         containerHasKernelMount: () => mounted,
         startVmRuntime: (_vm, _root, options) => {
-          assert.deepEqual(options, { recreate: true })
+          assert.equal(options.recreate, true)
           recreated = true
           mounted = true
           return { ok: true, action: 'created' }

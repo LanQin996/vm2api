@@ -80,7 +80,7 @@ test('invalid persisted quotas are rejected before local/remote lifecycle work, 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cpu-preflight-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const invalid = vm({ docker_cpus: -1 })
-  assert.throws(() => runtime.startVmRuntime(invalid, root, { recreate: true }), /docker_cpus/)
+  await assert.rejects(() => runtime.startVmRuntime(invalid, root, { recreate: true }), /docker_cpus/)
   const result = await startRemoteSlot(invalid, root, { recreate: true })
   assert.equal(result.ok, false)
   assert.match(result.error, /docker_cpus/)

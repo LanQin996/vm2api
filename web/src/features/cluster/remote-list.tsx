@@ -90,18 +90,23 @@ export function RemoteList({
                       'flex min-w-0 items-center gap-1.5'
                     )}
                   >
-                    <span className='truncate font-medium'>{node.label}</span>
-                    {node.remote ? (
-                      <span className='shrink-0 text-[10px] text-muted-foreground'>
-                        {LINK_STATE_TEXT[node.remote.link.state]}
-                      </span>
-                    ) : null}
+                    <span className='truncate font-medium' title={node.label}>
+                      {node.label}
+                    </span>
                   </div>
-                  <div className={cn(COL.host, 'field-host truncate text-xs')}>
+                  <div
+                    className={cn(COL.host, 'field-host truncate text-xs')}
+                    title={node.host}
+                  >
                     {node.host}
                   </div>
                   <div className={cn(COL.link, 'flex items-center gap-1.5')}>
                     <StatusMark tone={LINK_TONE[node.link]} />
+                    {node.remote ? (
+                      <span className='text-xs'>
+                        {LINK_STATE_TEXT[node.remote.link.state]}
+                      </span>
+                    ) : null}
                     {lat ? (
                       <span
                         className={cn(

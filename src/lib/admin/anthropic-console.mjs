@@ -65,7 +65,7 @@ function headerMap(raw) {
 function directKeys(input = {}, store = null) {
   const listed = Array.isArray(input.keys) ? input.keys : [input]
   const keys = []
-  for (const item of listed) {
+  for (const [row, item] of listed.entries()) {
     const source = item && typeof item === 'object' ? item : { api_key: item }
     const saved = source.key_id || source.keyId ? savedEndpointKey(store, source.key_id || source.keyId) : null
     const apiKey = String(source.api_key || source.apiKey || saved?.api_key || '').trim()
@@ -74,6 +74,7 @@ function directKeys(input = {}, store = null) {
       .trim()
       .slice(0, 40)
     keys.push({
+      row,
       label: label || `key ${keys.length + 1}`,
       api_key: apiKey,
       proxy_id: chosen(source, 'proxy_id', 'proxyId', saved?.proxy_id || ''),
@@ -255,13 +256,13 @@ export async function runAnthropicConsole({
 
   const keys = directKeys(input, store)
   const index = Number.isInteger(Number(input?.key_index)) ? Number(input.key_index) : null
-  const selected = index == null ? keys : [keys[index]].filter(Boolean)
+  const selected = index == null ? keys : keys.filter((key) => key.row === index)
   if (!selected.length) {
     throw Object.assign(new Error('要测试的 key 不存在'), { code: 'key_not_found', status: 400 })
   }
   const items = []
-  for (const [offset, key] of selected.entries()) {
-    const row = index == null ? keys.indexOf(key) : index + offset
+  for (const key of selected) {
+    const row = key.row
     try {
       const request = buildAnthropicConsoleRequest({ ...(input || {}), ...key }, null, proxyPool)
       const result = await forwardConsoleRequest(request, { cfg, forward })

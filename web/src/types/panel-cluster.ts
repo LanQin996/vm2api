@@ -107,6 +107,26 @@ export type ClusterProbeResult = {
   existing_id: string | null
 }
 
+/** Existing-node edits preserve the node id, jump node and pinned host key. */
+export type ClusterNodePatch = {
+  expected_updated_at: string
+  label?: string
+  host?: string
+  port?: number
+  username?: string
+  auth_type?: 'key' | 'password'
+  private_key?: string
+  passphrase?: string
+  password?: string
+}
+
+export type ClusterNodeUpdateProbe = {
+  host_key: { alg: string; sha256: string }
+  docker: { ok: boolean; error: string | null }
+  vm_count: number
+  dependent_count: number
+}
+
 export type DockerInfo = {
   version: string | null
   api_version: string | null

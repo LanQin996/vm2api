@@ -24,6 +24,7 @@ import {
   resolveInferenceEngine,
   resolveKernelDataplane,
   normalizeSessionSlots,
+  normalizeSessionIdleTtlSeconds,
   resolveSessionSlots,
   resolveSlotPersonaPreset,
 } from '../vm/slot-engine.mjs'
@@ -86,7 +87,7 @@ import {
 } from '../identity/persona-template.mjs'
 import { PERSONA_STANDING_MAX } from '../identity/crs-persona.mjs'
 import { MESSAGES_BREAKPOINT_MODES } from '../protocol/cache-ttl.mjs'
-import { normalizeCodexRouting } from '../protocol/codex-route.mjs'
+import { normalizeCodexRouting, normalizeInferenceWebsocket } from '../protocol/codex-route.mjs'
 import { effectiveOpenAIPolicy, normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 import { openAIRuntimeSignals } from '../pool/openai-account-runtime.mjs'
 import { normalizeVmConfig, memoryMiB } from '../vm/machine-spec.mjs'
@@ -469,6 +470,9 @@ export function validatePersonaRoutingPatch(body = {}) {
   }
   if (compat.official_cc_passthrough != null && typeof compat.official_cc_passthrough !== 'boolean') {
     problems.push('official_cc_passthrough 必须是布尔')
+  }
+  if (Object.prototype.hasOwnProperty.call(compat, 'cch_enabled') && typeof compat.cch_enabled !== 'boolean') {
+    problems.push('cch_enabled 必须是布尔')
   }
   if (compat.cache_breakpoints != null) {
     const bp = compat.cache_breakpoints
@@ -1068,6 +1072,7 @@ export async function buildProbeOne({
       },
       quota: result.quota,
       reset_credits: result.reset_credits || null,
+      credits: result.credits || null,
       windows: result.windows || [],
       probed_at: result.fetched_at || new Date().toISOString(),
       ok: true,
@@ -1386,6 +1391,18 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
   })
 }
 
+function presentCompatibility(compat) {
+  const out = compat && typeof compat === 'object' && !Array.isArray(compat) ? { ...compat } : {}
+  out.cch_enabled = out.cch_enabled !== false
+  return out
+}
+
+function presentInference(inference) {
+  const out = inference && typeof inference === 'object' && !Array.isArray(inference) ? { ...inference } : {}
+  out.session_idle_ttl_seconds = normalizeSessionIdleTtlSeconds(out.session_idle_ttl_seconds)
+  return out
+}
+
 export function buildRouting({ routingConfig, stickyRouter }) {
   const tiers = normalizeTiers(routingConfig?.tiers, routingConfig?.quota, routingConfig?.concurrency)
   return ok({
@@ -1396,8 +1413,9 @@ export function buildRouting({ routingConfig, stickyRouter }) {
     logging: routingConfig?.logging || {},
     pool: normalizePoolRouting(routingConfig?.pool),
     failover: routingConfig?.failover || {},
-    compatibility: routingConfig?.compatibility || {},
-    inference: routingConfig?.inference || {},
+    compatibility: presentCompatibility(routingConfig?.compatibility),
+    inference: presentInference(routingConfig?.inference),
+    websocket: normalizeInferenceWebsocket(routingConfig?.websocket),
     codex: normalizeCodexRouting(routingConfig?.codex),
     official_cc: normalizeOfficialCcConfig(routingConfig?.official_cc),
     health_probe: normalizeHealthProbeConfig(routingConfig?.health_probe),
@@ -1932,6 +1950,7 @@ function enrichVm(v, accountQuota, active, extras = {}) {
     status_7d_oi: isCodex ? null : q.status_7d_oi,
     codex_usage: v.codex_usage || null,
     reset_credits: isCodex ? v.reset_credits || v.codex?.reset_credits || null : null,
+    codex_credits: isCodex ? v.codex_credits || v.codex?.credits || null : null,
     claude_reset_credits: isCodex ? null : v.claude_reset_credits || null,
     plan_type: isCodex ? v.plan_type || null : null,
     ...(q.weekly_split ? { weekly_split: q.weekly_split } : {}),

@@ -12,6 +12,7 @@ import { ClusterManager } from '../../src/lib/cluster/cluster-manager.mjs'
 import {
   awaitSlotImageBuild,
   bindPlacement,
+  nodeImageBuildRunning,
   remoteSlotOwner,
   startSlotImageBuild,
   unbindPlacement,
@@ -522,10 +523,13 @@ test('startSlotImageBuild returns a job awaitSlotImageBuild can finish', async (
     })
   const job = startSlotImageBuild('n1', 'ubuntu-24.04', { connect })
   assert.equal(job.status, 'running')
+  assert.equal(nodeImageBuildRunning('n1'), true)
+  assert.equal(nodeImageBuildRunning('n10'), false)
   assert.match(job.ref, /^vm2api\/kin-slot-ubuntu-24\.04:/)
   const done = await awaitSlotImageBuild(job)
   assert.equal(done, job)
   assert.equal(done.status, 'done')
+  assert.equal(nodeImageBuildRunning('n1'), false)
   assert.match(done.log, /跳过传输/)
   assert.equal(
     hits.some((url) => url.includes('/build')),

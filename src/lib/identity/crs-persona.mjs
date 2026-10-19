@@ -33,6 +33,7 @@ import { createHash } from 'node:crypto'
 import { resolveWorkstationProfile } from './workstation-profile.mjs'
 import fs from 'node:fs'
 import { uuidFromSeed } from './identity-rewrite.mjs'
+import { OFFICIAL_CLI_VERSION } from './vm-identity.mjs'
 import { CCH_PLACEHOLDER } from './cch.mjs'
 import { CLAUDE_CLI_UA_RE, isOfficialClaudeUa } from './official-claude-ua.mjs'
 import { modelSupportsMidConversationSystem } from '../protocol/anthropic-policy.mjs'
@@ -80,7 +81,7 @@ export const CRS_OFFICIAL_CLI_SYSTEM = "You are Claude Code, Anthropic's officia
 export const CRS_OFFICIAL_SYSTEM = CRS_OFFICIAL_AGENT_IDENTITY
 /** 0注入 prompt_version 短身份句。cl100k 计 8 token，必带 Anthropic 与 Claude。 */
 export const CRS_COMPACT_IDENTITY = 'You are Anthropic Claude Agent SDK.'
-export const DEFAULT_CLI_VERSION = '2.1.293'
+export const DEFAULT_CLI_VERSION = OFFICIAL_CLI_VERSION
 export const PERSONA_MODES = Object.freeze(['rewrite', 'official_prompt', 'overwrite', 'zero', 'append', 'none'])
 export const DEFAULT_PERSONA_MODE = 'rewrite'
 export const DEFAULT_PERSONA_PARK = true
@@ -450,8 +451,12 @@ export function isKnownOfficialSystemText(text) {
   if (t.includes('# Environment') && t.includes('# Text output (does not apply to tool calls)')) return true
   return false
 }
+export function hasEnvironmentSection(text) {
+  return /^[ \t]*# Environment\b/m.test(String(text ?? ''))
+}
 
-function dropRewriteSourceText(text) {
+function dropRewriteSourceText(text, { preserveEnvironment = false } = {}) {
+  if (preserveEnvironment && hasEnvironmentSection(text)) return String(text)
   const next = stripLeakyClientText(text)
   if (!next || isKnownOfficialSystemText(next)) return ''
   return next
@@ -482,21 +487,21 @@ export function stripLeakyClientText(text) {
   return paragraphs.join('\n\n')
 }
 
-function stripLeakySystem(system) {
+function stripLeakySystem(system, options = {}) {
   if (!system) return system
   if (typeof system === 'string') {
-    const next = dropRewriteSourceText(system)
+    const next = dropRewriteSourceText(system, options)
     return next || undefined
   }
   if (Array.isArray(system)) {
     const next = system
       .map((block) => {
         if (typeof block === 'string') {
-          const text = dropRewriteSourceText(block)
+          const text = dropRewriteSourceText(block, options)
           return text ? text : null
         }
         if (block && typeof block === 'object' && typeof block.text === 'string') {
-          const text = dropRewriteSourceText(block.text)
+          const text = dropRewriteSourceText(block.text, options)
           if (!text) return null
           return text === block.text ? block : { ...block, text }
         }
@@ -506,7 +511,7 @@ function stripLeakySystem(system) {
     return next.length ? next : undefined
   }
   if (typeof system === 'object' && typeof system.text === 'string') {
-    const text = dropRewriteSourceText(system.text)
+    const text = dropRewriteSourceText(system.text, options)
     if (!text) return undefined
     return text === system.text ? system : { ...system, text }
   }
@@ -607,11 +612,11 @@ function collapseBudgetReminderBlocks(system) {
   return changed ? next : system
 }
 
-export function parkableSystemTexts(system) {
+export function parkableSystemTexts(system, options = {}) {
   const kept = []
   const state = { seen: false }
   for (const raw of extractSystemTexts(system)) {
-    const cleaned = dropRewriteSourceText(raw)
+    const cleaned = dropRewriteSourceText(raw, options)
     if (!cleaned) continue
     const collapsed = collapseRepeatedBudgetReminders(cleaned, state)
     const text = collapsed === cleaned ? cleaned : collapsed.trim()
@@ -798,13 +803,15 @@ export function personaTemplateVars({
     agent_standing: String(agentStanding || ''),
     env: () => (withEnv ? envTimezoneOnly() : ''),
     caller_agent: String(callerAgent || '').trim(),
-    caller_system: String(leftover || '').trim(),
-    env_timezone_only: envTimezoneOnly,
+    caller_system: withEnv ? String(leftover || '').trim() : String(leftover || ''),
+    env_timezone_only: () => (withEnv ? envTimezoneOnly() : ''),
     env_official: () =>
-      timezoneOnlyEnv
-        ? buildOfficialEnvironmentSection({ timezone: env.timezone }, { sourceTexts: [], contextManagement: false })
-        : buildOfficialContinuationText(env, sourceTexts, { overwrite: true }),
-    timezone: String(env?.timezone || '').trim(),
+      !withEnv
+        ? ''
+        : timezoneOnlyEnv
+          ? buildOfficialEnvironmentSection({ timezone: env.timezone }, { sourceTexts: [], contextManagement: false })
+          : buildOfficialContinuationText(env, sourceTexts, { overwrite: true }),
+    timezone: withEnv ? String(env?.timezone || '').trim() : '',
     locale: String(env?.locale || '').trim(),
     model: String(model || env?.modelId || '').trim(),
     cwd: String(env?.cwd || '').trim(),
@@ -818,7 +825,7 @@ export function personaTemplateVars({
  * preview drops billing blocks); request-scoped values stay as placeholders.
  */
 export function personaPreviewVars({ timezone = 'UTC', model = 'claude-sonnet-5' } = {}) {
-  const vars = personaTemplateVars({ env: { timezone, modelId: model }, model })
+  const vars = personaTemplateVars({ env: { timezone, modelId: model }, model, withEnv: true })
   return {
     identity: vars.identity,
     identity_compact: vars.identity_compact,
@@ -1298,11 +1305,11 @@ export function prependToFirstUserMessage(messages, text) {
 }
 
 /** Top-level caller system only. role=system stays in the message list so the cached prefix can grow. */
-export function collectCallerSystemAppend(body) {
-  return parkableSystemTexts(body?.system).join('\n\n')
+export function collectCallerSystemAppend(body, options = {}) {
+  return parkableSystemTexts(body?.system, options).join('\n\n')
 }
 
-const OFFICIAL_CALLER_AGENT_CACHE = Object.freeze({ type: 'ephemeral', ttl: '1h', scope: 'global' })
+const OFFICIAL_CALLER_AGENT_CACHE = Object.freeze({ type: 'ephemeral', ttl: '1h' })
 
 /** Stored official templates that predate {{caller_agent}} still get the prompt back, before env. */
 function insertOfficialCallerAgent(system, callerAgent) {
@@ -1590,13 +1597,20 @@ export function isValidOfficialUserId(raw) {
 /**
  * oh-my-pi / omp inbound: their own ROLE + PROJECT blocks, or the OAuth
  * stealth prefix (`cc_entrypoint=local-agent` + Agent SDK one-liner).
- * That prefix reuses the official identity string, so billing/identity
- * alone must not classify this as Claude Code.
+ * Claude Desktop shares that entrypoint, so its desktop headers let it continue
+ * through the existing official checks; OMP-specific system markers still reject it.
  */
-export function looksLikeOhMyPiSystem(system) {
+export function looksLikeOhMyPiSystem(system, headers = {}) {
   const text = systemToText(system)
   if (!text) return false
-  if (/cc_entrypoint\s*=\s*local-agent/i.test(text)) return true
+  const ua = String(headers['user-agent'] || headers['User-Agent'] || '').trim()
+  const desktop =
+    isOfficialClaudeUa(ua) &&
+    /[ (,]local-agent(?=[,)])/.test(ua) &&
+    /[ (,]agent-sdk\/\d+\.\d+\.\d+(?=[,)])/.test(ua) &&
+    headers['anthropic-client-platform'] === 'desktop_app' &&
+    /^\d+\.\d+\.\d+$/.test(String(headers['anthropic-client-version'] || '').trim())
+  if (/cc_entrypoint\s*=\s*local-agent/i.test(text) && !desktop) return true
   if (/<system-conventions>/i.test(text) && /Oh My Pi/i.test(text)) return true
   if (/<system-conventions>/i.test(text) && /<workstation>/i.test(text)) return true
   if (/^ROLE\s*\n\s*=+/m.test(text) && /^PROJECT\s*\n\s*=+/m.test(text)) return true
@@ -1608,14 +1622,14 @@ export function looksLikeOhMyPiSystem(system) {
  * pi / omp and the same harness shape. This text replaces the official
  * full prompt block. It is not also appended after that block.
  */
-export function thirdPartyClientPrompt(system) {
+export function thirdPartyClientPrompt(system, options = {}) {
   if (!looksLikeOhMyPiSystem(system)) return ''
-  return parkableSystemTexts(system).join('\n\n').trim()
+  return parkableSystemTexts(system, options).join('\n\n').trim()
 }
 
 /** Official CLI system: billing header, official entrypoint, identity, or child-hop prompt. */
-export function looksLikeOfficialClaudeSystem(system) {
-  if (looksLikeOhMyPiSystem(system)) return false
+export function looksLikeOfficialClaudeSystem(system, headers = {}) {
+  if (looksLikeOhMyPiSystem(system, headers)) return false
   const text = systemToText(system)
   if (!text) return false
   if (/x-anthropic-billing-header:/i.test(text)) return true
@@ -1642,10 +1656,10 @@ export function inboundHasOpenAIToolShape(body = {}) {
 export function isOfficialClaudeCodeTraffic(headers = {}, body = {}) {
   const ua = String(headers['user-agent'] || headers['User-Agent'] || '').trim()
   if (!isOfficialClaudeUa(ua) || !CLAUDE_CLI_UA_RE.test(ua)) return false
-  if (looksLikeOhMyPiSystem(body?.system)) return false
+  if (looksLikeOhMyPiSystem(body?.system, headers)) return false
   if (!isValidOfficialUserId(body?.metadata?.user_id)) return false
   if (inboundHasOpenAIToolShape(body)) return false
-  return looksLikeOfficialClaudeSystem(body?.system)
+  return looksLikeOfficialClaudeSystem(body?.system, headers)
 }
 
 /**
@@ -1855,6 +1869,8 @@ function applyTemplatePersona(
   const messages = Array.isArray(body.messages) ? body.messages : []
   const zero = preset === 'zero'
   const blocks = resolvePersonaTemplate(preset, templates)
+  const withEnv = presetFlagEnabled(switches, 'persona_env_presets', preset)
+  const callerOptions = { preserveEnvironment: !withEnv }
   const usesEnv = blocks.some((block) => extractTemplateVars(block?.text).includes('env'))
   const { env, sourceTexts, facts } = personaEnvForBody(body, {
     identity,
@@ -1862,7 +1878,7 @@ function applyTemplatePersona(
     overwrite: false,
     forceTimezone: zero || usesEnv,
   })
-  const harness = thirdPartyClientPrompt(body.system)
+  const harness = thirdPartyClientPrompt(body.system, callerOptions)
   if (harness) env.timezone = requiredTimezone(identity, facts)
   env.timezone = String(env.timezone || '').trim() || requiredTimezone(identity, facts)
   // official always keeps the extracted prompt. A stored template that never
@@ -1874,10 +1890,10 @@ function applyTemplatePersona(
   const leftover = harness
     ? ''
     : usesCallerAgent
-      ? parkableSystemTexts(body.system)
+      ? parkableSystemTexts(body.system, callerOptions)
           .filter((text) => !looksLikeAgentPrompt(text))
           .join('\n\n')
-      : collectCallerSystemAppend(body)
+      : collectCallerSystemAppend(body, callerOptions)
   const modelId = model || body.model
   const midSystem = leftoverGoesToMidSystem(preset, modelId)
   let system = renderPersonaTemplate(
@@ -1889,7 +1905,7 @@ function applyTemplatePersona(
       env,
       sourceTexts,
       agentStanding: agentStandingVar(switches, preset),
-      withEnv: presetFlagEnabled(switches, 'persona_env_presets', preset),
+      withEnv,
       callerAgent,
       agentOfficial: harness,
       timezoneOnlyEnv: Boolean(harness),
@@ -1933,11 +1949,6 @@ export function applyCrsUnofficialPersona(
   const resolved = normalizePersonaMode(mode ?? fromFile?.mode)
   // Read the caller's agent prompt before stripLeakySystem drops it as known official text.
   const rawCallerAgent = extractCallerAgentPrompt(body.system)
-  const cleaned = {
-    ...body,
-    system: stripLeakySystem(body.system),
-    messages: sanitizeUnofficialMessages(body.messages),
-  }
   const fileSettings = personaTemplateSettingsFromRoutingFile(routingFile)
   const hopPreset = mode != null ? personaPresetFromHopMode(mode) : null
   const templateSettings = hopPreset
@@ -1945,6 +1956,14 @@ export function applyCrsUnofficialPersona(
     : mode == null
       ? fileSettings
       : { ...fileSettings, explicit: false, preset: personaPresetFromLegacyMode(resolved) }
+  const preserveEnvironment =
+    personaUsesTemplate(templateSettings) &&
+    !presetFlagEnabled(templateSettings.switches, 'persona_env_presets', templateSettings.preset)
+  const cleaned = {
+    ...body,
+    system: stripLeakySystem(body.system, { preserveEnvironment }),
+    messages: sanitizeUnofficialMessages(body.messages),
+  }
   if (personaUsesTemplate(templateSettings)) {
     return applyTemplatePersona(cleaned, {
       preset: templateSettings.preset,

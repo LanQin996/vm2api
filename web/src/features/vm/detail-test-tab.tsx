@@ -40,6 +40,7 @@ type VmTestTabProps = {
   onReasoningEffortChange: (value: string) => void
   onTest: () => void
   onRefreshModels: () => void
+  canRefreshModels?: boolean
   schedule?: React.ReactNode
 }
 
@@ -81,6 +82,7 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
     onReasoningEffortChange,
     onTest,
     onRefreshModels,
+    canRefreshModels = true,
     schedule,
   } = props
 
@@ -179,13 +181,15 @@ export function VmTestPanel(props: VmTestTabProps & { className?: string }) {
             <Button onClick={onTest} disabled={running} loading={running}>
               开始测试
             </Button>
-            <Button
-              variant='ghost'
-              onClick={onRefreshModels}
-              disabled={modelsRefreshing}
-            >
-              刷新列表
-            </Button>
+            {canRefreshModels ? (
+              <Button
+                variant='ghost'
+                onClick={onRefreshModels}
+                loading={modelsRefreshing}
+              >
+                刷新列表
+              </Button>
+            ) : null}
           </div>
           {schedule}
         </CardContent>

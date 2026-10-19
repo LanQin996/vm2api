@@ -12,13 +12,14 @@ import {
   hasRefreshPresence,
   clearVmQuotaRestriction,
   markVmRestriction,
+  expiresAtToMs,
 } from '../oauth/oauth-credentials.mjs'
 import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
-import { isLeftoverQuotaScheduleOff } from '../pool/availability.mjs'
+import { isCredentialRefreshFailed, isLeftoverQuotaScheduleOff } from '../pool/availability.mjs'
 import { manualScheduleLevelOf, parseScheduleLevelInput } from '../pool/credential-weight.mjs'
 import { vmQuotaOverrideOf } from '../pool/vm-quota-override.mjs'
 import { activeHoursOf, parseActiveHoursInput } from '../pool/active-hours.mjs'
-import { normalizeOwnerId, vmOriginOf } from '../admin/resource-owner.mjs'
+import { normalizeOwnerId, vmOriginOf, vmOwnerId, VM_ORIGIN } from '../admin/resource-owner.mjs'
 import { isCodexVm, normalizeVmKind } from './vm-kind.mjs'
 import { canClaudeResetCredits } from '../oauth/credential-mode.mjs'
 import { validTimezone } from '../core/timezone.mjs'
@@ -26,7 +27,9 @@ import {
   extraFromCodexHeaders,
   extraToCodexSnapshot,
   buildCodexUsageView,
+  codexCreditsFromHeaders,
   codexQuotaPark,
+  hasSpendableCodexCredits,
 } from '../protocol/codex-usage.mjs'
 
 import { summarizeCodexSlot } from './codex-slot.mjs'
@@ -173,6 +176,7 @@ export function summarizeVm(vm, projectRoot = null, routing = null) {
           }
         : null,
     reset_credits: codex?.reset_credits || null,
+    codex_credits: codex?.credits || null,
     plan_type: codex?.plan_type || null,
     claude_reset_credits: kind.kind === 'codex' ? null : vm.claude_reset_credits || null,
   }
@@ -232,8 +236,14 @@ export function persistCodexUsage(
   const merged = { ...cached, ...(fromHeaders || {}), ...(extra || {}) }
   if (limitedUntil) {
     merged.codex_limited_until = new Date(limitedUntil).toISOString()
+    // The refusal outranks any credits reading until a newer one arrives.
+    delete vm.codex.credits
   } else {
-    const parked = codexQuotaPark({ ...merged, codex_limited_until: null }, now)
+    const credits = codexCreditsFromHeaders(headers || {}, now)
+    if (credits) vm.codex.credits = credits
+    const parked = codexQuotaPark({ ...merged, codex_limited_until: null }, now, {
+      waiveWindowCaps: hasSpendableCodexCredits(vm, now),
+    })
     if (parked.limited) merged.codex_limited_until = new Date(parked.until).toISOString()
     else delete merged.codex_limited_until
   }
@@ -463,7 +473,14 @@ export function vmHasClaudeCredential(vm) {
  */
 export function vmHasSchedulableCredential(vm, projectRoot = null) {
   if (!vm) return false
-  if (!isCodexVm(vm)) return vmHasClaudeCredential(vm)
+  if (!isCodexVm(vm)) {
+    if (!vmHasClaudeCredential(vm)) return false
+    // An expired access token with a recorded refresh failure is not a live
+    // credential: the worker cannot rotate it, every hop will answer 401.
+    const expMs = expiresAtToMs(vm.claude?.expires_at)
+    if (expMs && expMs > Date.now()) return true
+    return !isCredentialRefreshFailed({ vm, now: Date.now() })
+  }
   const codex = summarizeCodexSlot(projectRoot, vm)
   return !!(codex?.has_token || codex?.has_refresh)
 }
@@ -694,4 +711,24 @@ export function persistVmOwner(projectRoot, id, { ownerUserId = null, origin = n
   vm.updated_at = new Date().toISOString()
   atomicWriteJson(file, vm, { mode: 0o600 })
   return vm
+}
+
+/** Return administrator-assigned slots to the platform when their tenant is removed. */
+export function reclaimAssignedVms(projectRoot, ownerIds, { onError = null } = {}) {
+  const reclaimed = []
+  if (!ownerIds.size) return reclaimed
+  const dir = path.join(projectRoot, 'vms')
+  for (const name of listVmRecordFiles(dir)) {
+    try {
+      const vm = readJsonCached(path.join(dir, name))
+      if (!vm?.id || !ownerIds.has(vmOwnerId(vm)) || vmOriginOf(vm) !== VM_ORIGIN.adminAssigned) continue
+      // Keep credentials, quota cooldowns and the operator's scheduling switch intact.
+      persistVmOwner(projectRoot, vm.id, { ownerUserId: null, origin: VM_ORIGIN.platform })
+      reclaimed.push(vm.id)
+    } catch (error) {
+      if (!onError) throw error
+      onError(error, name)
+    }
+  }
+  return reclaimed
 }

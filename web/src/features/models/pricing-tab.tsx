@@ -36,6 +36,7 @@ import {
   pricingQueryOptions,
 } from '@/features/models/queries'
 import { RepriceDialog } from '@/features/models/reprice-dialog'
+import { type ModelsDevSyncResult, modelsDevSyncOutcome } from './page-messages'
 
 function modelsDevCopy(status: {
   fetched_at: string | null
@@ -214,9 +215,14 @@ export function PricingTab() {
 
   const sync = useMutation({
     mutationFn: () =>
-      api('/api/panel/pricing/sync', { method: 'POST', body: '{}' }),
-    onSuccess: async () => {
-      toast.success('已同步 models.dev')
+      api<ModelsDevSyncResult>('/api/panel/pricing/sync', {
+        method: 'POST',
+        body: '{}',
+      }),
+    onSuccess: async (data) => {
+      const out = modelsDevSyncOutcome(data)
+      if (out.ok) toast.success(out.text)
+      else toast.error(out.text)
       await invalidatePricing(qc)
     },
     onError: (error: Error) => toast.error(error.message),

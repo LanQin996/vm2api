@@ -20,6 +20,7 @@ import {
 import { EntryStrip } from './entry-strip'
 import { ModelAdvanced } from './model-advanced'
 import { ModelRow } from './model-row'
+import { resetConfirmText, syncConfirmText } from './page-messages'
 import {
   type BetaFilter,
   type CatalogMode,
@@ -266,7 +267,11 @@ export function ModelsPage() {
               <Button
                 variant='outline'
                 className='cursor-pointer'
-                onClick={() => sync.mutate()}
+                onClick={() => {
+                  const ask = syncConfirmText(dirty, ' Worker ')
+                  if (ask && !window.confirm(ask)) return
+                  sync.mutate()
+                }}
                 disabled={sync.isPending}
               >
                 {sync.isPending ? '同步中…' : '同步 Worker'}
@@ -275,7 +280,11 @@ export function ModelsPage() {
               <Button
                 variant='outline'
                 className='cursor-pointer'
-                onClick={() => syncGpt.mutate()}
+                onClick={() => {
+                  const ask = syncConfirmText(dirty, ' GPT ')
+                  if (ask && !window.confirm(ask)) return
+                  syncGpt.mutate()
+                }}
                 disabled={syncGpt.isPending}
               >
                 {syncGpt.isPending ? '同步中…' : '同步 GPT'}
@@ -285,14 +294,7 @@ export function ModelsPage() {
               variant='outline'
               className='cursor-pointer'
               onClick={() => {
-                if (
-                  dirty &&
-                  !window.confirm(
-                    '恢复官方默认模型矩阵？自定义开关与参数将丢失。'
-                  )
-                ) {
-                  return
-                }
+                if (!window.confirm(resetConfirmText(dirty))) return
                 reset.mutate()
               }}
               disabled={reset.isPending}

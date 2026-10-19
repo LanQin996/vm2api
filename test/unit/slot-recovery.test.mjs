@@ -94,6 +94,22 @@ test('diagnosis separates a missing credential from a dead kernel and busy from 
   assert.equal(healthy.first_failure, null)
 })
 
+test('diagnosis reports an expired refresh-failed credential as such', async () => {
+  const now = Math.floor(Date.now() / 1000)
+  const vm = {
+    id: 'vm-d4',
+    status: 'running',
+    schedulable: true,
+    claude: { has_access: true, has_refresh: true, expires_at: now - 6 * 3600, refresh_error: 'worker_output_invalid' },
+    proxy: SOCKS,
+  }
+  const root = project([vm])
+  const d = await diagnoseSlotServices(vm, { projectRoot: root, probes: healthyProbes() })
+  assert.equal(d.ok, false)
+  assert.equal(d.first_failure, 'credential')
+  assert.equal(d.checks[1].code, 'credential_refresh_failed')
+})
+
 test('Codex kernel: idle only when nothing listens and no child is tracked; other failures stay errors', async () => {
   const vm = { id: 'vm-gpt', status: 'running', platform: 'openai', family: 'codex', proxy: SOCKS }
   const root = project([vm])

@@ -9,6 +9,7 @@ import {
   atomicWriteJson,
   writeJsonIfChanged,
   withVmLock,
+  vmLockBusy,
   readFileCached,
   invalidateReadCache,
   VM_READ_CACHE_MAX_ENTRIES,
@@ -66,6 +67,49 @@ test('withVmLock serializes writers on the same key (no lost update)', async () 
   await Promise.all([bump(), bump(), bump(), bump(), bump()])
   assert.equal(JSON.parse(fs.readFileSync(p, 'utf8')).n, 5)
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('VM busy state includes queued work, survives rejection, and clears when the queue drains', async () => {
+  const key = 'node-edit-busy-test'
+  let releaseFirst
+  let releaseSecond
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve
+  })
+  const secondGate = new Promise((resolve) => {
+    releaseSecond = resolve
+  })
+  assert.equal(vmLockBusy(key), false)
+  const first = withVmLock(key, async () => {
+    await firstGate
+    throw new Error('operation failed')
+  })
+  const second = withVmLock(key, async () => {
+    assert.equal(vmLockBusy(key), true)
+    await secondGate
+    return 'done'
+  })
+  assert.equal(vmLockBusy(key), true, 'busy before the first callback starts')
+  assert.equal(vmLockBusy('another-vm'), false)
+  releaseFirst()
+  await assert.rejects(first, /operation failed/)
+  assert.equal(vmLockBusy(key), true, 'a failed task must not hide queued work')
+  releaseSecond()
+  assert.equal(await second, 'done')
+  assert.equal(vmLockBusy(key), false)
+})
+
+test('a synchronously throwing VM task releases its busy state and allows another task', async () => {
+  const key = 'node-edit-sync-error'
+  await assert.rejects(
+    withVmLock(key, () => {
+      throw new Error('sync failure')
+    }),
+    /sync failure/,
+  )
+  assert.equal(vmLockBusy(key), false)
+  assert.equal(await withVmLock(key, () => 42), 42)
+  assert.equal(vmLockBusy(key), false)
 })
 
 test('getVm returns null for missing files and throws on corrupt JSON or I/O', () => {

@@ -43,6 +43,12 @@ import {
   type WrapKernelPayload,
   type WrapSyncReport,
 } from '@/features/wrap/queries'
+import {
+  slotFailureLabel,
+  syncItemFailed,
+  syncReportFromError,
+  syncReportSummary,
+} from './sync-report'
 
 const MAX_KERNEL_UPLOAD_BYTES = 32 * 1024 * 1024
 
@@ -151,8 +157,12 @@ function hopProgressValue(job: HopJob) {
 function slotSyncFailed(report: WrapSyncReport, id: string) {
   const item = report.items?.find((row) => row.id === id) || report.items?.[0]
   if (!item) return report.ok === false
-  if (item.ok === false) return true
-  return item.kernel?.ok === false
+  return syncItemFailed(item)
+}
+
+function slotFailure(report: WrapSyncReport, id: string) {
+  const item = report.items?.find((row) => row.id === id) || report.items?.[0]
+  return item ? slotFailureLabel({ ...item, id }) : id
 }
 
 function HopProgress({ job }: { job: HopJob }) {
@@ -311,9 +321,14 @@ export function WrapSamplePage() {
         })
         try {
           const report = await syncWrapSample({ ids: [id], restart })
-          if (slotSyncFailed(report, id)) failed.push(id)
-        } catch {
-          failed.push(id)
+          if (slotSyncFailed(report, id)) failed.push(slotFailure(report, id))
+        } catch (error) {
+          const report = syncReportFromError(error)
+          failed.push(
+            report
+              ? slotFailure(report, id)
+              : `${id}（${error instanceof Error ? error.message : '失败'}）`
+          )
         }
       }
       if (!alive()) return
@@ -389,7 +404,18 @@ export function WrapSamplePage() {
       toast.success(`已下载 ${tag}${cli}${cc}${crag}。尚未铺到槽`)
       await invalidate()
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: async (error: Error) => {
+      const report = syncReportFromError(error)
+      toast.error(
+        report
+          ? `${error.message}：${syncReportSummary(report)}`
+          : error.message
+      )
+      if (report) {
+        setReleaseOpen(false)
+        await invalidate()
+      }
+    },
   })
   const dataplane = useMutation({
     mutationFn: (next: 'wrap' | 'cc' | 'crag') => {
@@ -413,9 +439,7 @@ export function WrapSamplePage() {
       setPendingDataplane(null)
       const failed = Number(report.failed_count || 0)
       if (failed) {
-        toast.error(
-          `已切 ${next}，${report.ok_count || 0}/${report.total || 0} 槽成功`
-        )
+        toast.error(`已切 ${next}，${syncReportSummary(report)}`)
       } else {
         toast.success(
           next === 'crag'
@@ -425,9 +449,18 @@ export function WrapSamplePage() {
               : '已切换到 cli-node + kernel'
         )
       }
-      await invalidate()
     },
-    onError: (error: Error) => toast.error(error.message),
+    onError: (error: Error, next) => {
+      // 部分槽失败时网关回 400/503，正文仍带逐槽结果；数据面已经写入，按部分成功处理。
+      const report = syncReportFromError(error)
+      if (report) {
+        setPendingDataplane(null)
+        toast.error(`已切 ${next}，${syncReportSummary(report)}`)
+      } else {
+        toast.error(error.message)
+      }
+    },
+    onSettled: () => invalidate(),
   })
   const uploadCrag = useMutation({
     mutationFn: (file: File) => uploadCragKernelBinary(file),

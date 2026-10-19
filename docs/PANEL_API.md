@@ -4,6 +4,8 @@
 
 登录：`POST /api/panel/login` `{ username, password }` → token + Cookie `kin_panel_token`（7 天，HttpOnly）。`POST /api/panel/logout` 撤销。`GET /api/panel/me` → `{ user, role, views, capabilities, version }`。`GET/PUT /onboarding` 为首配进度（见「引导」）。
 
+管理台前端固定 `credentials: include`。页面与 API **不同源** 时，须在 API 侧配置受信 Origin：`PANEL_CORS_ORIGINS`（空格或逗号分隔，如 `https://panel.example.com`）和/或 `PUBLIC_BASE_URL` 的 origin。匹配时响应回显该 `Origin`、`Access-Control-Allow-Credentials: true` 与 `Vary: Origin`；未列入的 Origin 仍为 `Access-Control-Allow-Origin: *` 且**不带** credentials（浏览器会拒绝跨源 Cookie 登录）。预检与 JSON/SSE 共用同一 methods/headers 列表（含 `PATCH`）。
+
 `/admin/*` 仅 master / admin 角色。恢复备份期间协议口 503。
 
 ## RBAC
@@ -46,9 +48,11 @@
 | GET | `/users` | 列表（含 `vm_create_quota`） |
 | POST | `/users` | `{ username, password, role, enabled, vm_create_quota? }` |
 | PATCH | `/users/:id` | 改角色/密码/启用/配额；改密会撤销该用户其它会话 |
-| DELETE | `/users/:id` | |
+| DELETE | `/users/:id` | 软删除用户并撤销会话；将其 `admin_assigned` VM 收回平台池，保留调度开关与额度冷却；`user_created` VM 保持原归属，不自动转入平台池 |
 | PATCH | `/vms/:id/owner` | admin：`{ user_id }` 分配，`{ user_id: null }` 收回（仅 `admin_assigned`） |
 | GET | `/billing` | 用户计费汇总。`from`/`until`/`group_by=vm|key`。user 隐式只看自己；admin 可 `user_id=` |
+
+启动时会修复旧版本遗留的已删除用户 VM 归属：仅收回 `admin_assigned`（旧记录未写 `origin` 时按已有归属规则推断），不收回租户自建 VM、停用用户或无用户记录的 VM。修改经 `vms/*.json` 写入并同步到 SQLite，不重启槽位。
 
 
 用户名 `^[a-zA-Z][a-zA-Z0-9._-]{1,31}$`，密码 8–128。`vm_create_quota` 整数 0–100，默认 0。
@@ -202,13 +206,45 @@ Claude PATCH `max_sessions` 返回 400 `claude_max_sessions_forbidden`；OpenAI 
 
 `PUT` 热更新。`tiers` 必须回传：该块是整体替换而非 patch，缺字段即置空。Claude 分档保存只传播到未手动覆盖的 Claude 槽。OpenAI `codex.quota` 按字段合并，不覆盖其它 Codex 协议/客户端配置，只更新跟随的 OpenAI 限额。
 
+### OpenAI 传输与隐私
+
+设置页的「调度 → OpenAI」和「槽位 → OpenAI」进入同一个 `#/settings/openai` 页面。GPT 协议、客户端准入、目录版本及全局配额集中在这里；Claude 配置仍在原页。保存使用现有 `PUT /api/panel/routing`。
+
+| 字段 | 默认 | 生效范围 |
+|------|------|----------|
+| `websocket.enabled` | `true` | 全局推理 WS 总闸，不影响面板终端或集群连接 |
+| `codex.websocket.enabled` | `true` | GPT 推理 WS 子闸；必须与总闸同时开启 |
+| `codex.upstream_transport` | `prefer_websocket` | `prefer_websocket` 或 `http`；入站与上游传输不是同一段连接 |
+| `codex.user_agent` | `codex_cli_rs/0.160.0 (linux x86_64)` | 上游客户端画像，不读取下游用户的系统信息 |
+| `codex.catalog_client_version` | `auto` | 模型目录同步的客户端版本，与推理 UA 分开 |
+| `codex.client_features.enabled` | `false` | 显式开启后上送槽位独立安装 UUID 与官方 `client_metadata`；不使用 VM/硬件指纹 |
+| `codex.analytics.enabled` | `false` | 显式开启后独立上报运行环境 Analytics，不是推理成功的前提 |
+
+任一 WS 闸关闭时，新 WS 握手被拒绝，HTTP/SSE 入口继续可用且上游强制 HTTP。传输、UA 与隐私选项通过每次内部 envelope 的 `options` 生效，不为修改这些设置而重启共享 kernel；已开始的请求保留其选定策略。
+
+安装 UUID 存在槽位 `run/codex-installation-id`，不取 MAC、主机名、machine-id 或调用方安装 ID。每次 envelope 的 `options.installation_id` 使用该文件的 UUID，覆盖运行中 kernel 的旧启动身份；非法安装 ID 在拨号前拒绝，避免复用旧进程时重新上传 VM 指纹。关闭安装元数据时，不生成 `client_metadata`，并从调用方的 turn 元数据移除安装 ID；会话路由所需信息保留。
+
+Analytics 按官方 [`codex_thread_initialized`](https://github.com/openai/codex/blob/main/codex-rs/analytics/src/events.rs) 的事件结构，向 `https://chatgpt.com/backend-api/codex/analytics-events/events` 单独 POST，使用所选账号鉴权并沿用该槽出口。包含真实 kernel 版本、kernel 所在宿主的系统/系统版本/架构、会话标识、模型和 Unix 秒级时间；不上传提示词、文件内容、仓库路径、主机名或 MAC。每进程每账号/会话去重（最多保留 4096 个键），队列最多 32 条，单次上传最多 10 秒，失败只记录状态、不重放推理、不重试上报。未启用时零 Analytics 请求。OTEL/Statsig 与 Sentry 反馈不随这个开关启用。官方发送实现见 [`analytics/src/client.rs`](https://github.com/openai/codex/blob/main/codex-rs/analytics/src/client.rs)。
+
+### 通用路由选项
+
 `failover.stream_idle_timeout_ms`（毫秒，30 秒–60 分钟，默认 180 秒）：上游流连续无事件即判超时；网关流路径、各槽 `kernel.json` 的 `idle_timeout_seconds` 与 job 看门狗共用。优先级：面板该字段 → 启动时写入 `cfg.limits.stream_idle_timeout_ms` → 控制面 `.env` 的 `KIN_STREAM_IDLE_TIMEOUT` → 180 秒。保存后热写各槽 `kernel.json`；运行中 kernel 在无任务时自动重启以读取新看门狗值。
 
 `compatibility.persona_preset`（`official` / `official_full` / `zero` / `custom`）和 `compatibility.cache_ttl`（`5m` / `1h`）保存后投影到每个 Claude 槽的 `vms/<id>/run/kernel.json`：`persona_preset`、`system_layout`（`zero`→`zero`，其余→`identity`）、`default_cache_ttl`。响应 `kernel_persona.updated` 是本次字节有变化的槽数。`PATCH /vms/:id` 的 `timezone` / `timezone_follow_proxy` 另把 `timezone` 热写进该槽 `kernel.json`，`timezone_sync.kernel_hot` 表示文件有变化。容器 `TZ` 不在这次写入里。Codex 槽不写。
 
+`compatibility.cch_enabled`（布尔，默认 `true`，设置 → 协议）：开启时统一给出站 billing 补齐 `cch` 并计算真实五位摘要，不按试用 / 订阅状态分流；关闭时仍补齐该参数，但固定为 `cch=00000;`（5 个 0），跳过摘要计算。Node 从当前 routing 对象读取，CLI 在最终 SDK fetch 时读取 `kernel.json.cch_enabled`，不能仅凭五零占位判断是否应密封。native hop 仅保留占位，最终紧凑 SDK JSON 才计算真实摘要；HTTP hop 在最终 Node 请求体密封。密封只替换 billing 参数，不改提示词里的同名文本。billing 的版本、entrypoint 与固定首轮索引策略不随此开关改变，Claude Messages 的 2.1.296 与 Go OAuth / 遥测的 2.1.293 标准 UA 保持各自值。
+
+`inference.session_idle_ttl_seconds`（整数 `1`–`86400`，默认 `600`，设置 → 协议）：投影为 `kernel.json.session_idle_ttl_seconds`，与 CCH 设置集中在同一页，账号池不再重复显示。原生 CLI 槽从最后一次任务完成开始计算空闲时间；到期后由既有巡检释放 session / sticky pin，活动任务不回收。修改不会重置已有空闲计时，也不重启 kernel / CLI；缩短期限可在下一轮巡检释放已空闲足够久的槽。它不是 `sticky.ttl_seconds` 的账号绑定有效期，也不是流空闲超时。
+
+两个新键保存后沿既有本机 / 节点配置同步路径热写，不触发重启；首次加载支持这些字段的新 kernel / CLI ELF 仍需按正常升级流程排空并加载新产物。`/api/panel/routing` 由 Node 校验和持久化，Go `api-kernel` 只转发 API-key 上游请求，不另设面板字段 schema。
+
+内置 `official` / `official_full` 模板及旧模板的自有 agent 回填只生成 `{type: "ephemeral", ttl: "1h"}`，不自动附加 `scope: "global"`（#536）。调用方或自定义模板显式提供的 scope 不在此处全局删除；不新增参数级 400 的换号或重试。
+
 `compatibility.agent_standing`（字符串，≤2000）与四个按档布尔 map `agent_standing_presets` / `agent_standing_hide_presets` / `persona_env_presets` / `persona_hide_presets` 控制常驻约束、约束遮罩、Environment 和整档 usage 遮罩，不投影到 `kernel.json`，Node 每次请求热读。`GET /api/panel/persona/preview-vars?timezone=<IANA>` 返回 system提示词页预览用的真实模板常量（身份句、官方 agent 全文、按该时区渲染的 Environment），不含 billing；时区非法或缺省按 UTC。
 
 `agent_standing_presets` 缺 map/key 默认关闭，只有显式 `true` 启用；`agent_standing` 内置文本保持不变。约束遮罩与 Environment 开关缺省仍为开启，整档遮罩仍回落既有模板/旧设置。保存显式开启的档位不改变其他缺省关闭的档位。
+
+`persona_env_presets[当前档]=false` 同时关闭生成的 `env`、`env_timezone_only`、`env_official` 和槽位 `timezone` 模板变量；官方完整档的 Environment 不再固定开启。空的生成环境块直接省略，不保留 cache / 零宽占位。调用方或自定义模板字面提供的环境和时区原样使用；关闭时 native 不剥掉调用方 Environment，HTTP 不按所选槽位改写其时区。控制台开关、预览和 Node 出站使用同一按档规则。
 
 ### OpenAI 全局额度
 
@@ -393,9 +429,11 @@ Claude 槽测试走官方 CC 入站（`/v1/messages`）。GPT/Codex 槽测试走
 
 `PUT /proxies/config` 的 `follow_proxy_timezone`（默认 true）：绑定一条代理后，该槽采用出口节点的 IANA 时区（persona `# Environment`、指纹、容器 `TZ`）。操作者在创建时或 `PATCH /vms/:id` 手动指定过时区的槽不受影响。
 
-`PUT /proxies/config` 的 `dns_primary` 保持字符串（默认 `auto`）：远程 SOCKS5 透明出口优先使用的 DNS 上游，可选 `auto`、`https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，或自定义 HTTPS DoH URL（如 `https://cloudflare-dns.com/dns-query`、`https://[2606:4700:4700::1111]/dns-query`）。URL 可包含路径、查询参数和 1–65535 的显式端口，主机须为有效域名或 IP literal；不允许 userinfo、fragment、空白、反斜杠或原始逗号（上游链用逗号分隔，参数中的逗号须编码为 `%2C`）。非法值返回 `invalid_dns_primary`，不改动原设置。所选上游排第一，其余内置上游按默认顺序排在其后作为自动 fallback；自定义 URL 后依次为 `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，`auto` 直接用 kin-egress 内置顺序。DoH 经 SOCKS5 出口访问，域名由 SOCKS5 代理解析；`IP:53` 为经 SOCKS 转发的 DNS-over-TCP，出口到 DNS 服务器之间明文。变更后重载本机已绑定的 `kin-egress`，不重建槽位，响应 `egress` 数组报告各本机出口重载结果；集群节点出口在下次槽位启动 / 重载时读取新设置。本地直连出口不使用此设置。
+`PUT /proxies/config` 的 `dns_primary` 保持字符串（默认 `auto`）：远程 SOCKS5 透明出口优先使用的 DNS 上游，可选 `auto`、`https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，或自定义 HTTPS DoH URL（如 `https://cloudflare-dns.com/dns-query`、`https://[2606:4700:4700::1111]/dns-query`）。URL 可包含路径、查询参数和 1–65535 的显式端口，主机须为有效域名或 IP literal；不允许 userinfo、fragment、空白、反斜杠或原始逗号（上游链用逗号分隔，参数中的逗号须编码为 `%2C`）。非法值返回 `invalid_dns_primary`，不改动原设置。所选上游排第一，其余内置上游按默认顺序排在其后作为自动 fallback；自定义 URL 后依次为 `https://1.1.1.1/dns-query`、`https://8.8.8.8/dns-query`、`8.8.8.8:53`、`1.1.1.1:53`，`auto` 直接用 kin-egress 内置顺序。DoH 经 SOCKS5 出口访问，域名由 SOCKS5 代理解析；`IP:53` 为经 SOCKS 转发的 DNS-over-TCP，出口到 DNS 服务器之间明文。变更后重载本机已绑定的 `kin-egress`（先 SIGTERM 等待旧进程退出并释放监听端口，超时后 SIGKILL，再启动新进程；启动失败时 `egress` 数组报告错误），不重建槽位；集群节点出口在下次槽位启动 / 重载时读取新设置。本地直连出口不使用此设置。
 
 `PUT /proxies/config` 的 `dns_disable_svcb_https` 为布尔值（默认 `false`），Web「代理 → 管理」显示「关闭 DNS type 64 / 65」开关。开启后向 SOCKS5 透明出口下发 DNS 覆写参数 `dns_empty_types: [64, 65]`：SVCB（64）和 HTTPS（65）查询返回 `NOERROR` 空答案，不访问上游；A、AAAA 等其它查询正常转发。关闭后移除覆写参数，恢复正常查询。非布尔值返回 `invalid_dns_disable_svcb_https`。保存后重载本机已绑定出口，`egress` 数组报告结果；集群出口在下次槽位启动 / 重载时生效，本地直连出口不使用此设置。
+
+kin-egress 的 UDP DNS 与 TCP 一致：上游全部不可达或解析失败时向客户端返回 `SERVFAIL`（保留查询 ID），不再让 UDP 客户端空等超时；UDP 接收缓冲支持最大 65535 字节报文。
 
 自定义 URL 必须以小写 `https://` 开头，百分号编码必须有效；域名大小写不受限制。设置会保留原 URL 字符串，不做隐式改写。
 
@@ -458,6 +496,8 @@ sessionKey / 授权码导入必须走该槽 SOCKS5。
 | POST | `/cluster/nodes/probe` | `{ host, port, username, auth_type: key\|password, private_key?, passphrase?, password?, jump_node_id? }` → `{ host_key, docker, uname, existing_id }`，拨一次即断 |
 | POST | `/cluster/nodes` | probe 同体 + `host_key_sha256`（必须，TOFU 固定）+ `host_key_alg`、`label` |
 | GET / DELETE | `/cluster/nodes/:id` | 删除前不能有节点经它跳转；远端容器不动 |
+| PATCH | `/cluster/nodes/:id` | 编辑名称或 SSH 配置，必须带 `expected_updated_at`（取列表中的 `updated_at`）；返回更新后的公开节点信息 |
+| POST | `/cluster/nodes/:id/probe` | 与 PATCH 同体；使用已保存的未更换凭证及原主机指纹测试候选配置，不保存、不切断原连接；返回 `{ host_key, docker, vm_count, dependent_count }` |
 | POST | `/cluster/nodes/:id/reconnect` | 清掉 `error` 与退避，立刻重连 |
 | POST | `/cluster/nodes/:id/shell-ticket` | 30 秒一次性终端票据 |
 | WS | `/cluster/nodes/:id/shell?ticket=&cols=&rows=` | 客户端发 `{"t":"d","d":"…"}` 输入、`{"t":"r","c":列,"r":行}` 改尺寸；服务端二进制帧为终端输出，文本帧 `{"t":"exit"\|"error"}` |
@@ -470,6 +510,10 @@ sessionKey / 授权码导入必须走该槽 SOCKS5。
 
 - 链路：keepalive 10s × 3；断开后 1s 起指数退避（±20% 抖动，封顶 60s）。**指纹不符 / 认证失败不自动重试**，停在 `error` 等人工重连。
 - 凭证（私钥、口令、密码）存 `cluster_nodes`，设了 `VM2API_DB_SECRET` 即 AES-256-GCM 加密；任何响应都不回传。
+- 编辑只接受 `label`、`host`、`port`、`username`、`auth_type`、`password`、`private_key`、`passphrase` 与 `expected_updated_at`。仅传改动字段；版本不匹配返回 `409 node_edit_conflict`，重新读取后再编辑。节点 ID、创建时间、主机指纹和跳板配置不可通过此接口修改。
+- 仅改名无需 SSH 连接，也不重连。SSH 配置保存时服务端会重新验证，不能以先前 probe 成功代替：先使用原指纹建立候选连接，验证成功再保存并接管原链路；失败保留原配置和连接。已有终端和转发连接可能在切换时断开，远端 VM 容器不会被重建。这里只修改控制面保存的连接配置，不修改远端 sshd、密码或 authorized_keys。
+- 省略凭证字段表示保留。切换认证方式必须提供新密码或新私钥，并清理旧方式的凭证；新私钥不继承旧私钥的口令，`passphrase: ""` 表示清空。空密码/空私钥不是“保持不变”，会校验失败；响应不返回凭证。
+- 已有 VM 的节点不能修改登录用户（`node_username_in_use`）。候选连接必须仍能访问现有 VM 容器、挂载目录及匹配的 UID/GID（否则 `node_runtime_mismatch`）；不用于将已有节点迁移到另一台 VPS。被其他节点用作跳板、正在安装 Docker、构建镜像、处理调度请求或有 `withVmLock` 操作（如 VM 重置）尚未完成时拒绝修改连接配置，仍可改名。主机密钥轮换、跳板拓扑修改和 VM 迁移不在此接口范围。
 - 本机 Docker 桥：每个节点在 `<data>/cluster/<id>/docker.sock`（0600）监听，`docker -H unix://…/docker.sock ps` 直接操作远端 daemon。数据目录所在文件系统不支持 unix socket（如 WSL `/mnt/*`）时设 `VM2API_CLUSTER_SOCKET_DIR`。
 
 ## 管理口（master）

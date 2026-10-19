@@ -6,13 +6,21 @@ import { normalizeOpenAIQuotaPolicy } from '../pool/openai-quota-policy.mjs'
 
 export { isCodexVm, normalizeVmKind } from '../vm/vm-kind.mjs'
 
-export const CODEX_PROTOCOLS = Object.freeze(['openai.responses', 'openai.chat', 'openai.completions'])
+export const DEFAULT_CODEX_USER_AGENT = 'codex_cli_rs/0.160.0 (linux x86_64)'
+export const CODEX_UPSTREAM_TRANSPORTS = Object.freeze(['prefer_websocket', 'http'])
+
+export const DEFAULT_INFERENCE_WEBSOCKET = Object.freeze({ enabled: true })
 
 export const DEFAULT_CODEX_ROUTING = Object.freeze({
   enabled: true,
   // `auto` resolves the official Codex catalog client version at sync time,
   // falling back to 0.160.0 when the registry is unavailable.
   catalog_client_version: 'auto',
+  user_agent: DEFAULT_CODEX_USER_AGENT,
+  upstream_transport: 'prefer_websocket',
+  websocket: { enabled: true },
+  client_features: { enabled: false },
+  analytics: { enabled: false },
   protocols: {
     'openai.responses': { mode: 'native', enabled: true },
     'openai.chat': { mode: 'convert', enabled: true },
@@ -33,31 +41,109 @@ export const DEFAULT_CODEX_ROUTING = Object.freeze({
   quota: normalizeOpenAIQuotaPolicy(),
 })
 
+function typedError(message, code) {
+  const error = new TypeError(message)
+  error.code = code
+  return error
+}
+
+function asObject(raw) {
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : null
+}
+
+function normalizeEnabledToggle(raw, defaultEnabled) {
+  const src = asObject(raw) || {}
+  return { enabled: defaultEnabled ? src.enabled !== false : src.enabled === true }
+}
+
+export function normalizeInferenceWebsocket(raw = {}) {
+  return normalizeEnabledToggle(raw, true)
+}
+
+function normalizeUserAgent(raw) {
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : DEFAULT_CODEX_USER_AGENT
+}
+
+function normalizeUpstreamTransport(raw) {
+  return CODEX_UPSTREAM_TRANSPORTS.includes(raw) ? raw : 'prefer_websocket'
+}
+
+function validateEnabledToggle(raw, path, code) {
+  if (!asObject(raw)) throw typedError(`${path} 必须是对象`, code)
+  if (Object.prototype.hasOwnProperty.call(raw, 'enabled') && typeof raw.enabled !== 'boolean') {
+    throw typedError(`${path}.enabled 必须是布尔`, code)
+  }
+}
+
+/** PUT /api/panel/routing strict checks. Loaded files still go through normalize. */
+export function validateInferenceWebsocketPatch(body = {}) {
+  if (!asObject(body)) return
+  if (Object.prototype.hasOwnProperty.call(body, 'websocket')) {
+    validateEnabledToggle(body.websocket, 'websocket', 'invalid_websocket')
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'codex')) return
+  if (!asObject(body.codex)) throw typedError('codex 必须是对象', 'invalid_codex_websocket')
+  const codex = body.codex
+  if (Object.prototype.hasOwnProperty.call(codex, 'websocket')) {
+    validateEnabledToggle(codex.websocket, 'codex.websocket', 'invalid_codex_websocket')
+  }
+  if (Object.prototype.hasOwnProperty.call(codex, 'upstream_transport')) {
+    if (!CODEX_UPSTREAM_TRANSPORTS.includes(codex.upstream_transport)) {
+      throw typedError('codex.upstream_transport 必须是 prefer_websocket 或 http', 'invalid_upstream_transport')
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(codex, 'user_agent')) {
+    if (typeof codex.user_agent !== 'string' || !codex.user_agent.trim()) {
+      throw typedError('codex.user_agent 必须是非空字符串', 'invalid_user_agent')
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(codex, 'client_features')) {
+    validateEnabledToggle(codex.client_features, 'codex.client_features', 'invalid_client_features')
+  }
+  if (Object.prototype.hasOwnProperty.call(codex, 'analytics')) {
+    validateEnabledToggle(codex.analytics, 'codex.analytics', 'invalid_codex_analytics')
+  }
+}
+
+export function inferenceWebsocketEnabled(routing = {}) {
+  return asObject(routing.websocket)?.enabled !== false && asObject(routing.codex?.websocket)?.enabled !== false
+}
+
+export function computedUpstreamTransport(routing = {}) {
+  return inferenceWebsocketEnabled(routing) ? normalizeUpstreamTransport(routing.codex?.upstream_transport) : 'http'
+}
+
 export function normalizeCodexRouting(raw = {}) {
-  const protocols = { ...DEFAULT_CODEX_ROUTING.protocols, ...(raw.protocols || {}) }
+  const src = asObject(raw) || {}
+  const protocols = { ...DEFAULT_CODEX_ROUTING.protocols, ...(src.protocols || {}) }
   for (const key of Object.keys(protocols)) {
     const item = protocols[key] || {}
     const mode = ['native', 'convert', 'reject'].includes(item.mode) ? item.mode : 'reject'
     protocols[key] = { mode, enabled: item.enabled !== false && mode !== 'reject' }
   }
-  const clients = { ...DEFAULT_CODEX_ROUTING.clients, ...(raw.clients || {}) }
+  const clients = { ...DEFAULT_CODEX_ROUTING.clients, ...(src.clients || {}) }
   for (const [key, value] of Object.entries(clients)) {
     clients[key] = value === 'allow' ? 'allow' : 'reject'
   }
   return {
-    enabled: raw.enabled !== false,
+    enabled: src.enabled !== false,
     catalog_client_version:
-      typeof raw.catalog_client_version === 'string' && raw.catalog_client_version.trim()
-        ? raw.catalog_client_version.trim()
+      typeof src.catalog_client_version === 'string' && src.catalog_client_version.trim()
+        ? src.catalog_client_version.trim()
         : 'auto',
+    user_agent: normalizeUserAgent(src.user_agent),
+    upstream_transport: normalizeUpstreamTransport(src.upstream_transport),
+    websocket: normalizeEnabledToggle(src.websocket, true),
+    client_features: normalizeEnabledToggle(src.client_features, false),
+    analytics: normalizeEnabledToggle(src.analytics, false),
     protocols,
     convert: {
-      chat_to_codex: raw.convert?.chat_to_codex !== false,
-      completions_to_codex: raw.convert?.completions_to_codex !== false,
-      anthropic_to_codex: raw.convert?.anthropic_to_codex === true,
+      chat_to_codex: src.convert?.chat_to_codex !== false,
+      completions_to_codex: src.convert?.completions_to_codex !== false,
+      anthropic_to_codex: src.convert?.anthropic_to_codex === true,
     },
     clients,
-    quota: normalizeOpenAIQuotaPolicy(raw.quota),
+    quota: normalizeOpenAIQuotaPolicy(src.quota),
   }
 }
 

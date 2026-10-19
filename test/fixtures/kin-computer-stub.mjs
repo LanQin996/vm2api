@@ -37,7 +37,10 @@ function writeKvm(out, vmId) {
   const hostname = `wks${seed.slice(0, 14)}`
   const machine_id = seed.slice(16, 48)
   const uuidRaw = seed.slice(0, 32)
-  const uuid = `${uuidRaw.slice(0, 8)}-${uuidRaw.slice(8, 12)}-${uuidRaw.slice(12, 16)}-${uuidRaw.slice(16, 20)}-${uuidRaw.slice(20, 32)}`
+  const uuid =
+    process.env.KIN_COMPUTER_STUB_EMPTY_UUID === '1'
+      ? ''
+      : `${uuidRaw.slice(0, 8)}-${uuidRaw.slice(8, 12)}-${uuidRaw.slice(12, 16)}-${uuidRaw.slice(16, 20)}-${uuidRaw.slice(20, 32)}`
   fs.mkdirSync(out, { recursive: true })
   fs.writeFileSync(
     path.join(out, 'identity.json'),

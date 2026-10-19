@@ -144,7 +144,7 @@ test('empty unofficial system still writes the official full prompt', () => {
   assert.equal(out.system[0].cache_control, undefined)
   assert.equal(out.system[1].text, CRS_OFFICIAL_SYSTEM)
   assert.equal(out.system[2].text, CRS_OFFICIAL_AGENT_PROMPT)
-  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h', scope: 'global' })
+  assert.deepEqual(out.system[2].cache_control, { type: 'ephemeral', ttl: '1h' })
   assert.match(out.system[3].text, /# Text output/)
   assert.match(out.system[3].text, /# Environment/)
   assert.ok(!environmentSection(out.system[3].text).includes('Primary working directory'))
@@ -630,7 +630,7 @@ test('official_prompt keeps the caller agent prompt and leaves other system in s
   const agent = out.system.find((block) => String(block?.text || '').includes('# Doing tasks'))
   assert.ok(agent)
   assert.equal(agent.cache_control?.ttl, '1h')
-  assert.equal(agent.cache_control?.scope, 'global')
+  assert.equal(agent.cache_control?.scope, undefined)
   assert.equal(out.system.at(-1).text, '你是一个高速收费员。')
   const later = applyCrsUnofficialPersona(
     {
