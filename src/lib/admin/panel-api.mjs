@@ -6,6 +6,7 @@
  *   { ok: false, error: { type, code, message, ... } }
  */
 
+import { THINKING_DISPLAY_MODES } from '../protocol/thinking.mjs'
 import { readSlotProcessStatus } from '../vm/slot-process-status.mjs'
 import os from 'node:os'
 import path from 'node:path'
@@ -473,6 +474,19 @@ export function validatePersonaRoutingPatch(body = {}) {
   }
   if (Object.prototype.hasOwnProperty.call(compat, 'cch_enabled') && typeof compat.cch_enabled !== 'boolean') {
     problems.push('cch_enabled 必须是布尔')
+  }
+  if (Object.prototype.hasOwnProperty.call(compat, 'auto_compact_window') && compat.auto_compact_window != null) {
+    const windowTokens = Number(compat.auto_compact_window)
+    if (!Number.isInteger(windowTokens) || windowTokens < 100_000 || windowTokens > 1_000_000) {
+      problems.push('auto_compact_window 必须是 100000–1000000 的整数')
+    }
+  }
+  if (
+    compat.thinking_display != null &&
+    compat.thinking_display !== '' &&
+    !THINKING_DISPLAY_MODES.includes(String(compat.thinking_display).trim().toLowerCase())
+  ) {
+    problems.push(`thinking_display 必须是 ${THINKING_DISPLAY_MODES.join(' / ')}，收到 ${compat.thinking_display}`)
   }
   if (compat.cache_breakpoints != null) {
     const bp = compat.cache_breakpoints
@@ -1394,6 +1408,13 @@ export function buildUsage({ accountQuota, cfg, requestLog = null }) {
 function presentCompatibility(compat) {
   const out = compat && typeof compat === 'object' && !Array.isArray(compat) ? { ...compat } : {}
   out.cch_enabled = out.cch_enabled !== false
+  const display = String(out.thinking_display ?? '')
+    .trim()
+    .toLowerCase()
+  out.thinking_display = display === 'passthrough' ? 'passthrough' : 'summarized'
+  const windowTokens = Number(out.auto_compact_window)
+  out.auto_compact_window =
+    Number.isInteger(windowTokens) && windowTokens >= 100_000 && windowTokens <= 1_000_000 ? windowTokens : null
   return out
 }
 
@@ -1495,7 +1516,7 @@ function hostStats() {
     load1,
     load5,
     load15,
-    cpu_pct: Math.round(Math.min(100, (load1 / n) * 1000) / 10),
+    cpu_pct: Math.round(Math.min(1000, (load1 / n) * 1000)) / 10,
     mem_total: total,
     mem_free: free,
     mem_used: used,

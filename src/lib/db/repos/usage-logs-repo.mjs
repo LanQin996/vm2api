@@ -1059,18 +1059,28 @@ export class UsageLogsRepo {
         if (entry.expires_at <= cacheNow) this._billingStatsCache.delete(cacheKey)
       }
     }
-    if (cacheable) this._billingStatsCache.set(key, { value, expires_at: cacheNow + BILLING_STATS_CACHE_TTL_MS })
+    // Start the TTL after the expensive synchronous aggregation completes. On
+    // large databases the computation itself can exceed the TTL; anchoring the
+    // expiry at cache lookup time would make a freshly computed entry already
+    // stale and every refresh would scan the table again.
+    if (cacheable) this._billingStatsCache.set(key, { value, expires_at: Date.now() + BILLING_STATS_CACHE_TTL_MS })
     return value
   }
 
   _computeBillingStats({ accountWindows = null, now = Date.now() } = {}) {
     const todayStart = shanghaiDayStartIso()
-    const total = this._costSelect('', [])
-    const today = this._costSelect('WHERE created_at >= ?', [todayStart])
     const fiveHStart = new Date(now - WINDOW_5H_MS).toISOString()
     const sevenDStart = new Date(now - WINDOW_7D_MS).toISOString()
     const accountsTotal = this.costByAccount()
     const accountsToday = this.costByAccount({ since: todayStart })
+    // The per-account queries already cover every row. Re-sum them for the
+    // global buckets instead of scanning the entire usage table two more times.
+    // This matters on multi-GB databases where each synchronous full scan also
+    // blocks unrelated HTTP requests on the Node event loop.
+    const totalBucket = sumCostBuckets(accountsTotal)
+    const todayBucket = sumCostBuckets(accountsToday)
+    const total = { ...totalBucket, ...cacheHitStats(totalBucket) }
+    const today = { ...todayBucket, ...cacheHitStats(todayBucket) }
     const keyOf = (a) => a.account_id + '\0' + (a.vm_id || '')
     const todayById = new Map(accountsToday.map((a) => [keyOf(a), a]))
     const aligned = Array.isArray(accountWindows) && accountWindows.length > 0

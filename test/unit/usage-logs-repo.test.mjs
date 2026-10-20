@@ -188,6 +188,31 @@ test('billingStats reuses identical panel snapshots but separates account window
   }
 })
 
+test('billingStats TTL starts after a slow aggregation finishes', () => {
+  const { db, repo } = freshDb()
+  const realNow = Date.now
+  try {
+    let clock = 1_000_000
+    Date.now = () => clock
+    let computes = 0
+    const compute = repo._computeBillingStats.bind(repo)
+    repo._computeBillingStats = (opts) => {
+      computes++
+      clock += 20_000 // Simulate a scan slower than the 10-second cache TTL.
+      return compute(opts)
+    }
+    const first = repo.billingStats()
+    assert.equal(repo.billingStats(), first)
+    assert.equal(computes, 1)
+    clock += 10_001
+    repo.billingStats()
+    assert.equal(computes, 2)
+  } finally {
+    Date.now = realNow
+    db.close()
+  }
+})
+
 test('billingStats rate-limits maintenance backfill independently of cache keys', () => {
   const { db, repo } = freshDb()
   try {
@@ -200,6 +225,35 @@ test('billingStats rate-limits maintenance backfill independently of cache keys'
     repo.billingStats({ accountWindows: [{ account_id: 'acc-1', vm_id: 'vm-a' }] })
     repo.billingStats({ accountWindows: [{ account_id: 'acc-2', vm_id: 'vm-a' }] })
     assert.equal(backfills, 1)
+  } finally {
+    db.close()
+  }
+})
+
+test('billingStats derives global totals from account aggregates without duplicate full scans', () => {
+  const { db, repo } = freshDb()
+  try {
+    seed(repo, [
+      { account_id: 'acc-1', vm_id: 'vm-a', input_tokens: 20, cache_read_tokens: 80, total_cost: 1 },
+      { account_id: 'acc-2', vm_id: null, input_tokens: 40, output_tokens: 5, total_cost: 2 },
+    ])
+    const costSelect = repo._costSelect.bind(repo)
+    let fullScans = 0
+    repo._costSelect = (cond, params) => {
+      if (!cond) fullScans++
+      return costSelect(cond, params)
+    }
+    const bill = repo.billingStats({ now: Date.now() })
+    assert.equal(fullScans, 0)
+    assert.equal(bill.total.requests, 2)
+    assert.equal(bill.total.input_tokens, 60)
+    assert.equal(bill.total.output_tokens, 5)
+    assert.equal(bill.total.cache_read_tokens, 80)
+    assert.ok(bill.total.total_cost > 0)
+    assert.equal(
+      bill.total.total_cost,
+      bill.accounts.reduce((sum, row) => sum + row.total_cost, 0),
+    )
   } finally {
     db.close()
   }

@@ -35,7 +35,7 @@ import {
   createClaudeMessageAssembler,
   applyClaudeSSELineToMessage,
 } from './convert.mjs'
-import { sanitizeInboundBody, defaultSeedPolicy } from './seed-policy.mjs'
+import { sanitizeInboundBody, defaultSeedPolicy, callerAutoCompactWindow } from './seed-policy.mjs'
 import { fingerprintRequest } from './client-fingerprint.mjs'
 import { validateOfficialModel } from './models.mjs'
 import { handleCodexProtocol, handleCodexSearch } from './handle-codex.mjs'
@@ -43,6 +43,7 @@ import { disjointOpenaiUsage } from './openai-usage.mjs'
 import { costColumnsFromUsage } from '../admin/pricing.mjs'
 import { detectInboundPlatform } from './platform-detect.mjs'
 import { normalizeCodexRouting } from './codex-route.mjs'
+import { applyCodexInboundModelRewrite } from './codex-model-mapping.mjs'
 import { hasClaudeCode1mSuffix } from './context-1m.mjs'
 import {
   DEFAULT_HEALTH_PROBE,
@@ -618,11 +619,13 @@ export function createHandleProtocol(deps) {
       )
     }
 
+    const autoCompactWindow = callerAutoCompactWindow(inbound)
     let ctx = {
       path: pathName,
       protocol,
       body: sanitizeInboundBody(inbound, defaultSeedPolicy()),
       headers: { ...req.headers },
+      autoCompactWindow,
     }
     ctx = applyIntercept(cfg.intercept.rules, 'before_convert', ctx)
     const bodyCheck = validateRequestBody(protocol, ctx.body)
@@ -635,6 +638,24 @@ export function createHandleProtocol(deps) {
     }
     const inferenceBackend = resolveInferenceBackend(req)
     let want1m = hasClaudeCode1mSuffix(inbound?.model) || hasClaudeCode1mSuffix(ctx.body?.model)
+    const modelRewrite = applyCodexInboundModelRewrite(ctx.body, getRouting() || {})
+    if (!modelRewrite.ok) {
+      stats.errors++
+      const errorResult = makeError({
+        type: ErrorType.INVALID_REQUEST,
+        code: modelRewrite.code || 'codex_model_mapping_invalid',
+        message: modelRewrite.message,
+        status: 400,
+        param: 'model',
+      })
+      logBag.error_code = errorResult.body?.error?.code || modelRewrite.code
+      logBag.error_message = errorResult.body?.error?.message || null
+      return json(res, errorResult.status, errorResult.body)
+    }
+    if (modelRewrite.mapped) {
+      ctx = { ...ctx, body: modelRewrite.body }
+      logBag.upstream_model = modelRewrite.upstreamModel || null
+    }
     const platform = detectInboundPlatform(ctx.body?.model)
     if (!platform.ok) {
       stats.errors++
@@ -750,6 +771,7 @@ export function createHandleProtocol(deps) {
           projectRoot: cfg.paths.project,
           captureOutbound: logCtx.capture_outbound === true,
           accountGate,
+          ops: deps.codexOps || {},
           ...codexSticky,
         })
       }
@@ -767,6 +789,7 @@ export function createHandleProtocol(deps) {
         projectRoot: cfg.paths.project,
         captureOutbound: logCtx.capture_outbound === true,
         accountGate,
+        ops: deps.codexOps || {},
         ...codexSticky,
       })
     }
@@ -1272,6 +1295,7 @@ export function createHandleProtocol(deps) {
               preserveSystem: officialPassthrough,
               preserveThinkingBlocks: preserveCliHopThinkingBlocks,
               preserveCallerEnvironment,
+              autoCompactWindow: ctx.autoCompactWindow,
             })
             hopBody = await materializeRemoteImageSources(hopBody)
             if (panelRewrite) {
@@ -1374,6 +1398,7 @@ export function createHandleProtocol(deps) {
             vmId: selected.vmId,
             epoch: attemptStartedAt,
             mode: sessionMode,
+            routing: routingNow,
             clientDiscriminator,
             firstUserText,
             firstUserIdentity,

@@ -41,6 +41,7 @@ git push origin v1.2.22
 |---|---|
 | `kin-kernel` | Claude Code 槽内核（payload，推理必带） |
 | `kin-egress` | 远程 SOCKS5 透明网关 |
+| `kin-slot-gate` | 扩展节点直连通道入口（控制面每请求一条 TLS 连接直达节点槽位） |
 | `kin-worker` | **只** `telemetry`，不是 hop |
 | `kin-codex-kernel` | Codex 槽（payload） |
 | `kin-oauth-auth` | OAuth / Setup Token 换票服务二进制；源码不随部署上传 |
@@ -78,6 +79,7 @@ pnpm -C web install --frozen-lockfile
 
 npm run fetch:payload     # bin/kin-{kernel,codex-kernel,oauth-auth}、share/wrap-cli、share/crag
 npm run build:egress      # bin/kin-egress
+npm run build:gate        # bin/kin-slot-gate（扩展节点直连通道）
 npm run build:web         # web/dist
 npm run build:worker      # bin/kin-worker（telemetry）
 ```
@@ -93,6 +95,7 @@ npm run format:check
 
 ```bash
 CGO_ENABLED=0 go build -trimpath -o bin/kin-egress ./worker/cmd/kin-egress
+CGO_ENABLED=0 go build -trimpath -o bin/kin-slot-gate ./worker/cmd/kin-slot-gate
 CGO_ENABLED=0 go build -trimpath -o bin/kin-worker ./worker/cmd/kin-worker
 pnpm -C web build
 ```
@@ -126,7 +129,7 @@ docker compose up -d --build
 curl -sS --noproxy '*' http://127.0.0.1:8787/health
 ```
 
-槽位容器不会被升级脚本 `docker rm`。从 1.2.22 开始，一键更新默认把 `share/wrap-cli` 同步到所有槽并重启槽内 dataplane；仅在明确需要延后时使用 `--no-sync-wrap`。
+槽位容器不会被升级脚本无条件 `docker rm`。从 1.2.22 开始，一键更新默认把 `share/wrap-cli` 同步到本机槽并重启槽内 dataplane；集群槽在同一次同步里重建内容哈希镜像并换容器。仅在明确需要延后时使用 `--no-sync-wrap`。
 
 **本机 Node + systemd**
 

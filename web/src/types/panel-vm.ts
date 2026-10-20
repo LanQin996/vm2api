@@ -262,6 +262,10 @@ export type Vm = {
   } | null
   /** Raw OpenAI `plan_type` from wham/usage (GPT slots only). */
   plan_type?: string | null
+  /** ChatGPT subscription end from OAuth `id_token` (`chatgpt_subscription_active_until`). */
+  chatgpt_subscription_active_until?: string | null
+  /** Plan label fallback from OAuth `id_token` when `plan_type` from usage is absent. */
+  chatgpt_plan_type?: string | null
   reset_credits?: {
     available_count?: number
     credits?: Array<{ expires_at?: string }>
@@ -570,6 +574,7 @@ export type VmSeedSettings = {
   required_env?: Record<string, string>
   note?: string
   settings_json?: Record<string, unknown> | null
+  claude_setting?: string | null
   kin_seed?: Record<string, unknown> | null
   [key: string]: unknown
 }

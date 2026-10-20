@@ -2,6 +2,56 @@
 
 ## 未发布
 
+- Responses WebSocket：入站 `response.interrupt`（Codex steer）本地中止在飞 hop 并回 `response.interrupt.accepted`；取消走既有 handleProtocol 终态记账，不再报 `unsupported Responses WebSocket message type` 或网关 `incomplete_response`。上游 interrupt 转发对齐 CPR 后置。（#616）
+- Fable `7d_oi`：reset 已过（含秒级时间戳）不再永久判 rejected；`fableWindowResetAt` / weekly split 用 `parseResetMs`；过期清理纳入 `unified['7d_oi']`，且 `elapsedExtraResetMs` 纳入 `7d_oi` 后会在窗口过期时触发 usage probe；无 reset 时仍按 rejected 处理。（#601）
+- OpenAI 槽：从 OAuth `id_token` 读取 `chatgpt_subscription_active_until`（含 epoch 秒/毫秒归一化为 ISO），刷新时新 token 带 claim 则覆盖到期日、不带则保留旧值；账号页只读展示「订阅到期（以凭证为准）」，缺失显示「—」。`plan_type` 缺失时用 id_token 的 `chatgpt_plan_type` 兜底展示；wham 写入的套餐类型优先。（#609）
+
+## 1.3.200 — 2026-10-20
+
+- 官方 OAuth（claude_code）：在已运行槽终端里执行 `claude auth login`，面板弹出槽终端、授权链接在终端复制、授权码由用户粘贴；宿主机不再自造 authorize URL。Cookie 导入与 Setup Token 路径不变。（#615）
+- 槽位种子页默认锁定：需确认解锁后才能改配置，播种前再次确认；时区/语言提供 en、cn、jp 基础选项。时区跟随当前 SOCKS5（空/非手动钉住）时展示出口时区，播种经 `timezone_follow_proxy` 写入；可改固定 IANA 时区或改回跟随。TZ/LANG/LC_ALL 仍不经 `extra_env` 覆盖契约键。（#613）
+- 槽位种子页：`settings.json` 的 env 行与 `theme` 可直接编辑并随播种写入；`autoUpdates`、`grove_enabled` 只读且播种时固定为 `false`；TZ/LANG/LC_ALL、遥测 kill-switch、Bedrock/Vertex、gateway hint 等同理只读（播种由契约重写）。缺 `CLAUDE_CODE_ATTRIBUTION_HEADER` 时默认 `0`。调试上传默认关，独立 query 拉最近 40 条上传，切换开关不重置未保存编辑；Go sidecar 写 `vms/<id>/run/telemetry-upload.log`，面板 `GET seed-settings?debug=1` 返回 `telemetry_log`。（#611）
+- 协议页可配置 `routing.compatibility.auto_compact_window`（100K–1M 或跟随模型）；入站在清理 settings 前提取调用方 `CLAUDE_CODE_AUTO_COMPACT_WINDOW`，经内部 `auto_compact_window` 字段进入当前 job，清理后的 body 不再携带该 env。（#607）
+- 槽位种子页按当前槽 `settings.json` 列出真实配置；`claude.setting` 可编辑播种；缺失文件返回 `null`、空文件返回空串，不用策略默认冒充槽内文件；遥测开关与 sidecar 进程状态分开展示，保存不因遥测进程刷新失败而 502。（#608）
+- 集群槽 legacy kin-worker / kin-egress 容器可一次性迁到持久化 `/opt/kin-live` 挂载：旧容器重命名为 `*-legacy-<timestamp>` 保留作回滚，替换容器复用原镜像与网络身份；rename 后先从 user-defined 网 disconnect 释放 IP/别名再 create；KVM 已挂 `/opt/kin-guest/opt/kin-live` 不再误判 legacy；`scripts/migrate-legacy-cluster-slots.mjs` 与 fleet `action=telemetry` 同路径；迁移时保留 CapDrop/CapAdd 等 HostConfig，避免 canReuse 后 egress 权限缩水。（#605）
+- fleet 遥测刷新在 kin-egress 二进制被替换（含 `(deleted)` 旧进程与脏 pidfile）时，会按 egress 配置扫停全部 helper、等待 `/proc/<pid>` 消失后再绑定新二进制；同一 SOCKS 出口的 stop/start 与 `ensureProxyEgress` 共用 per-proxy 锁，避免并发 telemetry 互相 SIGTERM。（#604）
+- 扩展节点直连通道：`PUT /api/panel/cluster/nodes/:id/direct-link` 在节点上建 `kin-slot-gate`（TLS 1.3，首次启动自签证书，控制面经 SSH 读取并固定指纹；每节点随机令牌），远程槽 kernel / worker 请求改为每次一条直连 TLS 连接，不再全部挤在一条 SSH 长连接里（长连接在零碎流量下拥塞窗口会卡在约 17KB/s，突发请求正文排队数秒）。请求正文随握手后的第一包发出、不等应答。gate 只连槽的两个 socket 且不跟随符号链接；连不上、证书不符或令牌被拒时该节点退回 SSH 30 秒。面板节点详情可启用 / 关闭，节点行显示「直连」/「直连→SSH」。新增 Go 命令 `kin-slot-gate`（`npm run build:gate`，Release 附件同名）。（#614）
+- 面板：侧栏「GitHub / 文档」两枚链接不再折行，字体偏宽时「文档」不会逐字竖排，空间不够先缩箭头再省略文字；VM 列表搜索框关闭浏览器自动填充，不再被回填成登录邮箱。（#602）
+- 集群页「扩展节点」新增 CPU / 内存 / 容器三列：健康检查（每 30 秒）经同一条 SSH 连接读节点 `/proc` 和 cgroup，口径同本机宿主列；容器 = 节点上全部 Docker 容器内存合计（扣除 inactive_file，同 `docker stats`）。修复本机宿主列 CPU 最高只显示 10%（`Math.min(100, …×1000)/10` 写错上限）。链路列不再折行。（#603）
+- 集群槽无需重建 VM 即可更新 Go 槽位服务（kin-worker / kin-egress）：持久化 `slot-bin` 挂载推送二进制，fleet `action=telemetry` 热更新遥测与 egress。（#600）
+- Codex 入站在平台探测前支持 CPR 式 `routing.codex.model_mappings` 精确模型映射；默认 `codex-auto-review` → `gpt-6-luna`（清空该键时回退 `gpt-6.1-sol`）。日志保留 `requested_model` / `upstream_model`；非法或非 GPT 目标 400，不 hop Anthropic。（#598，#526）
+- 保留路径不再给没有可用签名的 thinking 补 `signature: ""`：缺失、空、短于 24、dummy 的删掉；签名可用的留，空正文也留。这一支里的 `redacted_thinking` 不看 data 和签名，原样留；不走保留路径时仍按原规则删。5.5 的非保留路径仍接受短的非 dummy 签名。没有按账号归属过滤签名。（#592）
+- 协议页新增「thinking 显示」，`routing.compatibility.thinking_display` 默认 `summarized`。调用方打开 thinking 却要求隐藏（`omitted`、`updates`，或默认隐藏的模型上没写 display）时，出站改成 `summarized`；显式 `passthrough` 保留调用方的值。已保存的 `routing.json` 不写这个键也按 summarized 生效。（#592）
+- Claude kernel / CLI 依赖固定到不可变快照 `payload-2026.10.19-kernel-cli`（kin-kernel + cli-node）；Codex kernel 与其余原生产物保持不变。（#594，#597）
+- 安全：web 依赖 `source-map-js` 固定 1.2.2（CVE-2026-93749）。（#599）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启；数据库迁移 `039_cluster_node_direct_links` 启动时自动执行。Claude kernel / cli-node 改为快照 `payload-2026.10.19-kernel-cli`，需一键更新或 `wrap-cli/sync`（keep）刷新（#594）。集群槽：#600 槽布局 2→3（`kin.vm.layout=3`），旧布局槽需 recreate 一次才挂上 `slot-bin`，或用 `scripts/migrate-legacy-cluster-slots.mjs` 或 fleet `action=telemetry` 迁到 `/opt/kin-live`，**容器 ID 会变**，旧容器保留为 `*-legacy-<timestamp>` 作回滚（#605）。扩展节点直连为可选：控制面 `bin/` 需放入新附件 `kin-slot-gate`（控制面经 SSH 下发到节点），面板节点详情启用并放行防火墙端口，默认仍走 SSH（#614）。`thinking_display` 默认 `summarized`（#592）；官方 OAuth 改为槽终端内 `claude auth login`（#615）；可配 `auto_compact_window`（#607）。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.199 — 2026-10-19
+
+- 修复集群槽位凭据 pull 时 bytes 相同仍回填 VM 元数据；已运行容器不重建；节点凭证不被旧副本覆盖；原手动禁用 / 撤销 / 冷却保留。（#589）
+- 测试：CRS 出站拒绝 `cc_gateway` 与 `x-claude-code-wiggly-dove` 回归锁。（#590）
+
+已部署机升级：仅需更新 Node 控制面并重启；对受影响集群槽开机一次即可回填元数据；不必重建槽；不要更换 kernel/CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.198 — 2026-10-19
+
+- 一键更新和 `wrap-cli/sync` 同时更新集群槽：控制面拿到新的 kernel、cli-node、cc-node 与 Go `kin-worker` 遥测后，按节点和内核重建内容哈希镜像，再换容器。更新时可选保留原数据或重建新特征；不传时保留。Codex 槽不参与。本地槽仍只换挂载文件并重启进程。crag 数据面的集群槽仍拒绝。槽位页「重装 kernel」对集群槽走同一条路径。（#583）
+- 槽位重建增加两种方式：保留原数据（凭证、指纹、主机名、machine-id、统计）或重建新特征（清家目录并重新生成计算机身份）。列表、详情和重装 kernel 都要先选。（#583）
+- 同一出口的 kin-egress 启动串行化；等待端口释放不再阻塞事件循环（续 #562）。（#578）
+- slot-guest-bin 任意 link 失败都退回复制，并暂存符号链接的真实文件（续 #569/#572）。（#579）
+- sealClaudeCodeCch 只密封 system 计费头，不改写提示词中的同名字面量，也不因提示词字面量报错。（#580）
+- 去掉已保存内置模板上旧默认自带的 `scope: global`（续 #536）。（#581）
+- 面板日志导出与备份下载补 CORS，预检允许 Idempotency-Key（续 #529）。（#582）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启。集群需一键更新或 `wrap-cli/sync`（keep）刷新镜像并为 **running** 槽换容器；无迁移，不必单独重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。（traits 重建可能启动已停机的本地槽；集群 `restart:false` 时 kernel_changed 为硬编码，详见 Release notes。）
+
+## 1.3.197 — 2026-10-19
+
+- 修面板 billingStats：大 usage 库慢聚合时缓存 TTL 改为聚合完成后起算，避免刚写入即过期；复用 costByAccount 汇总全局 total/today 减少全表扫描（#576）
+
+已部署机升级：仅需更新 Node 控制面并重启；不必重建槽；不要更换 kernel/CLI；无迁移。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
 ## 1.3.196 — 2026-10-19
 
 - 面板 billingStats 10s 进程内缓存（按账号窗口签名）+ backfillMissingCosts 60s 限频，缓解大 usage_logs 库控制台卡顿（#574）
