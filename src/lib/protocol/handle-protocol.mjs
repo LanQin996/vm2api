@@ -106,6 +106,7 @@ import {
 import {
   applyCrsUnofficialPersona,
   detectProxiedOfficialCcFromRoutingFile,
+  ensureBillingAttribution,
   extractFirstUserText,
   isOfficialClaudeCodeTraffic,
   isProxiedOfficialClaudeCode,
@@ -141,13 +142,18 @@ import {
   fillMissingCacheTtl,
   validateCacheBreakpoints,
 } from './cache-ttl.mjs'
-import { confirmCachePrefix, describeCacheContinuity, trackCachePrefix } from './cache-prefix.mjs'
+import { confirmCachePrefix, describeCacheContinuity, formatCacheBreak, trackCachePrefix } from './cache-prefix.mjs'
 import { ensureClaudeWebSearch, shouldInjectClaudeWebSearch } from './web-search.mjs'
 import { dispatchStreamInference } from '../transport/kernel-router.mjs'
 import { syncClaudeKernelConfigsFromFile } from '../transport/rust-kernel-supervisor.mjs'
 import { ensureWorkerCredential } from '../transport/go-worker-client.mjs'
 import { formatPoolSelectionSummary } from '../pool/pool-scheduler.mjs'
 import { extraHeadersFromLimitError, isAccountQuotaExhausted } from '../pool/quota-window.mjs'
+import {
+  filterThinkingForAccount,
+  recordThinkingOwners,
+  thinkingOwners as defaultThinkingOwners,
+} from '../pool/thinking-owner.mjs'
 import { getVm } from '../vm/vm-registry.mjs'
 import { credentialModeFromOauth, isApiKeyMode } from '../oauth/credential-mode.mjs'
 import {
@@ -181,6 +187,7 @@ export function createHandleProtocol(deps) {
     typeof deps.getHealthMonitor === 'function' ? deps.getHealthMonitor() : deps.healthMonitor
   const getFailoverRunner = () =>
     typeof deps.getFailoverRunner === 'function' ? deps.getFailoverRunner() : deps.failoverRunner
+  const thinkingOwnerStore = deps.thinkingOwners || defaultThinkingOwners
   function responseClosed(res) {
     return !!(res?.destroyed || res?.writableEnded || res?.closed)
   }
@@ -823,10 +830,14 @@ export function createHandleProtocol(deps) {
 
     const hdrRewrite = String(req.headers['x-kin-rewrite'] || '') === '1'
     const rewriteEnabled = cfg.rewrite.enabled || hdrRewrite
+    const officialInbound =
+      isOfficialClaudeCodeTraffic(req.headers, inbound) ||
+      (detectProxiedOfficialCcFromRoutingFile(routingConfigPath) && isProxiedOfficialClaudeCode(inbound, req.headers))
     const converted = toClaudeMessages(protocol, ctx.body, {
       rewrite: rewriteEnabled,
       model_map: false,
       strict_passthrough: String(req.headers['x-kin-strict-passthrough'] || '') === '1',
+      preserve_content_shape: officialInbound,
     })
     stats.requests++
     stats.by_route[protocol] = (stats.by_route[protocol] || 0) + 1
@@ -835,9 +846,7 @@ export function createHandleProtocol(deps) {
     else stats.convert++
 
     ctx = applyIntercept(cfg.intercept.rules, 'before_upstream', { ...ctx, body: converted.claude })
-    const officialTraffic =
-      isOfficialClaudeCodeTraffic(req.headers, inbound) ||
-      (detectProxiedOfficialCcFromRoutingFile(routingConfigPath) && isProxiedOfficialClaudeCode(inbound, req.headers))
+    const officialTraffic = officialInbound
     const requestContext = classifyClaudeRequestPurpose(inbound, { officialTraffic })
     if (requestContext) {
       logBag.classifier = classifierRequestSummary(inbound, ctx.body, requestContext)
@@ -890,6 +899,7 @@ export function createHandleProtocol(deps) {
     // read before outbound cleaning. API key never scopes it.
     const inboundIdentity = resolveInboundIdentity({ inbound, body: ctx.body, headers: req.headers })
     const stickyDeviceId = inboundIdentity.deviceId
+    logBag.inbound_device_id = sessionIdForLog(stickyDeviceId)
     if (childDeclaredWithoutParent(inbound, req.headers)) {
       stats.errors++
       logBag.error_code = 'family_relation_required'
@@ -1195,7 +1205,7 @@ export function createHandleProtocol(deps) {
       logBag.cache_prefix = prefix
       logBag.cache_prefix_key = key
       if (!prefix?.break) return
-      const where = prefix.break.section === 'messages' ? `messages[${prefix.break.index}]` : prefix.break.section
+      const where = formatCacheBreak(prefix)
       console.warn(`[cache-prefix] request ${logCtx.request_id} turn ${prefix.turn} broke at ${where}`)
     }
     let result
@@ -1224,6 +1234,17 @@ export function createHandleProtocol(deps) {
         deliveryMode,
         signal: clientAbort.signal,
         applyAttempt: async (body, selected, extra = {}) => {
+          // Only this account's own thinking replays as thinking. Another
+          // account's signature, or one with no record, goes out as text.
+          const owned = filterThinkingForAccount(body, selected.accountId, thinkingOwnerStore)
+          body = owned.body
+          if (owned.kept || owned.converted || owned.dropped) {
+            const { kept, converted, dropped, unknown } = owned
+            logBag.hop_meta = {
+              ...logBag.hop_meta,
+              thinking_owner: { account_id: selected.accountId, kept, converted, dropped, unknown },
+            }
+          }
           if (claudeScopePending()) {
             const blocked = await applyProtocolIntercept({
               req,
@@ -1284,19 +1305,26 @@ export function createHandleProtocol(deps) {
           )
           let hopBody = body
           if (cliHop) {
-            // Classifier keeps its own system. Official family keeps its inbound
-            // system only when the protocol tab turns passthrough on.
-            const panelRewrite = !requestContext && !officialPassthrough
+            // The front rewrite already produces the official two-block shape.
+            const panelRewrite = false
             hopBody = prepareCliHopBody(repaired ? body : hopBody, {
               stream: upstreamStream,
               repaired,
               cacheTtl: requestedCacheTtl,
               requestContext,
-              preserveSystem: officialPassthrough,
+              preserveSystem: false,
               preserveThinkingBlocks: preserveCliHopThinkingBlocks,
               preserveCallerEnvironment,
               autoCompactWindow: ctx.autoCompactWindow,
+              routing: routingNow,
             })
+            if (!requestContext) {
+              hopBody = ensureBillingAttribution(hopBody, {
+                firstUserText,
+                sessionId: attemptSessionId,
+                cliVersion: OFFICIAL_CLI_VERSION,
+              })
+            }
             hopBody = await materializeRemoteImageSources(hopBody)
             if (panelRewrite) {
               hopBody = applyCrsUnofficialPersona(hopBody, {
@@ -1558,6 +1586,9 @@ export function createHandleProtocol(deps) {
     logBag.vm_id = result?.vmId || null
     logBag.account_id = result?.accountId || null
     logBag.final_account_id = result?.accountId || null
+    if (result?.threadBetas) logBag.hop_meta = { ...logBag.hop_meta, thread_betas: result.threadBetas }
+    if (result?.accountId && (result.ok || result.committed))
+      recordThinkingOwners(result.body, result.accountId, thinkingOwnerStore)
     // Zero executions is a real 0, not unknown; the VM is the last one that ran.
     logBag.attempt_count = result?.attemptCount ?? 0
     logBag.final_state = result?.finalState || result?.terminalState || null

@@ -81,7 +81,19 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
     'identity',
     "官方身份句 You are a Claude agent, built on Anthropic's Claude Agent SDK.",
   ],
+  [
+    'identity_cli',
+    "交互 CLI 身份句 You are Claude Code, Anthropic's official CLI for Claude.",
+  ],
   ['identity_compact', '0注入短身份句 You are Anthropic Claude Agent SDK.'],
+  [
+    'reporting',
+    '官方 # Reporting outcomes 整段。cli-node 只在计费和身份都在时把它切成独立段',
+  ],
+  [
+    'dynamic_boundary',
+    '官方动态边界标记。cli-node 用它把前面的静态段标成 global，后面的标成 org，标记本身不出站',
+  ],
   ['agent_expansion', '短 agent 扩写段'],
   ['agent_official', '官方 agent 提示词全文'],
   ['agent_standing', 'agent prompt 常驻约束（按档开关，非空时以换行结尾）'],
@@ -101,7 +113,6 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
 export const OVERLAY_TEMPLATE_VARS: [string, string][] = [
   ['overlay_body', 'body 块拼接结果，只能出现在 wrapper 块'],
   ['standing', 'persona_standing 常驻约束'],
-  ['rules', '命中末轮 user 的 persona_rules append 拼接'],
 ]
 
 const PERSONA_VAR_NAMES = PERSONA_TEMPLATE_VARS.map(([name]) => name)
@@ -164,16 +175,28 @@ export const DEFAULT_PERSONA_TEMPLATES: Record<PersonaPreset, PersonaBlock[]> =
       },
       {
         id: 'identity',
-        note: '官方身份句（Claude Agent SDK）',
+        note: '交互 CLI 身份句。cli-node 按这句切第 2 段，不能换成 Agent SDK 句',
         type: 'text',
-        text: '{{identity}}',
+        text: '{{identity_cli}}',
+      },
+      {
+        id: 'reporting',
+        note: '官方 reporting 整段。必须是独立块，cli-node 才把它从静态段里抬出来',
+        type: 'text',
+        text: '{{reporting}}',
       },
       {
         id: 'agent_official',
-        note: '常驻约束为第一段 + 官方 Claude Code 基础提示词全文。2.1.263 起 1h 缓存',
+        note: '静态段。常驻约束在前，官方提示词在后。1h 断点打在这里，排在会变的动态段之前',
         type: 'text',
         text: '{{agent_standing}}{{agent_official}}',
         cache_control: { type: 'ephemeral', ttl: '1h' },
+      },
+      {
+        id: 'dynamic_boundary',
+        note: '静态段和动态段的分界。cli-node 丢掉这个标记，只拿它决定 cache scope',
+        type: 'text',
+        text: '{{dynamic_boundary}}',
       },
       {
         id: 'env_official',
@@ -246,13 +269,6 @@ export const DEFAULT_OVERLAY_TEMPLATES: Record<
       drop_if_empty: true,
       text: '{{standing}}',
     },
-    {
-      id: 'rules',
-      note: '命中末轮 user 的 persona_rules append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
-    },
   ],
   minimal: [
     {
@@ -267,13 +283,6 @@ export const DEFAULT_OVERLAY_TEMPLATES: Record<
       type: 'body',
       drop_if_empty: true,
       text: '{{standing}}',
-    },
-    {
-      id: 'rules',
-      note: '命中规则 append',
-      type: 'body',
-      drop_if_empty: true,
-      text: '{{rules}}',
     },
   ],
   custom: [],

@@ -58,9 +58,11 @@ import {
   removeNetwork,
   renameContainer,
 } from './docker-remote.mjs'
+import { refreshNativeSlotPayload } from './native-slot.mjs'
 import {
   awaitSlotImageBuild,
   clusterManager,
+  isNativeNodeVm,
   nodeSession,
   parseMemoryBytes,
   remoteSlotDir,
@@ -455,10 +457,8 @@ export async function ensureRemoteEgress(session, vm, { imageRef, binaryDigest =
   const names = slotEgressNames(vm.id)
   // Keep the helper's executable on the persistent mount even when egress is
   // enabled independently of a slot start/update.
-  await runRemote(
-    session.client,
-    `umask 077 && mkdir -p ${shellQuote(`${remoteSlotDir(session.host, vm.id)}/slot-bin`)}`,
-  )
+  const slotBin = shellQuote(`${remoteSlotDir(session.host, vm.id)}/slot-bin`)
+  await runRemote(session.client, `umask 077 && mkdir -p ${slotBin} && chmod 755 ${slotBin}`)
   const net = await ensureRemoteNetwork(session.docker, {
     name: names.network,
     bridge: names.bridge,
@@ -832,6 +832,7 @@ export async function refreshNodeSlotPayload(
   const id = vm?.id
   const nodeId = vmNodeId(vm)
   if (!id || !nodeId) return { id, ok: false, code: 'not_cluster_slot', error: '不是集群槽' }
+  if (isNativeNodeVm(vm)) return refreshNativeSlotPayload(vm, projectRoot, { routing, recreate })
   const kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
   const kind = runtimeKind(vm)
   try {

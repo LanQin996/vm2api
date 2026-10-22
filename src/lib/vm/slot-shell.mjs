@@ -22,6 +22,7 @@ import { ensureOfficialCredentialLink, writeWorkerCredentialFile } from '../oaut
 import { assertAuthLoginReady, officialLoginCredentialToOauth } from '../oauth/claude-auth-login.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
+import { ensureRemoteOfficialCredentialLink, reconcileSlotCredentials } from '../cluster/remote-slot-files.mjs'
 import { officialCcUidGid } from './vm-runtime.mjs'
 
 const SHELL_RE = /^\/api\/panel\/vms\/([^/]+)\/shell$/
@@ -44,8 +45,47 @@ function readJsonFile(file) {
  * worker notification, and vm.json metadata. The terminal keeps reading that
  * same file through .credentials.json.
  */
-export async function adoptShellLogin(projectRoot, vm, { importOauth = null } = {}) {
+/** Cluster slots write OAuth on the node claude/ mount; mirror it before adopt. */
+export async function syncShellLoginCredentials(
+  projectRoot,
+  vm,
+  {
+    phase,
+    host = slotHost(vm),
+    reconcile = reconcileSlotCredentials,
+    ensureRemoteLink = ensureRemoteOfficialCredentialLink,
+  } = {},
+) {
+  if (host.kind !== 'node') return { synced: false }
+  const slotDir = path.join(projectRoot, 'vms', vm.id)
+  if (phase === 'prepare') {
+    const reconciled = await reconcile(vm, slotDir)
+    await ensureRemoteLink(vm, slotDir)
+    return reconciled
+  }
+  if (phase === 'adopt') return host.afterRefresh(vm, slotDir)
+  return { synced: false }
+}
+
+export async function preparePanelShellLogin(projectRoot, vm) {
   const home = path.join(projectRoot, 'vms', vm.id, 'cli-home')
+  const linked = ensureOfficialCredentialLink(home, {
+    ...officialCcUidGid(vm.id),
+    create: true,
+  })
+  if (!linked?.linked) {
+    const err = new Error(linked?.error || '官方凭证链接失败')
+    err.code = 'credential_link_failed'
+    throw err
+  }
+  await syncShellLoginCredentials(projectRoot, vm, { phase: 'prepare' })
+  return linked
+}
+
+export async function adoptShellLogin(projectRoot, vm, { importOauth = null, loginHost = null } = {}) {
+  const home = path.join(projectRoot, 'vms', vm.id, 'cli-home')
+  await syncShellLoginCredentials(projectRoot, vm, { phase: 'adopt', host: loginHost || slotHost(vm) })
+  ensureOfficialCredentialLink(home, officialCcUidGid(vm.id))
   const official = path.join(home, '.claude', '.credentials.json')
   const oauth = officialLoginCredentialToOauth(readJsonFile(official) || {})
   const vmPath = path.join(projectRoot, 'vms', `${vm.id}.json`)
@@ -78,6 +118,45 @@ export async function adoptShellLogin(projectRoot, vm, { importOauth = null } = 
     throw err
   }
   return { imported: true, linked: true }
+}
+
+/** Import one new interactive grant. The same refresh is not imported twice. */
+export async function adoptLiveShellLogin(projectRoot, vm, { importOauth = null, loginHost = null, seen = '' } = {}) {
+  const home = path.join(projectRoot, 'vms', vm.id, 'cli-home')
+  await syncShellLoginCredentials(projectRoot, vm, { phase: 'adopt', host: loginHost || slotHost(vm) })
+  ensureOfficialCredentialLink(home, officialCcUidGid(vm.id))
+  const doc = readJsonFile(path.join(home, '.claude', '.credentials.json'))
+  const grant = doc?.claudeAiOauth
+  const refresh = String(grant?.refreshToken || grant?.refresh_token || '')
+  if (!refresh || refresh === seen) return { imported: false, refresh: seen }
+  await adoptShellLogin(projectRoot, vm, { importOauth, loginHost })
+  return { imported: true, refresh }
+}
+
+/** One interactive import at a time. A tick and terminal close share it. */
+export function createLiveLoginAdoption({ adopt, onImported, onError }) {
+  let seen = ''
+  let pending = null
+  return (report = false) => {
+    if (pending) return pending
+    pending = (async () => {
+      try {
+        const adopted = await adopt(seen)
+        if (!adopted?.imported || !adopted.refresh || adopted.refresh === seen) {
+          return { imported: false, refresh: seen }
+        }
+        seen = adopted.refresh
+        onImported?.(adopted)
+        return adopted
+      } catch (err) {
+        onError?.(err, report)
+        return { imported: false, refresh: seen, error: err }
+      } finally {
+        pending = null
+      }
+    })()
+    return pending
+  }
 }
 
 /** Live guest MOTD. Optional probes must not fail startup or print secrets. */
@@ -265,7 +344,7 @@ export function panelShellLaunch(cliBin) {
     'if [ ! -e "$HOME/.claude.json" ] && [ -f "$CLAUDE_CONFIG_DIR/.claude.json" ]; then ln -s .claude/.claude.json "$HOME/.claude.json" 2>/dev/null || true; fi',
     `claude() { export HOME="\${HOME:-/home/kincli}"; export CLAUDE_CONFIG_DIR="\${CLAUDE_CONFIG_DIR:-\$HOME/.claude}"; if [ -x ${q} ]; then ${q} "$@"; else echo "cli-node 不在 ${q}" >&2; return 127; fi; }`,
     SYSTEM_FACTS_RC,
-    'if [ -n "${KIN_PANEL_LOGIN:-}" ]; then printf "\\n"; claude auth login; fi',
+    'if [ -n "${KIN_PANEL_LOGIN:-}" ]; then printf "\\n"; claude; fi',
     'rm -f "$KIN_PANEL_RCFILE"',
   ].join('\n')
   return {
@@ -291,22 +370,27 @@ function refuse(status, code, message) {
   return { ok: false, status, error: { code, message } }
 }
 
-export function createSlotShell({ projectRoot, logger = console, importOauth = null } = {}) {
+export function createSlotShell({
+  projectRoot,
+  logger = console,
+  importOauth = null,
+  authLoginReady = null,
+  upgradeLoginReady = null,
+} = {}) {
   const tickets = new Map()
   const liveTokens = new Set()
   let sessions = 0
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 })
 
-  function issueTicket(vmId, { login = false } = {}) {
+  async function issueTicket(vmId, { login = false } = {}) {
     const vm = getVm(projectRoot, vmId)
     if (!vm) return refuse(404, 'vm_not_found', 'vm not found')
     if (isCodexVm(vm)) return refuse(409, 'no_container', 'GPT 槽没有容器，无法打开终端')
     if (login) {
       try {
-        assertAuthLoginReady(projectRoot, vm)
+        await (authLoginReady || assertAuthLoginReady)(projectRoot, vm)
       } catch (err) {
-        const remote = err.code === 'remote_unsupported'
-        return refuse(remote ? 409 : 400, err.code || 'auth_login_not_ready', err.message)
+        return refuse(409, err.code || 'auth_login_not_ready', err.message)
       }
     }
     if (sessions >= MAX_SESSIONS) return refuse(429, 'shell_limit', `终端会话已达上限 ${MAX_SESSIONS}`)
@@ -354,25 +438,32 @@ export function createSlotShell({ projectRoot, logger = console, importOauth = n
       return true
     }
     const login = !!entry.login
-    if (login) {
-      try {
-        assertAuthLoginReady(projectRoot, vm)
-      } catch {
-        rejectUpgrade(socket, 409, 'Conflict')
-        return true
+    const accept = () => {
+      if (sessions >= MAX_SESSIONS) {
+        rejectUpgrade(socket, 429, 'Too Many Requests')
+        return
       }
+      sessions += 1
+      const size = {
+        cols: clampInt(url.searchParams.get('cols'), 10, 500, 80),
+        rows: clampInt(url.searchParams.get('rows'), 5, 200, 24),
+        login,
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => attach(ws, vm, size))
     }
-    if (sessions >= MAX_SESSIONS) {
-      rejectUpgrade(socket, 429, 'Too Many Requests')
+    if (!login) {
+      accept()
       return true
     }
-    sessions += 1
-    const size = {
-      cols: clampInt(url.searchParams.get('cols'), 10, 500, 80),
-      rows: clampInt(url.searchParams.get('rows'), 5, 200, 24),
-      login,
-    }
-    wss.handleUpgrade(req, socket, head, (ws) => attach(ws, vm, size))
+    ;(upgradeLoginReady || authLoginReady || assertAuthLoginReady)(projectRoot, vm).then(accept, (err) =>
+      rejectUpgrade(
+        socket,
+        409,
+        String(err?.message || 'Conflict')
+          .replace(/[\r\n]+/g, ' ')
+          .slice(0, 120) || 'Conflict',
+      ),
+    )
     return true
   }
 
@@ -430,14 +521,7 @@ export function createSlotShell({ projectRoot, logger = console, importOauth = n
     })
     try {
       connect = slotHost(vm).dockerApi()
-      if (size.login) {
-        const home = path.join(projectRoot, 'vms', vm.id, 'cli-home')
-        const linked = ensureOfficialCredentialLink(home, {
-          ...officialCcUidGid(vm.id),
-          create: true,
-        })
-        if (!linked?.linked) throw new Error(linked?.error || '官方凭证链接失败')
-      }
+      if (size.login) await preparePanelShellLogin(projectRoot, vm)
       const launch = panelShellLaunch(slotHost(vm).bins.cli)
       const env = ['TERM=xterm-256color', `${SESSION_ENV}=${token}`, `${RC_ENV}=${launch.rc}`]
       if (size.login) env.push('KIN_PANEL_LOGIN=1')
@@ -466,18 +550,32 @@ export function createSlotShell({ projectRoot, logger = console, importOauth = n
     }
     // ConsoleSize on exec start is API >= 1.42; resize covers older daemons.
     resize(size.cols, size.rows)
+    const adoptLive = createLiveLoginAdoption({
+      adopt: (seen) => {
+        if (!size.login) return { imported: false, refresh: seen }
+        return adoptLiveShellLogin(projectRoot, vm, {
+          importOauth,
+          loginHost: slotHost(vm),
+          seen,
+        })
+      },
+      onImported() {
+        send(JSON.stringify({ t: 'login', ok: true }))
+      },
+      onError(err, report) {
+        if (err?.code === 'auth_login_incomplete' || err?.code === 'auth_login_scope') return
+        logger.warn?.(`[slot-shell] ${vm.id} login import failed: ${err.message}`)
+        if (report) send(JSON.stringify({ t: 'error', message: '官方登录凭证未能导入槽凭证' }))
+      },
+    })
+    const adoptTimer = size.login ? setInterval(() => void adoptLive(), 1000) : null
+    adoptTimer?.unref?.()
     let ended = false
     const onEnd = async () => {
       if (ended) return
       ended = true
-      if (size.login) {
-        try {
-          await adoptShellLogin(projectRoot, vm, { importOauth })
-        } catch (err) {
-          logger.warn?.(`[slot-shell] ${vm.id} login import failed: ${err.message}`)
-          send(JSON.stringify({ t: 'error', message: '官方登录凭证未能导入槽凭证' }))
-        }
-      }
+      clearInterval(adoptTimer)
+      if (size.login) await adoptLive(true)
       const info = await inspectExec(connect, session.execId).catch(() => null)
       send(JSON.stringify({ t: 'exit', code: info?.ExitCode ?? null }))
       ws.close(1000)

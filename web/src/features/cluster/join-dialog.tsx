@@ -277,10 +277,13 @@ export function JoinVpsDialog({
               <div className='text-muted-foreground'>{probe.uname}</div>
             ) : null}
             <div className='text-muted-foreground'>
-              Docker：
-              {probe.docker.ok
-                ? '可用'
-                : `不可用（${probe.docker.error}），接入后可在面板安装`}
+              {probe.platform === 'darwin'
+                ? 'macOS 原生节点：槽位以 launchd 服务运行，不需要 Docker'
+                : `Docker：${
+                    probe.docker.ok
+                      ? '可用'
+                      : `不可用（${probe.docker.error}），接入后可在面板安装`
+                  }`}
             </div>
           </div>
         ) : null}
