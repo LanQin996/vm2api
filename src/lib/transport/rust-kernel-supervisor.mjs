@@ -14,8 +14,9 @@ import {
   rustKernelBusy,
 } from './rust-kernel-client.mjs'
 import { maxRequestBytes, streamIdleTimeoutMs } from '../core/config.mjs'
-import { OFFICIAL_CLI_VERSION } from '../identity/vm-identity.mjs'
+import { profileForPreset } from '../identity/official-profiles.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
+import { ccEntrypointFromRouting } from '../identity/crs-persona.mjs'
 import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { isKvmRuntime, runtimeKind } from '../vm/runtime-kind.mjs'
@@ -679,10 +680,20 @@ export function writeKernelConfig(
   vm,
   { token, proxyUrl, proxyRequired, officialCcInference, timezone, routing } = {},
 ) {
-  if (!projectRoot || !vm?.id) return null
-  const runDir = path.join(projectRoot, 'vms', vm.id, 'run')
+  const root = String(process.env.KIN_SLOT_RUN_ROOT || '').trim()
+  const runDir = root ? path.join(root, vm.id) : path.join(projectRoot, 'vms', vm.id, 'run')
   const homeDir = path.join(projectRoot, 'vms', vm.id, 'cli-home')
-  fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
+  const privileged = typeof process.getuid === 'function' && process.getuid() === 0
+  const dirMode = privileged ? 0o700 : 0o2770
+  fs.mkdirSync(runDir, { recursive: true, mode: dirMode })
+  fs.chmodSync(runDir, dirMode)
+  try {
+    fs.chownSync(
+      runDir,
+      privileged ? Number(process.env.KIN_VM_UID_BASE || 10000) + Number(String(vm.id).replace(/\D/g, '') || 1) : -1,
+      privileged ? Number(process.env.KIN_VM_GID || 987) : process.getgid(),
+    )
+  } catch {}
   const socketPath = path.join(runDir, 'kernel.sock')
   const configPath = path.join(runDir, 'kernel.json')
   const tokenPath = path.join(runDir, 'internal.token')
@@ -763,8 +774,11 @@ export function writeKernelConfig(
     slots_per_worker: wrapSlotCount(vm, routing || {}),
     persona_preset: resolveSlotPersonaPreset(vm, routing || {}),
     system_layout: resolveCliSystemLayout(vm, routing || {}),
-    cli_version: OFFICIAL_CLI_VERSION,
+    // cli-node hot-reads this per job: UA, billing cc_version and CCH input follow the slot's profile.
+    cli_version: profileForPreset(resolveSlotPersonaPreset(vm, routing || {})).cliVersion,
     default_cache_ttl: defaultCacheTtl,
+    cc_entrypoint:
+      routing == null ? (previous.cc_entrypoint === 'cli' ? 'cli' : 'sdk-cli') : ccEntrypointFromRouting(routing),
     cch_enabled: cchEnabled,
     auto_compact_window: autoCompactWindow,
   }
@@ -777,6 +791,9 @@ export function writeKernelConfig(
     if (oauthTokenUrl) config.oauth_token_url = oauthTokenUrl
   }
   const changed = writeKernelJsonAtomically(configPath, config, vm)
+  try {
+    fs.chmodSync(configPath, privileged ? 0o600 : 0o640)
+  } catch {}
   // kin-kernel hot-reloads kernel.json: the change must reach wherever the slot reads it.
   if (changed) host.queueSyncRun(record, path.join(projectRoot, 'vms', vm.id))
   return {

@@ -71,6 +71,7 @@ import { getModelPolicy, saveModelPolicy, resetModelPolicy, listPolicyModels } f
 import {
   getGptModelPolicy,
   listGptPolicyModels,
+  listImageToolModels,
   saveGptModelPolicy,
   resetGptModelPolicy,
 } from '../protocol/gpt-model-policy.mjs'
@@ -230,6 +231,8 @@ import {
 import { collectSlotIdentity } from '../vm/guest-identity.mjs'
 import { applyOfficialFingerprintToVm, reconcileOfficialFingerprints } from '../identity/official-fingerprint.mjs'
 import { personaPreviewVars } from '../identity/crs-persona.mjs'
+import { canonicalPersonaCompat } from '../identity/persona-template.mjs'
+import { buildOutboundProfile } from './outbound-profile.mjs'
 import {
   applyGeneratedFingerprint,
   SLOT_LOCALES,
@@ -252,7 +255,7 @@ import {
   syncWrapSample,
   wrapCliHomeDir,
 } from '../vm/wrap-cli-runtime.mjs'
-import { refreshClusterSlotPayloads } from '../cluster/remote-slot.mjs'
+import { inspectClusterPayloadChanges, refreshClusterSlotPayloads } from '../cluster/remote-slot.mjs'
 import { readRawBody as defaultReadRawBody } from '../http/respond.mjs'
 import { corsHeadersForRequest } from '../http/cors.mjs'
 import { restartRustKernel, writeKernelConfig } from '../transport/rust-kernel-supervisor.mjs'
@@ -555,23 +558,7 @@ async function syncInstalledKernels({
   }
   const cluster = clusterVms.length
     ? checkOnly
-      ? {
-          ok: true,
-          changed: true,
-          total: clusterVms.length,
-          ok_count: clusterVms.length,
-          failed_count: 0,
-          changed_count: clusterVms.length,
-          items: clusterVms
-            .filter((vm) => !isCodexVm(vm))
-            .map((vm) => ({
-              id: vm.id,
-              node_id: vm.node_id,
-              ok: true,
-              kernel_changed: true,
-              baked: true,
-            })),
-        }
+      ? await inspectClusterPayloadChanges(project, clusterVms, { routing: routingConfig })
       : await refreshCluster(project, clusterVms, { routing: routingConfig, recreate: true })
     : null
   const failed = (local.items || []).filter((item) => !item.ok)
@@ -877,6 +864,14 @@ export function createPanelHandler(ctx) {
     }
     if (hasUsdQuota) normalized.quota = body.quota_usd
     return normalized
+  }
+
+  function isApiCategory(value) {
+    return (
+      String(value || '')
+        .trim()
+        .toLowerCase() === 'api'
+    )
   }
 
   /** Slots a key may be scoped to; a tenant's foreign slots read as missing. */
@@ -1616,6 +1611,12 @@ export function createPanelHandler(ctx) {
             error: { code: 'key_pool_forbidden', message: '只有管理员可以设置账号池' },
           })
         }
+        if (ident.role !== 'admin' && isApiCategory(body?.category)) {
+          return json(res, 403, {
+            ok: false,
+            error: { code: 'key_category_forbidden', message: '只有管理员可以创建 API 直连密钥' },
+          })
+        }
         const input = normalizePanelApiKeyInput(body, req)
         try {
           const scopeInput = { group_type: body?.group_type, allowed_vms: body?.allowed_vms }
@@ -1677,6 +1678,12 @@ export function createPanelHandler(ctx) {
           return json(res, 403, {
             ok: false,
             error: { code: 'key_pool_forbidden', message: '只有管理员可以设置账号池' },
+          })
+        }
+        if (ident.role !== 'admin' && isApiCategory(body?.category)) {
+          return json(res, 403, {
+            ok: false,
+            error: { code: 'key_category_forbidden', message: '只有管理员可以创建 API 直连密钥' },
           })
         }
         try {
@@ -3126,65 +3133,7 @@ export function createPanelHandler(ctx) {
         return json(res, 200, panel.ok(result))
       }
       if (req.method === 'POST' && /^\/api\/panel\/vms\/[^/]+\/count-tokens$/.test(p)) {
-        const id = p.split('/')[4]
-        const vm = getVm(cfg.paths.project, id)
-        if (!vm) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'vm not found' } })
-        const mode = credentialModeOfVm(vm)
-        if (!isAnySetupTokenMode(mode) && !isApiKeyMode(mode)) {
-          return json(res, 400, {
-            ok: false,
-            error: {
-              code: 'count_tokens_unsupported',
-              message: 'count_tokens 只支持 Setup Token / Console API Key，完整 OAuth 走 Claude Code Messages usage',
-            },
-          })
-        }
-        const exec = workerExecForVm(id)
-        if (!exec) return json(res, 404, { ok: false, error: { code: 'vm_not_found', message: 'vm not found' } })
-        const reqBody = await readBody(req, 256 * 1024).catch(() => ({}))
-        const model = String(reqBody.model || reqBody.model_id || '').trim()
-        const messages = Array.isArray(reqBody.messages) ? reqBody.messages : null
-        if (!model || !messages?.length) {
-          return json(res, 400, {
-            ok: false,
-            error: { code: 'invalid_request', message: 'model 与 messages 必填' },
-          })
-        }
-        const anthropicBody = { model, messages }
-        if (reqBody.system != null) anthropicBody.system = reqBody.system
-        if (Array.isArray(reqBody.tools)) anthropicBody.tools = reqBody.tools
-        const hop = await countTokensViaWorker(exec, {
-          body: anthropicBody,
-          headers: {
-            'user-agent': 'kin-inference/1.0',
-            'anthropic-version': '2023-06-01',
-            'anthropic-beta': isApiKeyMode(mode) ? apiKeyBetaHeader('') : setupTokenBetaHeader(model),
-          },
-          timeoutMs: Math.min(Math.max(Number(reqBody.timeout_ms || reqBody.timeoutMs) || 45000, 5000), 120000),
-        })
-        if (!hop.ok) {
-          const err = hop.body?.error || {}
-          return json(res, hop.status || 502, {
-            ok: false,
-            error: {
-              code: err.code || 'count_tokens_failed',
-              message: err.message || 'count_tokens 失败',
-              type: err.type || undefined,
-            },
-          })
-        }
-        return json(
-          res,
-          200,
-          panel.ok({
-            vm_id: id,
-            model,
-            credential_mode: mode,
-            input_tokens: Number(hop.body?.input_tokens) || 0,
-            usage: hop.body || null,
-            via: hop.via,
-          }),
-        )
+        return json(res, 404, { ok: false, error: { code: 'not_found', message: 'not found' } })
       }
       // GET /api/panel/test-models — models available for test dropdown
       if (req.method === 'GET' && p === '/api/panel/test-models') {
@@ -5063,7 +5012,17 @@ export function createPanelHandler(ctx) {
         if (platform === 'openai' || platform === 'gpt' || platform === 'codex') {
           const pol = getGptModelPolicy()
           const models = listGptPolicyModels()
-          return json(res, 200, panel.ok({ policy: pol, models, effective: models, platform: 'openai' }))
+          return json(
+            res,
+            200,
+            panel.ok({
+              policy: pol,
+              models,
+              effective: models,
+              image_tools: listImageToolModels(),
+              platform: 'openai',
+            }),
+          )
         }
         const pol = getModelPolicy()
         return json(
@@ -5083,7 +5042,17 @@ export function createPanelHandler(ctx) {
         if (platform === 'openai' || platform === 'gpt' || platform === 'codex') {
           const saved = saveGptModelPolicy(body.policy || body)
           const models = listGptPolicyModels()
-          return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'openai' }))
+          return json(
+            res,
+            200,
+            panel.ok({
+              policy: saved,
+              models,
+              effective: models,
+              image_tools: listImageToolModels(),
+              platform: 'openai',
+            }),
+          )
         }
         const saved = saveModelPolicy(body.policy || body)
         seedModelCatalog()
@@ -5105,7 +5074,17 @@ export function createPanelHandler(ctx) {
         if (platform === 'openai' || platform === 'gpt' || platform === 'codex') {
           const saved = resetGptModelPolicy()
           const models = listGptPolicyModels()
-          return json(res, 200, panel.ok({ policy: saved, models, effective: models, platform: 'openai' }))
+          return json(
+            res,
+            200,
+            panel.ok({
+              policy: saved,
+              models,
+              effective: models,
+              image_tools: listImageToolModels(),
+              platform: 'openai',
+            }),
+          )
         }
         const saved = resetModelPolicy()
         seedModelCatalog()
@@ -5215,6 +5194,7 @@ export function createPanelHandler(ctx) {
             policy: getGptModelPolicy(),
             models: listGptPolicyModels(),
             effective: listGptPolicyModels(),
+            image_tools: listImageToolModels(),
             platform: 'openai',
             synced: result.synced,
             source: result.source,
@@ -5229,7 +5209,15 @@ export function createPanelHandler(ctx) {
 
       // GET /api/panel/routing
       if (req.method === 'GET' && p === '/api/panel/routing') {
-        return json(res, 200, panel.buildRouting({ routingConfig: ctx.routingConfig, stickyRouter }))
+        const routingConfig = {
+          ...ctx.routingConfig,
+          compatibility: canonicalPersonaCompat(ctx.routingConfig?.compatibility),
+        }
+        return json(res, 200, panel.buildRouting({ routingConfig, stickyRouter }))
+      }
+      // GET /api/panel/outbound-profile — read-only outbound reference for the global preset
+      if (req.method === 'GET' && p === '/api/panel/outbound-profile') {
+        return json(res, 200, panel.ok({ profile: buildOutboundProfile(ctx.routingConfig || {}) }))
       }
       // GET /api/panel/persona/preview-vars?timezone= — real template constants for the system prompt preview
       if (req.method === 'GET' && p === '/api/panel/persona/preview-vars') {
@@ -5239,6 +5227,7 @@ export function createPanelHandler(ctx) {
       // PUT /api/panel/routing
       if (req.method === 'PUT' && p === '/api/panel/routing') {
         const body = await readBody(req, cfg.limits.max_body_bytes)
+        if (body?.compatibility) body.compatibility = canonicalPersonaCompat(body.compatibility)
         const previousRoutingConfig = structuredClone(ctx.routingConfig)
         try {
           if (body?.codex && Object.prototype.hasOwnProperty.call(body.codex, 'quota')) {

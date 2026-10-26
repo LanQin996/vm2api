@@ -1,5 +1,162 @@
 # Changelog
 
+## 未发布
+- #730：面板模型目录固定模型 `auto`；三种目录模式在其启用时均列出，`worker_only` 也会追加已启用的 `auto`；停用后不列出。请求 `model: "auto"` 原样出站，不改写成具体 Claude 模型。
+- #730：auto mode 分类器契约对齐 cli-node 2.1.310：`temperature` 默认 1，stage 1 为 64/256，stage 2 与 tool 路径 `max_tokens=8192`。网关继续原样传递这些已有字段。`extra_body` 仍在官方字段清洗时丢弃；attribution 与 `auto-mode-classifier-2026-07-16` 的透传不由这次测试证明。
+
+- cli-hop 每次请求从 routing 文件读一次 `cc_entrypoint`。system 身份、guidance 和补出的 billing 使用同一次结果；文件正在写入时退回内存快照。改 `sdk-cli` / `cli` 后这三处一起变。
+
+- 动态 profile 按出站入口分成两套。`cc_entrypoint=cli` 用交互身份句，并保留 guidance 里的 `! <command>` 提示。缺省 `sdk-cli` 用 Agent SDK 身份句，去掉这句，对齐 `--print` 抓包。billing、UA 和兜底头仍走原来的入口开关。
+
+- 设置 → 协议和 system提示词可切换出站入口 `sdk-cli` / `cli`。网关生成的 billing、出站 UA、cli-node 兜底 billing 使用同一个值。调用方自带的 billing 入口不改，CCH 密封只改 `cch`。保存后写入各 Claude 槽 `kernel.json` 的 `cc_entrypoint`，当前本机 cli-node 每次请求热读，不重启槽。缺省仍是 `sdk-cli`。plain ELF 已验证两个值同步切换，非法值回到 `sdk-cli`。
+
+
+- cli-node 对齐 2.1.303 计费行和 beta 选择器后重编。源码 `9a0f53da`，协议 `850b57aa`。plain ELF 五模型最终 beta 与 API key 路径的抓包顺序一致，haiku 的 `claude-code` 在第 6 位，auto 为 12 项。plain 117487744 字节 `56f068f0…`；UPX 5.0.2 `--best --lzma` 后 27794232 字节，SHA256 `d9f0ba21f2b12f2b00117e0f2fc8862ac8569477f5a4f5797324d9336c523e0b`。`upx -t` 与压缩后 cli-hop e2e 7/7 通过，`--version` 为 `2.1.303 (Claude Code)`。已替换本机 `share/wrap-cli/cli-node`。payload 未更新，未部署。
+- 官方档和完整档的 system 对齐 2.1.303：billing、身份、harness（`1h` + `scope global`）、guidance（`1h`）。拆分边界只交给 cli-node，最终请求不出站。调用方 system 和第三方 harness 接在 guidance 后，不替换官方提示。
+
+- 本机 `share/wrap-cli/cli-node` 替换为隔离快照构建：源码 `ed9fd21`，外部依赖 `src/lib/protocol/claude-code-betas.mjs` SHA256 `0dd4d8d9…`，另补已提交代码所需的 `SYSTEM_PROMPT_REPORTING_OUTCOMES` 导出。plain 111237248 字节 `d6fd3a91…`；UPX 5.0.2 `--best --lzma` 后 27177428 字节，SHA256 `2c1b271df033e23830cc8cdc0181fab60d4de96ff8cf4cd406651aecd9b5ae9f`。`upx -t` 通过，`--version` 为 `2.1.303 (Claude Code)`。尚未更新 payload，未部署。
+- 面板默认 beta 对齐 cli-node 2.1.303 `--print` 的 14 项前缀。setup-token 仍用短列表。模型句补 Haiku 4、Sonnet 4、Opus 4 的知识截止。
+- official_303 在 harness 与 guidance 之间保留 `__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__`，只交给 cli-node 拆分。cli-node 认出 303 的 billing、身份、harness 后保留该边界：harness 出站为 `1h + scope global`，guidance 为 `1h`，边界字符串本身不出站。HTTP 渲染仍丢弃它。旧 `share/wrap-cli/cli-node` 不认这个形状，临时验证二进制 SHA256 `62029a65…`，未替换交付二进制，未部署。
+- 模型附加句改为按档开关，默认关闭。关闭时 `{{model_sentence}}` 不渲染；打开后才取 `model_env_extra` 里当前模型的句子。清空模板块后也不追加。
+- 网关生成的 billing 与 cli-node 缺失 billing 时的兜底头改为 `cc_entrypoint=sdk-cli`，与 2.1.303 抓包一致；调用方自带的 billing 不改写。出站 UA 已是 `(external, sdk-cli)`，`cc_turn_origin` 仍为 `sdk`。所有档位的出站 billing 字节随之变化，各会话首轮重建一次缓存。
+- 请求日志的 `outbound_headers` 改为新 cli-node 在最终 fetch 前回传的脱敏请求头，新增采集来源；Node → worker 中间头另存 `worker_envelope_headers`。流式与非流式入站均支持，内部事件不发给客户端、不触发提交或上游 idle 计时；旧 CLI 未回传时明确显示未获取，旧日志不冒充最终值。需同时更新 Node、web 与新 cli-node；本轮尚未发布 payload 或部署。
+- cli-node 补齐 `Accept: application/json, text/event-stream` 与 `Accept-Encoding: gzip, br`，在 CCH 密封后按最终 UTF-8 请求体写 `Content-Length`；修复旧 SDK 把毫秒 timeout 写入 `x-stainless-timeout` 的问题（缺省 `600000` → `600` 秒）。对应构建尚未进 payload。
+- 缓存前缀兼容 oh-my-pi 的图片预算：omp 超出图片上限（未识别的 provider 未配 `imageCountBudget` 时为 5 张）后，每来一张新截图就丢弃最旧一张；最旧那张在长会话里位置很深，改动之后的历史全部失效，每张截图都整段重写。现在会话一旦观察到客户端丢图，网关按 omp 丢图后的同一形态（含 `(see attached image)` → `[image omitted: provider image limit]` 与报错结果的提升图说明）去掉水位以下的图片：超过 48 条消息的图片会把水位推到最近 24 条，客户端在水位以上丢图时跳过剩余图片的较旧一半，客户端此后的丢图都落在水位以下。客户端仍保留的图片中，最近 24 条消息内的与最新截图始终发出。水位按调用方会话（含 API key）记录，换号后仍然有效；水位以下的历史与上一轮不一致（压缩、回退、同长度替换）时清零。从不丢图的客户端出站不变。
+- 历史改动后的缓存断点：读断点放在改动前最近一个确实写过且仍在 TTL 内的缓存位（只认已确认成功的请求写下的位置；未写 `ttl` 的断点按上游的 5 分钟计；重启后退回改动前最后一条 user）；写断点放在改动之后最旧一张仍发送的图片前面，下一次去图从这里只重写这张图之后的部分；下一轮显式读这个位置。不超过 4 个断点，尾部断点的 TTL 保留。上游缓存模型下（预算 5，截图每 1/3/8/20 轮一张，240 轮，缓存写入按 2 倍、未缓存输入按 1 倍计），总费用约为理想值的 2.0–2.6 倍；不在图片前写入时为 4.5–15 倍，仅客户端丢图时为 6–45 倍。`[cache-prefix]` 日志附 `anchored messages[N]`、`checkpoint messages[N]` 与图片水位。
+
+## 1.3.226 — 2026-10-24
+
+- 协议 / billing（#698）：调用方自带的 billing 不再改写 `cc_entrypoint`；网关生成或 cli-node 缺失 billing 时的补头仍为 `cc_entrypoint=sdk-cli`，并带上 `cc_turn_origin` 与轮次索引。文档明确 CCH 密封块属于 billing body、非 User-Agent；补充 crs-persona 与面板协议页回归测试。
+- 出站身份对齐 2.1.303：中间 hop 与出站 UA 为 `(external, sdk-cli)`；官方身份预设、`official_303` 别名与「官方完整提示词」模板/首句对齐 2.1.303 样本；透传抓包到的 Claude 身份相关头。
+- 各档位网关生成与 cli-node 兜底 billing 的 `cc_entrypoint` 由 `cli` 改回 `sdk-cli`（与 2.1.303 抓包一致）；出站 billing 字节随之变化，各会话首轮重建一次缓存。
+- 请求日志：`outbound_headers` 改为 cli-node 在最终 fetch 前回传的脱敏请求头；Node → worker 中间头存入 `worker_envelope_headers`。流式与非流式入站均支持；旧 CLI 未回传时显示未获取，旧日志不冒充最终值。
+- payload 钉住 `payload-2026.10.24-cli-303-sdk`，cli-node `cb2f8fb9`（27784880 字节）。新 cli-node 补齐 `Accept: application/json, text/event-stream` 与 `Accept-Encoding: gzip, br`，CCH 密封后按最终 UTF-8 请求体写 `Content-Length`；修复旧 SDK 把毫秒 timeout 写入 `x-stainless-timeout`（缺省 `600000` → `600` 秒）。
+
+已部署机升级：须同时更新 Node 控制面与 `web/dist`，执行 `npm run fetch:payload` 换上 `payload-2026.10.24-cli-303-sdk` 后 `wrap-cli/sync`，再重启 Node；仅更新 Node 不够。勿对槽位做 sync/recreate 以外的破坏性操作。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.225 — 2026-10-24
+
+- CI：PR 的 run 先合入 base 分支最新提交再测，Re-run 即对着当前 main（GitHub 的 `refs/pull/<n>/merge` 停在 PR 最后一次 push 时的 base）；`cancel-in-progress` 只对 PR 生效，main 每次 push 都留下结论。新增 `pr-rerun.yml`：main 的 ci 由红转绿时自动重跑最近一次 ci 失败的 open PR（非草稿、无冲突），也可手动触发。
+
+已部署机升级：无运行时变化（仅 CI / 文档），可不升级。
+
+## 1.3.224 — 2026-10-24
+
+- API 直连原生 Anthropic Messages：端点上显式配置的头优先于调用方协议头；`anthropic-beta` 取端点与调用方的并集（未知 beta / safeguards 照常透传）；调用方带来的 `context-1m` 按模型页 1M 策略剥离或放行，端点自己配的不受影响。修复 #667 后 Claude Code 请求使端点 headers 配置失效、并绕过 1M 门禁的问题。
+
+已部署机升级：仅更新 Node 控制面后重启（无 web、无 payload 变化）。不必 `fetch:payload` / `wrap-cli/sync` / recreate 槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.223 — 2026-10-24
+
+- 以 v1.3.221 生产验证产物为基线：`deploy/payload.json` 改指 `payload-2026.10.23-v1.3.221`，并钉住 `kin-worker` / `kin-egress` / `kin-slot-gate`（与线上逐字节一致）。release.yml 与 amd64 镜像不再从源码编译这三个 helper；改 `worker/` 后须重新钉 payload 才会发出。ARM64 镜像与附件不变。
+- CI 合并为单个 job：格式与语法、payload 校验、Node unit、Go vet/test、web；去掉 ARM64 冒烟、真链路 CCH e2e 与 ARM64 主机脚本测试。
+- 删除 1.3.198–1.3.219 的 CLI CCH 历史热修 `scripts/fix-cli-cch.mjs` 及其测试与文档；钉住的 cli-node `944f6457` 已含该修复。
+- 原生 Anthropic Messages 转发调用方协议头（含未知 anthropic-* beta / safeguards）；OpenAI 兼容路由不变。（#667）
+
+已部署机升级：仅更新 Node 控制面后重启（#667 无 web；#696 payload 字节与 1.3.221 相同）。不必 `fetch:payload` / `wrap-cli/sync` / recreate 槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.222 — 2026-10-23
+
+- 保留调用方自带 description+schema 的 web_search 族 function 工具，不再改写成原生服务端搜索；非搜索名工具不受影响。（#694）
+
+已部署机升级：仅更新 Node 控制面与 `web/dist` 后重启；不必 `fetch:payload` / `wrap-cli/sync` / recreate 槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.221 — 2026-10-23
+
+- 新增提示词档「官方 2.1.303（按模型）」`official_303`，手动选择，默认档仍是官方完整提示词。Opus 4.8 / 5 / 5.5、Fable、Mythos 等按 2.1.303 样本组装：system 为 billing、身份句、2.1.303 主提示词；调用方 system 放进第一条 user 的 `<system-reminder>`（官方调用方的 system 不出站，`<total_tokens>` 计数先抹平）；Environment 作为尾部 role=system，只替换 `# Environment` 段；断点为身份句、主提示词、最后一条 user，4 条消息起再加上一条 user（共 3–4 个），TTL 取面板缓存 TTL。Sonnet、Haiku、Opus 4.0–4.7 沿用现有 cli-hop 结构（含 1.3.218 的两个 user 断点），只把版本号换成 2.1.303。
+- 「官方提示词」模板的身份块与「0注入」billing 里的 `prompt_version=<…>` 改为交互 CLI 身份句 `You are Claude Code, Anthropic's official CLI for Claude.`；已保存的自定义模板不变。
+- 网关生成的 billing 与 cli-node 兜底 billing 的 `cc_entrypoint` 固定为 `cli`（原 `sdk-cli`），出站 UA 也锁为 `(external, cli)`；`cc_turn_origin` 不变。所有档位的出站 billing 字节随之变化，各会话首轮重建一次缓存。
+- 选 303 档的槽位 UA、billing `cc_version` 与 CCH 输入为 2.1.303，按 job 热读 kernel.json，不重启槽位；其余四档仍为 2.1.296。
+- 设置 → 协议新增只读「当前出站参照」：按已保存的全局档位列出提示词档、CLI 版本、UA、billing `cc_version` 与 OAuth beta 样例（`GET /api/panel/outbound-profile`）。协议页保存逻辑不变。
+- 新增 `scripts/outbound-shape.mjs`（出站 body 归约成脱敏结构，与 2.1.303 骨架逐项对照；`--wire` 校验 CLI 最终字节）与 `scripts/outbound-replay.mjs`（私有 fixture 经真实 kernel + cli-node 链路回放并判定）。
+- 控制面的出站参照 UA 同步为 `cli`，Node → worker 的 envelope 日志不冒充 CLI 最终请求头。
+- payload 改钉 cli-node `944f6457`（附件 `cli-node-303-944f6457`）：在 1.3.220 的 CCH system-only 修复上加 profile 模式（`official_303`）并锁 `cc_entrypoint=cli`。
+- 仓库自带的 `src/config/routing.json` 默认请求日志模式由 `debug` 改为 `normal`（普通）；Debug 需在 设置 → 日志 手动切换，或用 `KIN_REQUEST_LOG_MODE=debug` / 单请求 `X-Kin-Debug: 1`。已部署机的 `routing.json` 不被覆盖，现有档位保持不变。
+
+已部署机升级：需要同时更新 Node 控制面、`web/dist` 与 cli-node（`npm run fetch:payload` 换上 `944f6457` 后 `wrap-cli/sync`；新 cli-node 已含 1.3.220 的 CCH 修复，不必再跑 `fix-cli-cch`；除 billing 外，不选 303 档时出站结构与 `b5054cb8` 一致）。槽内已是 `944f6457` 的机器 `SLOT_SYNC=skip`。**新 cli-node 上线前不要选 303 档**：旧 cli-node 会把 `kin_outbound_shape` 当调用方字段转发，上游 400。回滚到旧版本后，旧面板不接受 `official_303`，需在 system提示词页重新选档再保存。OMP 工具图片尾置仍未恢复，另行处理。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.220 — 2026-10-23
+
+- cch：Node 与原生 CLI 只投影/赋值首个 canonical system billing block，不再误把 messages 或后续 system 中的 billing 示例当作真实计费头改写历史；manifest 钉住已在线验证的 cli-node；提供 `scripts/fix-cli-cch.mjs` 热修 1.3.198–1.3.219 四种历史 CLI payload。（#692）
+
+已部署机升级：须 `npm run fetch:payload`（或等价方式）换上新 cli-node；已在 1.3.198–1.3.219 部署的机器须显式执行 `fix-cli-cch`；勿做集群 sync、勿 recreate 槽位。**仅更新 Node 控制面不够**。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.219 — 2026-10-23
+
+- `kin-guest-exec`：修正 `if ! run_ssh` 在 POSIX 下吞掉真实退出码的问题；来宾非零退出、ssh 255、timeout 124 不再误报为 0，控制面不再把来宾崩溃误判为 `worker_output_invalid`。（#680）
+- **KVM 运行器**：需同步重建/部署 `docker/kin-kvm` 镜像（或等价方式更新 runner 内 `kin-guest-exec` 脚本）后，线上槽位才会生效。
+
+已部署机升级：须重建并同步部署 **kin-kvm** 镜像（或等价更新 runner 内 `kin-guest-exec`）；**仅更新 Node 控制面与 `web/dist` 不够**。更新后重启相关服务。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.218 — 2026-10-23
+
+- 版本号对齐线上。官方 Claude Code / Codex 透传（原 #674、#676）已从 1.3.212 起的历史中移除：透传上线后缓存读命中锁在 system+tools 前缀（约 39.7K），messages 每轮新建缓存。cli-hop 重写与 kernel persona 恢复 1.3.209 行为。
+- cli-hop 出站 message 缓存断点恢复为两个：最后一条 user 与上一条 user（4 条消息起）。只打尾部一个点时，上一轮写入接不上就只能靠上游 20 位置回溯，越界后读命中锁在 system+tools 前缀（约 39.7K），messages 每轮整段重写。system 两点不变，总数 4 点。
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.217 — 2026-10-23
+
+- 新增 `POST /v1/images/generations`、`/v1/images/edits`（edits 支持 multipart）：经槽位直连 Codex Images 接口，与 `/v1/alpha/search` 同一做法，不经内核；Free 槽不接生图，`x-codex-image-turn-id` 固定同一轮编辑的槽，槽位按密钥属主过滤。（#685）
+- 图像模型 `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` 可在面板分别启停；停用后 Images 请求与 Responses `image_generation` 工具在本地 400，启用的列入 `/v1/models`。（#685）
+- 生图单独计价：迁移 `042` 给 `usage_logs` 加 `image_*` 列，`image_cost` 计入总费用；用量拆分不自洽时整行未定价。（#685）
+- OpenAI 模型页：`codex.model_mappings` 可增删改（`codex-auto-review` 置顶，目标限已启用 GPT 对话模型，拒绝 `claude-*` 别名）；「同步 GPT」保存上下文窗口、推理与服务档位；去掉 Thinking / budget / 1M beta / cache TTL 等 Claude 专有控件。（#685）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次，启动时自动执行迁移 `042`（只加列）。无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.216 — 2026-10-22
+
+- GPT（Codex）槽调度按密钥属主收窄，与 Claude 池一致：租户密钥不再落到平台或其他租户的 GPT 槽，平台密钥也不进租户 GPT 槽。
+- API 直连（category=`api`）仅管理员：租户不能在面板创建或把密钥改为 `api`；推理入口在 api-kernel hop 拒绝租户已有 `api` 密钥（`api_backend_forbidden` / 403）。
+- 删除 VM/槽位仅管理员：租户不能删除自建槽；面板删槽按钮对租户隐藏。
+- **破坏性**：租户若仍持有 category=`api` 的密钥，调用平台 API 上游将收到 403；租户不能再自行删除槽位，需联系管理员。
+- `/v1/usage` 在 Codex 路径上读取用量窗口（与 Messages 属主解析一致）。
+
+## 1.3.215 — 2026-10-22
+
+- `/v1/usage` 与 `/v1/messages/count_tokens` 传入 `apiKeyStore`，与 Messages 一致解析密钥属主角色；面板会话无 `apiKeyRecord` 时按会话角色收窄作用域（admin/super → 平台池，user → 仅本人 VM），避免租户 peek 平台账号用量或 admin 托管密钥误报 503。（#658，#677）
+- 管理端 `enrichVm` 输出 `owner_user_id`、`origin`，租户自建槽位不再显示「平台池（未分配）」；槽位重建 `buildRecreatedVmRecord` 保留 `origin`，避免租户自建槽被误判为 `admin_assigned` 并影响配额与删租户回收。（#677）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。无迁移、无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.214 — 2026-10-22
+
+- OpenAI Responses 上游：生命周期元数据（`response.created` / `queued` / `in_progress` / `metadata` / `keepalive`）在首条真实模型输出前不 commit attempt；仅 metadata 或 `overload` / `slow_down` 等早退失败时保持 `committed: false`，failover 仍可重试。（#645）
+
+已部署机升级：更新 Node 控制面与 `web/dist` 后重启一次。无迁移、无新依赖，不必 `wrap-cli/sync`、不必 `fetch:payload`、不必重建槽。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.213 — 2026-10-22
+
+- 版本号保留；原官方透传修正（#676）已从历史移除，本版无运行时变化。
+
+## 1.3.212 — 2026-10-22
+
+- 版本号保留；原官方透传（#674）已从历史移除，本版无运行时变化。
+
+## 1.3.211 — 2026-10-22
+
+- 单测对齐 cli-hop 缓存标记已写入的会话 TTL（默认 `1h`，请求带 `5m` 则为 `5m`），以及 OAuth persona 三块 system（billing / identity / persona）；修正 `officialMessageMarker` 过时注释。纯测试修复，无运行时行为变化。（#675）
+
+## 1.3.210 — 2026-10-22
+
+- 槽位「采集特征」和终端「系统特征」不再读到宿主机：Docker 槽的 CPU 型号、DMI、MAC 读槽位计算机（`/etc/kin-hardware`、`/etc/kin-dmi`），核数与内存读容器 cgroup 配额；没有配额时读计算机文件，都没有才回落 `/proc`、`/sys`。KVM 槽不变。（#673）
+- `kin-computer` 默认造 Linux PC 计算机（Docker 槽原为 macOS 人设），`--os` 可选 `windows` / `macos`，KVM 支持 linux / windows。payload 改指 `payload-2026.10.22-computer-linux`，只换 `kin-computer`。已有槽位身份不重算。（#673）
+- 一键升级与 fleet `action=telemetry` 刷新 Go 槽位服务时，数据库仍登记但本机已无 Docker 容器（`No such container: kin-NN`）的 VM 记为跳过并继续处理其余槽位，不再因此整批失败；真实容器上的刷新失败仍会硬失败。（#642，#628，REQ-0628）
+- KVM 面板终端与官方登录终端显式设置 HOME=/home/kincli、CLAUDE_CONFIG_DIR 与工作目录，避免继承 root SSH 的 HOME 导致 mkdir /root/.claude 失败；Docker 槽行为不变。（#656）
+- 导入页以 start:false 建空槽后，打开官方登录终端前会先启动已绑定出口的槽位；已运行直接开终端，无出口拒绝，失败可重试。（#650，#657）
+- 池调度：异步 worker 健康探测返回后重新读取 `Date.now()` 再判 cooldown 与凭证门禁，避免探测期间已过期的 cooldown 被重新入队且错过唤醒通知。（#671）
+- JEV 语义审核：`jevModelDocument` 保留 system / user 消息与 input 的来源标签（如 `user message N`），同来源+正文才去重，assistant / tool 不参与，避免历史引用被当成当前提问。（#671）
+
+已部署机升级：更新 Node 控制面与 `web/dist`，执行 `npm run fetch:payload`（或更新控制面镜像）换上新 `bin/kin-computer`，重启一次 Node。无迁移、无新依赖，不必 `wrap-cli/sync`，不必重建槽位容器；已有槽位计算机身份不变。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
+## 1.3.209 — 2026-10-22
+
+- 遥测 `event_data.env` 不再附带客户机硬件（`cpu_model`、`cpu_cores`、`memory_bytes`、`root_disk`、`mac`、`dmi_*` 共 11 项），与官方 Claude Code 2.1.296 的 env 字段一致；`worker.json` 的 identity 也不再写这些键。新 `kin-worker` 发送前会剔除旧 `worker.json` 里残留的同名键。槽位运维页「物理特征」照旧读取和展示。（#646）
+- 面板窄屏修复：设置 → 关于的 changelog 里长键名、路径可任意处折行，手机上不再把整页撑宽；设置页左侧分栏导航改按内容区宽度切换（`@2xl/content`），平板竖屏（768）不再把正文挤到约 270px 导致协议 / 遥测 / 通知页横向溢出；Anthropic 控制台地址行同样按内容区宽度横排，「测试 / 保存 / 删除」收进同一格，宽屏下「删除」不再单独掉到下一行。（#662）
+- debug 请求日志的 `outbound_body` / `outbound_headers` 改为在传输层 `finalizeWorkerPayload` 之后、真正 POST 给槽位 worker 的 envelope 上取值；从未发出则为 null。不改出站内容、不改推理路径。（#669）
+
+已部署机升级：更新 Node 控制面、`web/dist` 与 `bin/kin-worker`，重启一次 Node。无迁移、无新依赖。`worker.json` 重写（播种、换票、fleet `action=telemetry`）或换上新 `kin-worker`，两者任一发生后就不再上传硬件键；集群槽在下次启动、重载或出口重建时推送。不要覆盖 `routing.json`、`vms/`、`data/`、`.env`。
+
 ## 1.3.208 — 2026-10-21
 
 - 回退 1.3.208 的请求体重组与缓存断点改动，保持 1.3.207 的 thinking、system 和消息结构；仅在 cli-node 最终 hop 补回缺失的 `x-anthropic-billing-header`。

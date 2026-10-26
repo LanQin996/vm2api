@@ -17,7 +17,12 @@ import {
   startSlotImageBuild,
   unbindPlacement,
 } from '../../src/lib/cluster/placement.mjs'
-import { remoteIptablesScript, slotContainerBody, slotEgressNames } from '../../src/lib/cluster/remote-slot.mjs'
+import {
+  inspectClusterPayloadChanges,
+  remoteIptablesScript,
+  slotContainerBody,
+  slotEgressNames,
+} from '../../src/lib/cluster/remote-slot.mjs'
 import {
   ensureRemoteOfficialCredentialLink,
   pullSlotCredentials,
@@ -446,6 +451,45 @@ test('slot image tag follows payload bytes only; a VERSION bump keeps the image'
   fs.writeFileSync(path.join(root, 'bin/kin-worker'), '#!/bin/sh\n')
   assert.throws(() => slotImageSpec(root, 'ubuntu-24.04'), { code: 'slot_payload_invalid' })
   assert.throws(() => slotImageSpec(root, 'nope-os'), { code: 'invalid_kernel' })
+})
+
+test('cluster payload check skips a container already on the content-hashed image', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-cluster-payload-'))
+  try {
+    for (const file of [
+      'share/wrap-cli/cli-node',
+      'share/wrap-cli/cc-node',
+      'bin/kin-kernel',
+      'bin/kin-worker',
+      'bin/kin-egress',
+    ])
+      fakeElf(path.join(root, file), 1)
+    const saved = ['KIN_CLUSTER_WORKER_BIN', 'KIN_CLUSTER_EGRESS_BIN'].map((key) => [key, process.env[key]])
+    process.env.KIN_CLUSTER_WORKER_BIN = path.join(root, 'bin/kin-worker')
+    process.env.KIN_CLUSTER_EGRESS_BIN = path.join(root, 'bin/kin-egress')
+    const vm = { id: 'vm-03', node_id: 'node-a', kernel: 'ubuntu-24.04' }
+    const current = slotImageSpec(root, 'ubuntu-24.04').ref
+    const inspect = async () => ({ Config: { Image: current } })
+    const same = await inspectClusterPayloadChanges(root, [vm], { sessionFor: async () => ({ docker: {} }), inspect })
+    assert.equal(same.changed_count, 0)
+    fakeElf(path.join(root, 'share/wrap-cli/cli-node'), 2)
+    const next = await inspectClusterPayloadChanges(root, [vm], { sessionFor: async () => ({ docker: {} }), inspect })
+    assert.equal(next.changed_count, 1)
+    const native = { id: 'vm-mac', node_id: 'node-mac', runtime: { payload_digest: 'old' } }
+    const nativeReport = await inspectClusterPayloadChanges(root, [native], {
+      nativeVm: () => true,
+      nativeDigestFor: () => 'new',
+    })
+    assert.equal(nativeReport.items[0].kernel_changed, true)
+    native.runtime.payload_digest = 'new'
+    const sameNative = await inspectClusterPayloadChanges(root, [native], {
+      nativeVm: () => true,
+      nativeDigestFor: () => 'new',
+    })
+    assert.equal(sameNative.changed_count, 0)
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('amd64 node payload stays separate from native ARM control helpers', (t) => {

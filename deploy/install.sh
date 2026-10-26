@@ -454,7 +454,7 @@ sync_wrap_cli() {
     echo "  curl -sS -X POST http://127.0.0.1:${port}/api/panel/wrap-cli/sync -H \"Authorization: Bearer \$VM2API_API_KEY\" -H 'Content-Type: application/json' -d '{\"restart\":true}'"
     return 1
   fi
-  info "检查槽内 kernel 是否变化"
+  info "检查本机槽和集群槽的 kernel、cli-node、cc-node 是否变化"
   response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/wrap-cli/sync" \
     -H "Authorization: Bearer ${key}" \
     -H "Content-Type: application/json" \
@@ -470,11 +470,11 @@ if not d.get("ok") or failed:
     raise SystemExit(2)
 print("1" if changed else "0")')" || return 1
   if [ "$probe" != "1" ]; then
-    ok "kernel 未变化，跳过停调度和重启"
+    ok "槽内二进制未变化，跳过停调度和重启"
     return 0
   fi
   pause_schedulable_slots "$key" "$port" || { resume_schedulable_slots "$key" "$port" || true; return 1; }
-  info "kernel 已变化，重启受影响的槽"
+  info "二进制已变化，更新本机槽并重建变化的集群槽镜像"
   response="$(curl -fsS -X POST "http://127.0.0.1:${port}/api/panel/wrap-cli/sync" \
     -H "Authorization: Bearer ${key}" \
     -H "Content-Type: application/json" \
@@ -488,7 +488,7 @@ total = int(r.get("total") or 0)
 ok = int(r.get("ok_count") or 0)
 print(f"wrap-cli/sync: {ok}/{total}, failed={failed}")
 raise SystemExit(0 if d.get("ok") and failed == 0 else 1)'
-  ok "槽内 kernel 已更新"
+  ok "本机槽和集群槽二进制已更新"
 }
 
 RAW_BASE="https://raw.githubusercontent.com/${GITHUB_REPO}"

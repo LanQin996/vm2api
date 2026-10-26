@@ -35,6 +35,7 @@ import {
   PersonaTemplateEditor,
   Problems,
 } from '@/features/settings/persona-editors'
+import { ccEntrypointFromCompat } from '@/features/settings/protocol-authority'
 import { InjectCard } from './inject-card'
 import { SystemPreview } from './system-preview'
 
@@ -62,7 +63,7 @@ function PresetBar({
     <div
       role='tablist'
       aria-label='system 提示词档位'
-      className='grid grid-cols-2 gap-2 lg:grid-cols-4'
+      className='grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-5'
     >
       {PERSONA_PRESET_OPTIONS.map(([key, label]) => {
         const selected = key === viewing
@@ -96,6 +97,115 @@ function PresetBar({
         )
       })}
     </div>
+  )
+}
+function EntrypointSwitch({
+  compat,
+  onChange,
+}: {
+  compat: Compat
+  onChange: (next: Compat) => void
+}) {
+  const value = ccEntrypointFromCompat(compat)
+  return (
+    <Card className='gap-3 px-4 py-3'>
+      <div className='flex flex-wrap items-center justify-between gap-3'>
+        <div className='space-y-1'>
+          <p className='text-sm font-medium'>出站入口</p>
+          <p className='text-xs leading-5 text-muted-foreground'>
+            写入 billing 的 cc_entrypoint，并同步出站 UA。调用方自带的 billing
+            不改。
+          </p>
+        </div>
+        <div className='flex gap-2'>
+          {(['sdk-cli', 'cli'] as const).map((entry) => (
+            <Button
+              key={entry}
+              type='button'
+              size='sm'
+              variant={value === entry ? 'default' : 'outline'}
+              aria-pressed={value === entry}
+              className='cursor-pointer'
+              onClick={() => onChange({ ...compat, cc_entrypoint: entry })}
+            >
+              {entry}
+            </Button>
+          ))}
+        </div>
+      </div>
+    </Card>
+  )
+}
+function ModelEnvExtra({
+  compat,
+  onChange,
+}: {
+  compat: Compat
+  onChange: (next: Compat) => void
+}) {
+  const stored =
+    compat.model_env_extra &&
+    typeof compat.model_env_extra === 'object' &&
+    !Array.isArray(compat.model_env_extra)
+      ? (compat.model_env_extra as Record<string, string>)
+      : {}
+  const rows = Object.entries(stored)
+  const [model, setModel] = useState('')
+  const [text, setText] = useState('')
+  const save = (next: Record<string, string>) =>
+    onChange({ ...compat, model_env_extra: next })
+  return (
+    <Card className='gap-3 px-4 py-3'>
+      <div className='space-y-1'>
+        <p className='text-sm font-medium'>按模型附加</p>
+        <p className='text-xs leading-5 text-muted-foreground'>
+          模板里的 {'{{model_sentence}}'} 取当前模型这一句，追加在 Environment
+          之后。没填的模型不追加。
+        </p>
+      </div>
+      {rows.map(([id, value]) => (
+        <label key={id} className='block space-y-1'>
+          <span className='font-mono text-xs'>{id}</span>
+          <textarea
+            value={value}
+            rows={2}
+            maxLength={4000}
+            className='w-full rounded-md border bg-background px-2 py-1.5 text-sm'
+            onChange={(event) => save({ ...stored, [id]: event.target.value })}
+          />
+        </label>
+      ))}
+      <div className='flex gap-2'>
+        <input
+          value={model}
+          placeholder='claude-sonnet-5-5'
+          className='h-8 min-w-0 flex-1 rounded-md border bg-background px-2 font-mono text-xs'
+          onChange={(event) => setModel(event.target.value.trim())}
+        />
+        <Button
+          type='button'
+          size='sm'
+          variant='outline'
+          className='cursor-pointer'
+          disabled={!/^[a-z0-9][a-z0-9._-]{0,127}$/i.test(model)}
+          onClick={() => {
+            save({ ...stored, [model.toLowerCase()]: text })
+            setModel('')
+            setText('')
+          }}
+        >
+          添加
+        </Button>
+      </div>
+      <textarea
+        value={text}
+        rows={2}
+        maxLength={4000}
+        placeholder='这个模型要追加的句子'
+        className='w-full rounded-md border bg-background px-2 py-1.5 text-sm'
+        onChange={(event) => setText(event.target.value)}
+      />
+    </Card>
   )
 }
 
@@ -159,6 +269,7 @@ export function SystemPromptWorkspace({
 
   return (
     <div className='space-y-4'>
+      <EntrypointSwitch compat={compat} onChange={onChange} />
       <PresetBar
         active={active}
         viewing={viewing}
@@ -191,6 +302,24 @@ export function SystemPromptWorkspace({
             </div>
           ) : null}
 
+          {viewing === 'official_303' ? (
+            <div className='space-y-1.5 rounded-xl border bg-muted/30 px-4 py-3 text-xs leading-5'>
+              <p className='font-medium'>按模型分流，版本 2.1.303</p>
+              <p className='text-muted-foreground'>
+                Opus 4.8 / 5 / 5.5、Fable、Mythos 等：下面三块 system；调用方
+                system 放进第一条 user 的 &lt;system-reminder&gt;（官方调用方的
+                system 不出站）；Environment 作为尾部
+                role=system；最后一条与上一条 user 的末尾非 thinking 块打点（共
+                3–4 个断点），TTL 取协议页的缓存 TTL。
+              </p>
+              <p className='text-muted-foreground'>
+                Sonnet、Haiku、Opus 4.0–4.7：沿用现有 cli-hop
+                结构，只把版本号换成 2.1.303，不使用这里的模板。实际生效值见
+                设置 → 协议 → 当前出站参照。
+              </p>
+            </div>
+          ) : null}
+
           <InjectCard
             compat={compat}
             server={server}
@@ -200,6 +329,7 @@ export function SystemPromptWorkspace({
             env={templateSlotState(blocks, 'env')}
             onChange={onChange}
           />
+          <ModelEnvExtra compat={compat} onChange={onChange} />
 
           <Collapsible open={templateOpen} onOpenChange={setTemplateOpen}>
             <Card className='gap-0 py-0'>

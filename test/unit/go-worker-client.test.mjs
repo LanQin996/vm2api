@@ -310,6 +310,73 @@ unixTest('callGoWorker sends envelope over authenticated Unix socket', async () 
   }
 })
 
+unixTest('callGoWorker and streamGoWorker report exactly the envelope they post', async () => {
+  const posted = []
+  const fx = await fixture(async (req, res) => {
+    const chunks = []
+    for await (const chunk of req) chunks.push(chunk)
+    posted.push(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+    if (posted.length === 1) {
+      res.setHeader('content-type', 'application/json')
+      res.setHeader('x-terminal-state', 'verified')
+      res.end(JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }] }))
+      return
+    }
+    res.setHeader('content-type', 'text/event-stream')
+    res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"msg_env"}}\n\n')
+    res.write('event: message_stop\ndata: {"type":"message_stop"}\n\n')
+    res.end()
+  })
+  try {
+    const reported = []
+    const body = {
+      model: 'claude-opus-5-5',
+      system: [{ type: 'text', text: 'x-anthropic-billing-header: cc_version=2.1.296.abc; cc_entrypoint=sdk-cli;' }],
+      messages: [{ role: 'user', content: 'hi' }],
+    }
+    await callGoWorker({ exec: fx.exec, body, cliHop: true, onEnvelope: (envelope) => reported.push(envelope) })
+    await streamGoWorker({
+      exec: fx.exec,
+      body: { ...body, stream: true },
+      cliHop: true,
+      onEnvelope: (envelope) => reported.push(envelope),
+    })
+    assert.equal(reported.length, 2)
+    for (const [i, envelope] of reported.entries()) {
+      const { request_id: _id, ...sent } = posted[i]
+      // 日志拿到的就是 POST 出去的那份：cli-hop 补上的 betas、补齐的 cch 都在里面。
+      assert.deepEqual(JSON.parse(JSON.stringify(envelope)), sent)
+      assert.ok(Array.isArray(envelope.body.betas))
+      assert.match(envelope.body.system[0].text, /\bcch=[0-9a-f]{5};/)
+    }
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('a throwing envelope observer does not fail the hop', async () => {
+  const fx = await fixture(async (req, res) => {
+    req.resume()
+    await new Promise((resolve) => req.on('end', resolve))
+    res.setHeader('content-type', 'application/json')
+    res.setHeader('x-terminal-state', 'verified')
+    res.end(JSON.stringify({ type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }] }))
+  })
+  try {
+    const result = await callGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-test', messages: [{ role: 'user', content: 'hi' }] },
+      onEnvelope: () => {
+        throw new Error('observer broke')
+      },
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.body.content[0].text, 'ok')
+  } finally {
+    await fx.close()
+  }
+})
+
 unixTest('Rust health and inference authenticate with the namespaced kernel header', async () => {
   const fx = await fixture(async (req, res) => {
     res.setHeader('content-type', 'application/json')
@@ -412,6 +479,58 @@ unixTest('streamGoWorker accepts message_stop before delayed EOF', async () => {
     assert.equal(result.terminalState, 'verified')
     assert.equal(result.committed, true)
     assert.ok(lines.some((line) => line.includes('message_stop')))
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('fragmented final-header diagnostics do not start idle timing, commit, or reach downstream', async () => {
+  const fx = await fixture((req, res) => {
+    req.resume()
+    res.setHeader('content-type', 'text/event-stream')
+    res.write('event: kin_outbound_head')
+    setImmediate(() => res.write('ers\ndata: {"type":"kin_outbound_headers","headers":{"content-length":"123"}}\n\n'))
+    setTimeout(() => res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n'), 1200)
+  })
+  try {
+    const lines = []
+    const snapshots = []
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-test', messages: [{ role: 'user', content: 'hi' }] },
+      timeoutMs: 5000,
+      idleTimeoutMs: 10,
+      onOutboundHeaders: (headers) => snapshots.push(headers),
+      onEvent: (line) => lines.push(line),
+    })
+    assert.equal(result.ok, true)
+    assert.equal(result.ttftMs, null)
+    assert.deepEqual(snapshots, [{ 'content-length': '123' }])
+    assert.doesNotMatch(lines.join('\n'), /kin_outbound_headers|content-length/)
+  } finally {
+    await fx.close()
+  }
+})
+
+unixTest('final headers survive an upstream error without becoming a downstream commit', async () => {
+  const fx = await fixture((req, res) => {
+    req.resume()
+    res.setHeader('content-type', 'text/event-stream')
+    res.write(
+      'event: kin_outbound_headers\ndata: {"type":"kin_outbound_headers","headers":{"x-stainless-retry-count":"1"}}\n\n',
+    )
+    res.end('event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n')
+  })
+  try {
+    const snapshots = []
+    const result = await streamGoWorker({
+      exec: fx.exec,
+      body: { model: 'claude-test', messages: [{ role: 'user', content: 'hi' }] },
+      onOutboundHeaders: (headers) => snapshots.push(headers),
+    })
+    assert.equal(result.ok, false)
+    assert.equal(result.committed, false)
+    assert.deepEqual(snapshots, [{ 'x-stainless-retry-count': '1' }])
   } finally {
     await fx.close()
   }

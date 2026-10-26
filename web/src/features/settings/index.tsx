@@ -42,6 +42,7 @@ import {
 } from '@/features/settings/protocol-authority'
 import {
   notifyQueryOptions,
+  outboundProfileQueryOptions,
   routingQueryOptions,
 } from '@/features/settings/queries'
 import { QuotaTierPane } from '@/features/settings/quota-tier-pane'
@@ -171,6 +172,9 @@ export function SettingsPage() {
       await Promise.all([
         qc.invalidateQueries({ queryKey: routingQueryOptions().queryKey }),
         qc.invalidateQueries({ queryKey: dashboardQueryOptions().queryKey }),
+        qc.invalidateQueries({
+          queryKey: outboundProfileQueryOptions().queryKey,
+        }),
         ...(tab === 'notify'
           ? [qc.invalidateQueries({ queryKey: notifyQueryOptions().queryKey })]
           : []),
@@ -224,9 +228,14 @@ export function SettingsPage() {
             : undefined
       }
     >
-      <div className='md:grid md:grid-cols-[10.5rem_1fr] md:gap-8'>
+      <div className='@2xl/content:grid @2xl/content:grid-cols-[10.5rem_1fr] @2xl/content:gap-8'>
         <SettingsNav active={tab} />
-        <div className={cn('mt-4 min-w-0 md:mt-0', showSaveBar && 'pb-16')}>
+        <div
+          className={cn(
+            'mt-4 min-w-0 @2xl/content:mt-0',
+            showSaveBar && 'pb-16'
+          )}
+        >
           <QueryGate
             loading={routing.isLoading}
             error={routing.error}

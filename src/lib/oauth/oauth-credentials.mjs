@@ -321,10 +321,17 @@ export function slotRuntimeOwner(vm) {
   }
 }
 
+/** Root can hand the file to the slot user. Non-root keeps the control-plane group. */
+export function runtimeFileOwner(vm) {
+  const slot = slotRuntimeOwner(vm)
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return slot
+  return { uid: vm?.id ? slot.uid : -1, gid: process.getgid() }
+}
+
 /** Best-effort. Non-root tests cannot chown; the write must still publish. */
 export function chownSlotRuntimeFile(filePath, vm) {
   if (!filePath || !vm?.id) return false
-  const { uid, gid } = slotRuntimeOwner(vm)
+  const { uid, gid } = runtimeFileOwner(vm)
   try {
     const st = fs.statSync(filePath)
     if (st.uid === uid && st.gid === gid) return false
@@ -337,14 +344,17 @@ export function chownSlotRuntimeFile(filePath, vm) {
 
 /**
  * Temp + rename drops the previous inode. chown the temp first so the
- * published 0600 file is already the slot uid. Otherwise kin-kernel
- * (container PID 1) gets EACCES and docker --restart loops.
+ * published file is already readable by the slot. Root uses the slot
+ * uid:gid; non-root keeps the control-plane gid for --group-add.
  */
 export function replaceSlotOwnedFile(filePath, body, vm) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  const { uid, gid } = runtimeFileOwner(vm)
   try {
     fs.writeFileSync(tempPath, body, { mode: 0o600 })
-    chownSlotRuntimeFile(tempPath, vm)
+    try {
+      fs.chownSync(tempPath, uid, gid)
+    } catch {}
     fs.renameSync(tempPath, filePath)
   } catch (error) {
     try {
