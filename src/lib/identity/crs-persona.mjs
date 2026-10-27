@@ -800,7 +800,7 @@ export function buildZeroBillingText(
 ) {
   const billing = buildBillingAttributionText(firstUserText, cliVersion, sessionId, null, entrypoint)
   const header = billing.endsWith(';') ? billing : `${billing};`
-  return `${header} prompt_version=<${CRS_OFFICIAL_SYSTEM}>`
+  return `${header} prompt_version=<${CRS_OFFICIAL_CLI_SYSTEM}>`
 }
 
 function timezoneEnvBlock(env = {}, sourceTexts = []) {
@@ -843,7 +843,7 @@ export function personaTemplateVars({
   return {
     billing,
     billing_semi: billing.endsWith(';') ? billing : `${billing};`,
-    identity: entrypoint === 'cli' ? CRS_OFFICIAL_CLI_SYSTEM : CRS_OFFICIAL_SYSTEM,
+    identity: CRS_OFFICIAL_CLI_SYSTEM,
     identity_cli: CRS_OFFICIAL_CLI_SYSTEM,
     identity_compact: CRS_COMPACT_IDENTITY,
     reporting: CRS_REPORTING_OUTCOMES,

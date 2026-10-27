@@ -6,8 +6,13 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { atomicWriteJson, readJsonCached } from './vm-file.mjs'
 import { isCodexVm } from '../protocol/codex-route.mjs'
-import { buildCodexUsageView, extraToCodexSnapshot, hasSpendableCodexCredits } from '../protocol/codex-usage.mjs'
-import { isManualScheduleLocked } from '../pool/schedule-policy.mjs'
+import {
+  buildCodexUsageView,
+  codexQuotaPark,
+  extraToCodexSnapshot,
+  hasSpendableCodexCredits,
+} from '../protocol/codex-usage.mjs'
+import { applyClearUnschedulable, applyUnschedulable, migrateScheduleRecord } from '../pool/schedule-state.mjs'
 import { openaiClaimsFromIdToken, openaiIdentityFromOauthTokens } from '../oauth/openai-jwt.mjs'
 
 export { isCodexVm }
@@ -61,6 +66,7 @@ export function persistCodexCredentialState(
     return null
   }
   if (!vm?.id) return null
+  migrateScheduleRecord(vm)
   const codex = { ...(vm.codex || {}) }
   codex.credential_state = state
   codex.credential_version = version
@@ -68,19 +74,13 @@ export function persistCodexCredentialState(
   codex.refresh_error = state === 'invalid' ? error || 'oauth_invalid_grant' : null
   codex.credential_error = error
   codex.credential_retry_at = state === 'needs_refresh' ? new Date(now + 30000).toISOString() : null
-  if (state === 'invalid' && !isManualScheduleLocked(vm) && vm.schedulable !== false) {
-    vm.schedulable = false
-    vm.schedule_disabled_reason = 'oauth_invalid_grant'
+  if (state === 'invalid') {
+    const reason = error === 'no_credential' ? 'no_credential' : 'oauth_invalid_grant'
+    applyUnschedulable(vm, reason, { refresh_error: error || reason })
     codex.auth_disabled_schedule = true
-  } else if (
-    (state === 'ready' || state === 'unverified') &&
-    codex.auth_disabled_schedule &&
-    vm.schedule_disabled_reason === 'oauth_invalid_grant' &&
-    !isManualScheduleLocked(vm)
-  ) {
-    vm.schedulable = true
-    vm.schedule_disabled_reason = null
-    codex.auth_disabled_schedule = false
+  } else if ((state === 'ready' || state === 'unverified') && codex.auth_disabled_schedule) {
+    applyClearUnschedulable(vm, { by: 'credential_import' })
+    if (!vm.unschedulable) codex.auth_disabled_schedule = false
   }
   vm.codex = codex
   vm.updated_at = new Date(now).toISOString()
@@ -571,6 +571,17 @@ export function upsertCodexAccount(projectRoot, vmId, patch = {}, { replaceCrede
   return cur
 }
 
+/** Drop stale manual parks when window caps no longer apply; same contract as persistCodexUsage. */
+function reconcileCodexLimitedUntil(vm, now = Date.now()) {
+  if (!vm.codex?.extra || typeof vm.codex.extra !== 'object') return
+  const parked = codexQuotaPark({ ...vm.codex.extra, codex_limited_until: null }, now, {
+    waiveWindowCaps: hasSpendableCodexCredits(vm, now),
+  })
+  vm.codex.extra = { ...vm.codex.extra }
+  if (parked.limited) vm.codex.extra.codex_limited_until = new Date(parked.until).toISOString()
+  else delete vm.codex.extra.codex_limited_until
+}
+
 export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredits, credits, planType } = {}) {
   if (!projectRoot || !vmId) throw new Error('projectRoot and vmId required')
   const file = path.join(projectRoot, 'vms', `${vmId}.json`)
@@ -586,13 +597,12 @@ export function persistCodexQuotaSnapshot(projectRoot, vmId, { extra, resetCredi
     vm.codex.extra = { ...(vm.codex.extra || {}), ...extra }
     vm.codex.usage = buildCodexUsageView(extraToCodexSnapshot(vm.codex.extra))
   }
-  if (credits) {
-    vm.codex.credits = credits
-    // A fresh read that credits are spendable supersedes an older park; the next 429 parks again.
-    if (hasSpendableCodexCredits(vm) && vm.codex.extra?.codex_limited_until) {
-      vm.codex.extra = { ...vm.codex.extra }
-      delete vm.codex.extra.codex_limited_until
-    }
+  if (credits) vm.codex.credits = credits
+  if (extra && typeof extra === 'object') {
+    reconcileCodexLimitedUntil(vm)
+  } else if (credits && hasSpendableCodexCredits(vm) && vm.codex.extra?.codex_limited_until) {
+    vm.codex.extra = { ...vm.codex.extra }
+    delete vm.codex.extra.codex_limited_until
   }
   const plan = String(planType || '').trim()
   if (plan) vm.codex.plan_type = plan

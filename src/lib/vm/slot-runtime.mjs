@@ -10,7 +10,12 @@ import {
   restartRustKernel,
   writeKernelConfig,
 } from '../transport/rust-kernel-supervisor.mjs'
-import { ensureCodexKernel, stopCodexKernel, writeCodexKernelConfig } from '../transport/codex-kernel-supervisor.mjs'
+import {
+  ensureCodexKernel,
+  stopCodexKernel,
+  stopCodexKernelAndWait,
+  writeCodexKernelConfig,
+} from '../transport/codex-kernel-supervisor.mjs'
 import { runtimeKind, isKvmRuntime } from './runtime-kind.mjs'
 import { getVm, listVms, isCodexVm, persistVmRuntime } from './vm-registry.mjs'
 import { resolveInferenceEngine } from './slot-engine.mjs'
@@ -77,10 +82,27 @@ export async function reloadSlot(vm, projectRoot, opts = {}) {
 }
 
 export async function reloadSlotReady(vm, projectRoot, opts = {}) {
-  const boot = await reloadSlot(vm, projectRoot, opts)
+  const boot = await (opts.ops?.reloadSlot || reloadSlot)(vm, projectRoot, opts)
   if (!boot?.ok) return boot
   persistVmRuntime(projectRoot, vm.id, boot.runtime)
-  return attachInferenceRuntime(boot, vm, projectRoot, opts)
+  if (isCodexVm(vm)) {
+    // The GPT container holds identity/egress; the actual inference process is
+    // in the control plane. Reusing its health would keep the old proxy/client.
+    const stop = opts.ops?.stopCodexKernelAndWait || stopCodexKernelAndWait
+    const stopped = await stop(slotExec(projectRoot, vm))
+    if (!stopped.ok) {
+      return {
+        ok: false,
+        code: 'codex_kernel_reload_failed',
+        error: `Codex kernel reload failed (${stopped.reason || 'stop_failed'})`,
+      }
+    }
+  }
+  const attached = await attachInferenceRuntime(boot, vm, projectRoot, opts)
+  if (isCodexVm(vm) && attached.rust?.ok === false) {
+    return { ...attached, ok: false, code: attached.rust.code, error: attached.rust.error }
+  }
+  return attached
 }
 
 /**

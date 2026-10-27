@@ -291,6 +291,31 @@ test('root adopts an unchanged config left by the non-root gateway', (t) => {
   }
 })
 
+for (const [id, index] of [
+  ['account2example', 1],
+  ['vm-02', 2],
+]) {
+  test(`writeWorkerFiles gives run/ the slot owner of its files when root (${id})`, (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kin-worker-owner-'))
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
+    // Digits inside a named id are not a slot index; only vm-N or a bare number is (#740).
+    const vm = { id, proxy: { id: 'px-new', host: '1.2.3.4', port: 1080 } }
+    const calls = []
+    t.mock.method(process, 'getuid', () => 0)
+    t.mock.method(fs, 'chownSync', (file, uid, gid) => {
+      calls.push({ file, uid, gid })
+    })
+    writeWorkerFiles(vm, dir, { routing: {} })
+    const runDir = path.join(dir, 'vms', id, 'run')
+    const slotUid = Number(process.env.KIN_VM_UID_BASE || 10000) + index
+    const slotGid = Number(process.env.KIN_VM_GID || 987)
+    const dirCalls = calls.filter((call) => call.file === runDir)
+    assert.ok(dirCalls.length > 0)
+    for (const call of dirCalls) assert.deepEqual([call.uid, call.gid], [slotUid, slotGid])
+    assert.ok(calls.some((call) => call.file.startsWith(path.join(runDir, 'kernel.json')) && call.uid === slotUid))
+  })
+}
+
 test('proxyEndpoint strips userinfo', () => {
   assert.equal(proxyEndpointFromUrl('socks5h://user:pass@72.1.181.43:5437'), '72.1.181.43:5437')
   assert.equal(proxyEndpointFromVm({ proxy: { host: '72.1.181.43', port: 5437 } }), '72.1.181.43:5437')

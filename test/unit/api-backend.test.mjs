@@ -919,7 +919,7 @@ test('inbound session and device keys match across API keys at the protocol entr
   }
 })
 
-test('the protocol entry hands the device seat key to the pool, independent of the API key', async () => {
+test('the protocol entry seats each client session, even on the same device', async () => {
   const { dir, router } = realStickyRouter()
   try {
     const turn = {
@@ -936,8 +936,9 @@ test('the protocol entry hands the device seat key to the pool, independent of t
       apiKeyRecord: { id: 'key-b', group_id: 1 },
     })
     assert.equal(a.skipSessionSeat, false)
-    assert.equal(a.seatKey, 'seat:dev:dev-seat')
-    assert.equal(b.seatKey, a.seatKey)
+    assert.equal(a.seatKey, 'seat:sess:sess-seat')
+    assert.equal(b.seatKey, 'seat:sess:sess-other')
+    assert.notEqual(b.seatKey, a.seatKey)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

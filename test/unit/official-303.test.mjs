@@ -8,7 +8,6 @@ import { prepareCliHopBody } from '../../src/lib/protocol/outbound-attempt.mjs'
 import { finalizeWorkerPayload } from '../../src/lib/transport/go-worker-client.mjs'
 import { renderOfficial303Body } from '../../src/lib/identity/official-303.mjs'
 import {
-  OFFICIAL_303_AGENT_IDENTITY,
   OFFICIAL_303_GUIDANCE,
   OFFICIAL_303_HARNESS,
   OFFICIAL_303_IDENTITY,
@@ -127,7 +126,7 @@ test('official caller: system is billing, identity, harness, guidance; caller sy
   )
   assert.equal(out.system[0].text.includes('cc_is_subagent'), false)
   assert.equal(out.system[0].cache_control, undefined)
-  assert.equal(out.system[1].text, OFFICIAL_303_AGENT_IDENTITY)
+  assert.equal(out.system[1].text, OFFICIAL_303_IDENTITY)
   assert.equal(out.system[1].cache_control, undefined)
   assert.equal(out.system[2].text, OFFICIAL_303_HARNESS)
   assert.equal(out.system[3].text, '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__')

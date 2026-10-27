@@ -31,7 +31,7 @@ export const PERSONA_TEMPLATE_BLOCKS_MAX = 24
 export const PERSONA_TEMPLATE_VARS = Object.freeze([
   Object.freeze(['billing', '官方计费归因头整行：cc_version / cc_entrypoint / cch / cc_prompt_id']),
   Object.freeze(['billing_semi', '同 billing，但保证以分号结尾，供同一行继续拼接']),
-  Object.freeze(['identity', "官方身份句 You are a Claude agent, built on Anthropic's Claude Agent SDK."]),
+  Object.freeze(['identity', "官方身份句 You are Claude Code, Anthropic's official CLI for Claude."]),
   Object.freeze(['identity_cli', "交互 CLI 身份句 You are Claude Code, Anthropic's official CLI for Claude."]),
   Object.freeze(['identity_compact', '0注入短身份句 You are Anthropic Claude Agent SDK.']),
   Object.freeze(['reporting', '官方 # Reporting outcomes 整段。cli-node 只在计费和身份都在时把它切成独立段']),
@@ -95,9 +95,9 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'identity',
-      note: '2.1.303 Agent SDK 身份句，不打缓存点',
+      note: '官方 CLI 身份句，不打缓存点',
       type: 'text',
-      text: '{{identity}}',
+      text: '{{identity_cli}}',
     }),
     Object.freeze({
       id: 'harness',
@@ -154,9 +154,9 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
     }),
     Object.freeze({
       id: 'identity',
-      note: '2.1.303 Agent SDK 身份句，不打缓存点',
+      note: '官方 CLI 身份句，不打缓存点',
       type: 'text',
-      text: '{{identity}}',
+      text: '{{identity_cli}}',
     }),
     Object.freeze({
       id: 'harness',
@@ -231,7 +231,7 @@ export const DEFAULT_PERSONA_TEMPLATES = Object.freeze({
       id: 'billing',
       note: '0注入只留计费头，官方身份句放在 prompt_version',
       type: 'text',
-      text: '{{billing_semi}} prompt_version=<{{identity}}>',
+      text: '{{billing_semi}} prompt_version=<{{identity_cli}}>',
     }),
   ]),
   custom: Object.freeze([]),

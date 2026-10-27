@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { getVm, listVms, setVmSchedulable } from '../vm/vm-registry.mjs'
+import { getVm, listVms, markUnschedulable, migrateVmSchedule } from '../vm/vm-registry.mjs'
 import { vmCliHomePath, vmJsonPath } from '../vm/execution-context.mjs'
 import {
   expiresAtToMs,
@@ -38,7 +38,7 @@ import { slotAllowsModel } from './slot-model-gate.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
 import { detectInboundPlatform } from '../protocol/platform-detect.mjs'
 import { resolveCredentialScheduleLevel } from './credential-weight.mjs'
-import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope } from '../admin/resource-owner.mjs'
+import { PLATFORM_SCOPE, normalizeOwnerId, vmMatchesOwnerScope, vmOwnerId } from '../admin/resource-owner.mjs'
 import { keyAllowsVm } from '../admin/key-scope.mjs'
 import {
   kernelFaults,
@@ -179,6 +179,33 @@ function scopedSeatKey(seatKey, scope = PLATFORM_SCOPE) {
   const type = scope?.type || 'platform'
   const owner = type === 'user' ? `user:${normalizeOwnerId(scope.userId)}` : type
   return `${owner}|${seatKey}`
+}
+
+/** `sess:<id>` after an optional `p:anthropic:` scope. Family and device rows are not seats. */
+function sessionIdFromStickyKey(key) {
+  const raw = String(key || '')
+  const body = raw.startsWith('p:anthropic:') ? raw.slice('p:anthropic:'.length) : raw
+  if (!body.startsWith('sess:') || body.includes(':k')) return ''
+  return body.slice('sess:'.length)
+}
+
+/** Machine VM, then this session's pin, then family. Empty and duplicate VMs drop out with their reason. */
+function seatHomes({ deviceVm = '', sessionVm = '', familyVm = '' } = {}) {
+  const homes = [
+    { vmId: String(deviceVm || '').trim(), reason: 'device-affinity' },
+    { vmId: String(sessionVm || '').trim(), reason: 'sticky' },
+    { vmId: String(familyVm || '').trim(), reason: 'family-affinity' },
+  ]
+  const seen = new Set()
+  return homes.filter((home) => {
+    if (!home.vmId || seen.has(home.vmId)) return false
+    seen.add(home.vmId)
+    return true
+  })
+}
+
+function byVmHas(candidates, vmId) {
+  return (candidates || []).some((candidate) => candidate.vmId === vmId)
 }
 
 /**
@@ -347,20 +374,88 @@ export class PoolScheduler extends EventEmitter {
     this.lastUsed = new Map()
     this.cooldownTimers = new Map()
     this.planner = new SeatPlanner({
-      graceMs: this.config.seat_grace_ms,
+      graceMs: 0,
       reservePct: this.config.seat_budget_reserve_pct,
       strategy: this.config.strategy,
       stickyWaitMs: () => this.config.sticky_wait_timeout_ms,
+      stickyTtlMs: () => (Number(this.stickyRouter?.config?.ttl_seconds) || 86400) * 1000,
       onChange: () => this.emit('change'),
     })
     this.unitCircuit = unitCircuit
     if (runtimeRepo) this.unitCircuit.bindRepo(runtimeRepo)
+    this.restoreStickySeats()
   }
 
   /**
-   * `seatKey` is the device seat identity (resolveSeatIdentity). Requests with
-   * one go through the seat planner; pinned diagnostics, seatless probes and
-   * keyless callers keep the direct pick-and-wait path.
+   * Machine VM from the sticky row. Written inside claimSeat, before the
+   * caller awaits again, so a second first session of the same machine sees
+   * it. Expiry and unbind live in that row; there is no second copy.
+   */
+  machineHome(deviceKey) {
+    const key = String(deviceKey || '').trim()
+    if (!key) return ''
+    return this.stickyRouter?.resolve?.(key)?.vmId || ''
+  }
+
+  rememberMachine(deviceKey, { vmId, accountId }) {
+    const key = String(deviceKey || '').trim()
+    const vm = String(vmId || '').trim()
+    const account = String(accountId || '').trim()
+    if (!key || !vm || !account || this.stickyRouter?.resolve?.(key)?.vmId) return
+    const payload = { accountId: account, vmId: vm }
+    if (this.stickyRouter?.bindDeviceAffinity) {
+      this.stickyRouter.bindDeviceAffinity(key, payload, { countHit: false })
+      return
+    }
+    this.stickyRouter?.bind?.(key, payload, { countHit: false })
+  }
+
+  /**
+   * The seat book is live capacity. A sticky row remembers the VM until its
+   * TTL, but an ended dialog must not occupy a session slot after restart.
+   * Only a canonical `sess:` row whose slot handoff (`held_until`) is still in
+   * the future is restored, and that hold frees unless the session queues
+   * again. Device affinity and family pins never become seats.
+   */
+  restoreStickySeats(now = Date.now()) {
+    const rows = this.stickyRouter?.repo?.all?.()
+    if (!rows) return 0
+    let restored = 0
+    for (const [key, ent] of Object.entries(rows)) {
+      const sessionId = sessionIdFromStickyKey(key)
+      if (!sessionId || !ent?.vm_id || !ent?.account_id) continue
+      if (ent.slot_index == null || !Number.isInteger(Number(ent.slot_index))) continue
+      const heldUntil = Number(ent.held_until)
+      if (!Number.isFinite(heldUntil) || now >= heldUntil) continue
+      let vm = null
+      try {
+        vm = this.projectRoot ? getVm(this.projectRoot, ent.vm_id) : null
+      } catch {
+        vm = null
+      }
+      const owner = vmOwnerId(vm)
+      const scope = owner ? { type: 'user', userId: owner } : PLATFORM_SCOPE
+      const seatKey = scopedSeatKey(`seat:sess:${sessionId}`, scope)
+      const seat = this.planner.restore(seatKey, {
+        vmId: ent.vm_id,
+        accountId: ent.account_id,
+        index: Number(ent.slot_index),
+        heldUntil,
+        cap: vm ? seatCapOf(vm, this.config.default_session_slots) : 0,
+      })
+      if (seat) restored += 1
+    }
+    return restored
+  }
+
+  /**
+   * `seatKey` is the client-session seat identity (resolveSeatIdentity).
+   * Requests with one go through the seat planner; pinned diagnostics,
+   * seatless probes and keyless callers keep the direct pick-and-wait path.
+   * A granted seat occupies its slot only while this dialog has a request in
+   * flight or queued on the VM. Request end frees the slot. Sticky VM memory
+   * stays until sticky TTL, or until the home is unschedulable / an error
+   * clears it.
    */
   async selectAndReserve(args = {}) {
     const pinned = !!String(args.pinVmId || '').trim()
@@ -527,12 +622,13 @@ export class PoolScheduler extends EventEmitter {
   }
 
   /**
-   * Seat path (R1–R7). A seated device rides its seat and waits for VM
-   * concurrency in that VM's FIFO, never on another VM. A new device takes a
-   * free seat (sticky VM first, then strategy) or queues in arrival order:
-   * on its sticky VM until `sticky_wait_timeout_ms`, then globally until
-   * `fallback_wait_timeout_ms`. A seated device's concurrency wait times out
+   * Seat path. A seated session rides its seat and waits for VM concurrency
+   * in that VM's FIFO, never on another VM. A new session takes a free seat
+   * (sticky VM first, then strategy) or queues in arrival order: on its
+   * sticky VM until `sticky_wait_timeout_ms`, then globally until
+   * `fallback_wait_timeout_ms`. A seated session's concurrency wait times out
    * after `sticky_wait_timeout_ms`. Timeouts are `pool_queue_timeout`.
+   * Finishing a request keeps the seat until sticky TTL.
    */
   async selectSeat({
     model,
@@ -547,6 +643,7 @@ export class PoolScheduler extends EventEmitter {
     allowWait = true,
     familyVmId = null,
     deviceVmId = null,
+    deviceKey = null,
     ownerScope = PLATFORM_SCOPE,
     keyScope = null,
     quotaRequest = null,
@@ -554,7 +651,8 @@ export class PoolScheduler extends EventEmitter {
     const startedAt = Date.now()
     const failoverDeadline = Number(deadline) || Number.POSITIVE_INFINITY
     const familyVm = familyVmId ? String(familyVmId).trim() : ''
-    const deviceVm = deviceVmId ? String(deviceVmId).trim() : ''
+    const machineKey = String(deviceKey || '').trim()
+    const deviceVmOf = () => this.machineHome(machineKey) || String(deviceVmId || '').trim()
     const avoided = (candidate) => !!avoid?.size && (avoid.has(candidate.accountId) || avoid.has(candidate.vmId))
     let stickyCleared = false
     let familyGated = false
@@ -596,14 +694,6 @@ export class PoolScheduler extends EventEmitter {
         // A grant can land while eligibility was being re-read.
         if (ticket?.granted) return finish(ticket.granted)
         if (familyVm && !candidates.some((candidate) => candidate.vmId === familyVm)) familyGated = true
-        const sticky = this.reconcileSticky({
-          stickyKey,
-          stickyKeys,
-          eligible: candidates,
-          spilled,
-          familyVmId: familyGated ? null : familyVm,
-        })
-        if (sticky.cleared) stickyCleared = true
         const byVm = new Map(candidates.map((candidate) => [candidate.vmId, candidate]))
         if (ticket) ticket.candidates = byVm
         const now = Date.now()
@@ -628,6 +718,17 @@ export class PoolScheduler extends EventEmitter {
             return fail('all_accounts_busy')
           }
         }
+        // A surviving seat fixes this turn's VM; family affinity cannot move
+        // it. An ended dialog has no seat, and its sticky VM memory stays
+        // until TTL even when the family home is a different VM.
+        const sticky = this.reconcileSticky({
+          stickyKey,
+          stickyKeys,
+          eligible: candidates,
+          spilled,
+          familyVmId: null,
+        })
+        if (sticky.cleared) stickyCleared = true
         if (seat) {
           if (!ticket) {
             if (!this.planner.hasConcWaiters(seat.vmId)) {
@@ -647,24 +748,38 @@ export class PoolScheduler extends EventEmitter {
           }
           this.planner.pump(seat.vmId)
         } else {
-          const stickyVms = [familyGated ? '' : familyVm, deviceVm, sticky.vmId || ''].filter(Boolean)
+          // Machine/device home first, then the session's own pin, then family.
+          // A new session of a machine that already has a VM takes a free slot
+          // there before any other VM. A full home is waited, not skipped.
+          const homes = seatHomes({
+            deviceVm: deviceVmOf(),
+            sessionVm: sticky.vmId || '',
+            familyVm: familyGated ? '' : familyVm,
+          })
+
           if (!ticket) {
-            const granted = this.openNewSeat(seatKey, candidates, { avoided, stickyVms })
+            const granted = this.openNewSeat(seatKey, candidates, { avoided, homes, deviceKey: machineKey })
             if (granted) return finish(granted)
             if (!candidates.length) {
               const empty = emptyPoolFailure(model, candidates)
               return { ...fail(empty.reason), retry_after_ms: empty.retry_after_ms }
             }
             if (!allowWait || now >= failoverDeadline) return fail('all_accounts_busy')
-            const home = stickyVms
-              .map((vmId) => byVm.get(vmId))
-              .find((candidate) => candidate && (!candidate.busy || stickyShouldWait(candidate.waitReason)))
+            let home = null
+            for (const entry of homes) {
+              const candidate = byVm.get(entry.vmId)
+              if (candidate && (!candidate.busy || stickyShouldWait(candidate.waitReason))) {
+                home = candidate
+                break
+              }
+            }
             ticket = home
               ? this.enqueueTicket({
                   seatKey,
                   kind: 'seat',
                   vmId: home.vmId,
                   candidates: byVm,
+
                   stickyUntil: Math.min(failoverDeadline, now + this.config.sticky_wait_timeout_ms),
                   deadline: failoverDeadline,
                 })
@@ -695,6 +810,7 @@ export class PoolScheduler extends EventEmitter {
         if (after >= ticket.deadline) return fail('pool_queue_timeout')
       }
     } finally {
+      this.planner.forgetGranted(ticket)
       this.planner.remove(ticket)
       // Granted while the caller went away: hand the seat and the slot back.
       if (ticket?.granted && !consumed) ticket.granted.reservation.release()
@@ -718,17 +834,34 @@ export class PoolScheduler extends EventEmitter {
     return open.length ? open : openable
   }
 
-  /** Sticky VMs first (family, device, session), then the configured strategy. */
-  openNewSeat(seatKey, candidates, { avoided, stickyVms = [] }) {
+  /**
+   * Preferred homes first, but only a home with a free slot. A full machine
+   * VM is not skipped for another VM here; the caller queues on it. Homes
+   * with no free slot drop out, then the configured strategy fills the rest.
+   */
+  openNewSeat(seatKey, candidates, { avoided, homes = [], deviceKey = '' }) {
     const openable = this.openableCandidates(candidates, avoided)
     if (!openable.length) return null
-    for (const vmId of stickyVms) {
-      const home = openable.find((candidate) => candidate.vmId === vmId)
-      const granted = home ? this.claimSeat(seatKey, home, 'sticky') : null
+    for (const home of homes) {
+      const match = openable.find((candidate) => candidate.vmId === home.vmId)
+      const granted = match ? this.claimSeat(seatKey, match, home.reason, deviceKey) : null
       if (granted) return granted
     }
-    for (const candidate of this.planner.rank(openable)) {
-      const granted = this.claimSeat(seatKey, candidate, this.planner.strategy)
+    const reserved = new Set(homes.map((home) => home.vmId))
+    const elsewhere = openable.filter((candidate) => !reserved.has(candidate.vmId))
+    const homeFull = homes.some((home) => {
+      let cap = 0
+      let present = false
+      for (const item of candidates) {
+        if (item?.vmId !== home.vmId) continue
+        present = true
+        cap = Number(item.seatCap) || 0
+      }
+      return present && cap > 0 && this.planner.openCount(home.vmId) >= cap
+    })
+    if (homeFull) return null
+    for (const candidate of this.planner.rank(elsewhere.length ? elsewhere : openable)) {
+      const granted = this.claimSeat(seatKey, candidate, this.planner.strategy, deviceKey)
       if (granted) return granted
     }
     return null
@@ -736,16 +869,17 @@ export class PoolScheduler extends EventEmitter {
 
   /**
    * Synchronous claim: the reservation (concurrency, quota/RPM, circuit) and
-   * the seat land together or not at all. The device's existing seat must be
+   * the seat land together or not at all. The session's existing seat must be
    * on this VM; otherwise a new one opens only under cap and budget.
    */
-  claimSeat(seatKey, candidate, selectionReason) {
+  claimSeat(seatKey, candidate, selectionReason, deviceKey = '') {
     if (!candidate || !grantable(candidate)) return null
     const current = this.planner.seatOf(seatKey)
     if (current && current.vmId !== candidate.vmId) return null
     if (!current && !this.planner.canOpen(candidate.vmId, candidate.seatCap, candidate.headroom)) return null
     const reservation = this.reserve(candidate)
     if (!reservation) return null
+    this.rememberMachine(deviceKey, { vmId: candidate.vmId, accountId: candidate.accountId })
     const seat =
       current ||
       this.planner.open(seatKey, { vmId: candidate.vmId, accountId: candidate.accountId, cap: candidate.seatCap })
@@ -778,6 +912,7 @@ export class PoolScheduler extends EventEmitter {
       candidates,
       deadline,
       stickyUntil,
+
       enqueuedAt: Date.now(),
       queued: false,
       granted: null,
@@ -973,9 +1108,9 @@ export class PoolScheduler extends EventEmitter {
       if (
         this.projectRoot &&
         isSlotProxyDesynced(vm, this.projectRoot) &&
-        vm.schedule_disabled_reason !== 'proxy_desynced'
+        vm.unschedulable?.reason !== 'proxy_desynced'
       ) {
-        setVmSchedulable(this.projectRoot, vm.id, false, 'proxy_desynced')
+        markUnschedulable(this.projectRoot, vm.id, 'proxy_desynced')
       }
       return proxySync
     }
@@ -995,6 +1130,9 @@ export class PoolScheduler extends EventEmitter {
             vm.schedulable = live.schedulable
             vm.schedule_disabled_reason = live.schedule_disabled_reason
             vm.schedule_manual = live.schedule_manual
+            vm.schedule_off = live.schedule_off
+            vm.unschedulable = live.unschedulable
+            vm.schedule_hold = live.schedule_hold
             vm.claude = live.claude || vm.claude
             vm.temp_unschedulable_until = live.temp_unschedulable_until
             vm.temp_unschedulable_reason = live.temp_unschedulable_reason
@@ -1033,14 +1171,6 @@ export class PoolScheduler extends EventEmitter {
           now,
         })
         if (!ev.accept) {
-          if (
-            this.projectRoot &&
-            vm.schedulable !== false &&
-            ev.reason === 'quota_refresh_failed' &&
-            vm.schedule_disabled_reason !== 'disabled'
-          ) {
-            setVmSchedulable(this.projectRoot, vm.id, false, 'quota_refresh_failed', { preserveStatus: true })
-          }
           if (ev.key === 'cool') {
             // cooldown is a wait, not a hard skip — handled below
           } else {
@@ -1221,14 +1351,7 @@ export class PoolScheduler extends EventEmitter {
         } catch {}
       }
       if (value?.ok && (value?.credential?.has_access || value?.credential?.has_refresh) && exec.vmId) {
-        try {
-          const live = getVm(this.projectRoot, exec.vmId)
-          const leftoverOff =
-            live?.schedule_disabled_reason === 'oauth_cleared' || live?.schedule_disabled_reason === 'oauth_no_refresh'
-          if (leftoverOff && value.credential?.has_access && !live.claude?.refresh_error) {
-            setVmSchedulable(this.projectRoot, exec.vmId, true)
-          }
-        } catch {}
+        // A live worker ticket does not reopen 不可调度: only an operator action does.
         // Leftover TTL must not wipe a 401 park. Only a newer generation is a rotation.
         if (prevGen > 0 && nextGen > prevGen) {
           this.clearAuthCooldownFor(exec.vmId, exec.accountId)
@@ -1749,7 +1872,7 @@ export class PoolScheduler extends EventEmitter {
       const until = Number(ev.until) || now + 5 * 60_000
       this.applyQuotaRestriction(vm, accountId, { until, reason: ev.reason, file })
       if (leftover) {
-        setVmSchedulable(this.projectRoot, vm.id, true, null, { preserveStatus: true, source: 'force' })
+        migrateVmSchedule(this.projectRoot, vm.id)
         vm.schedulable = true
         vm.schedule_disabled_reason = null
         return { action: 'restore', reason: ev.reason, until }
@@ -1759,7 +1882,7 @@ export class PoolScheduler extends EventEmitter {
     if (ev.accept) {
       this.clearQuotaRestriction(vm, accountId, file)
       if (leftover) {
-        setVmSchedulable(this.projectRoot, vm.id, true, null, { preserveStatus: true, source: 'force' })
+        migrateVmSchedule(this.projectRoot, vm.id)
         vm.schedulable = true
         vm.schedule_disabled_reason = null
         return { action: 'enable', reason: null }
@@ -1767,7 +1890,7 @@ export class PoolScheduler extends EventEmitter {
       return { action: 'clear', reason: null }
     }
     if (leftover) {
-      setVmSchedulable(this.projectRoot, vm.id, true, null, { preserveStatus: true, source: 'force' })
+      migrateVmSchedule(this.projectRoot, vm.id)
       vm.schedulable = true
       vm.schedule_disabled_reason = null
       return { action: 'restore', reason: ev.reason || null }
@@ -1837,9 +1960,11 @@ export class PoolScheduler extends EventEmitter {
 
   /**
    * Seats, queues and live requests per VM for panel rows and the seat stream.
-   * `queue_depth` counts every request waiting on that VM (seat, concurrency,
-   * cooldown/RPM); `conc_waiting` is the concurrency share of it; `inflight`
-   * is requests holding a reservation on it right now (seatless and pinned too).
+   * `seats_used` is sessions holding a slot (in flight or held until sticky
+   * TTL). `sessions` lists those occupants. `queue_depth` counts every request
+   * waiting on that VM (seat, concurrency, cooldown/RPM); `conc_waiting` is
+   * the concurrency share of it; `inflight` is requests holding a reservation
+   * on it right now (seatless and pinned too).
    */
   seatSnapshot() {
     const { seats, global_queue_depth } = this.planner.snapshot()
@@ -1850,13 +1975,17 @@ export class PoolScheduler extends EventEmitter {
         seats_grace: 0,
         queue_depth: 0,
         conc_waiting: 0,
+        sessions: [],
       })
     for (const bucket of this.waiters.values()) {
       for (const entry of bucket.values()) {
         if (entry?.vmId) row(entry.vmId).queue_depth += 1
       }
     }
-    for (const entry of Object.values(seats)) entry.inflight = 0
+    for (const entry of Object.values(seats)) {
+      entry.inflight = 0
+      if (!Array.isArray(entry.sessions)) entry.sessions = []
+    }
     for (const [vmId, count] of this.vmInflight) row(vmId).inflight = count
     return { seats, global_queue_depth, queue_max: this.config.queue_max }
   }

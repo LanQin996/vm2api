@@ -114,11 +114,16 @@ test('built-in 303 template: billing, identity, harness, guidance and valid plac
     blocks.map((block) => [block.id, block.text, block.cache_control ?? null]),
     [
       ['billing', '{{billing}}', null],
-      ['identity', '{{identity}}', null],
+      ['identity', '{{identity_cli}}', null],
       ['harness', '{{agent_standing}}{{harness_303}}', { type: 'ephemeral', scope: 'global' }],
       ['dynamic_boundary', '{{dynamic_boundary}}', null],
       ['guidance', '{{guidance_303}}', { type: 'ephemeral' }],
+      ['env', '{{env_303}}', null],
       ['env_extra', '{{model_sentence}}', null],
+      ['env_instructions', '{{env_instructions_303}}', null],
+      ['env_timezone', '{{env_timezone}}', null],
+      ['env_locale', '{{env_locale}}', null],
+      ['caller_system', '<system-reminder>\n{{caller_system}}\n</system-reminder>\n', null],
     ],
   )
   assert.deepEqual(validatePersonaTemplate(blocks), [])

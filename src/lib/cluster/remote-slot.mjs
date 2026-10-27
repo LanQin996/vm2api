@@ -829,7 +829,13 @@ async function ensureNodeSlotImage(session, nodeId, projectRoot, kernel, runtime
 export async function refreshNodeSlotPayload(
   vm,
   projectRoot,
-  { routing, recreate = true, startFn = startRemoteSlot } = {},
+  {
+    routing,
+    recreate = true,
+    startFn = startRemoteSlot,
+    sessionFor = nodeSession,
+    inspect = inspectContainerOrNull,
+  } = {},
 ) {
   const id = vm?.id
   const nodeId = vmNodeId(vm)
@@ -838,14 +844,30 @@ export async function refreshNodeSlotPayload(
   const kernel = vm.kernel && OS_CATALOG[vm.kernel] ? vm.kernel : 'ubuntu-24.04'
   const kind = runtimeKind(vm)
   try {
-    const session = await nodeSession(nodeId)
+    const session = await sessionFor(nodeId)
+    const running = recreate !== false && vm.status === 'running'
+    // Upgrade and the entrypoint auto-sync both land here: a slot already up on this payload stays up.
+    if (running) {
+      const ref = slotImageSpec(projectRoot, kernel, { runtime: kind }).ref
+      const info = await inspect(session.docker, vm.runtime?.container || containerName(id))
+      if (info?.State?.Running && info.Config?.Image === ref) {
+        return {
+          id,
+          node_id: nodeId,
+          ok: true,
+          image: ref,
+          kernel_changed: false,
+          restarted: false,
+          kernel: { ok: true, skipped: true, reason: 'unchanged' },
+        }
+      }
+    }
     const spec = await ensureNodeSlotImage(session, nodeId, projectRoot, kernel, kind)
     if (spec.fail) return { id, node_id: nodeId, ...spec.fail }
     if (kind === 'kvm') {
       const dockerSpec = await ensureNodeSlotImage(session, nodeId, projectRoot, kernel, 'docker')
       if (dockerSpec.fail) return { id, node_id: nodeId, ...dockerSpec.fail }
     }
-    const running = recreate !== false && vm.status === 'running'
     if (!running) {
       return {
         id,

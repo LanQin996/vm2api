@@ -515,10 +515,16 @@ test('one routing read keeps billing, system identity and env on the same entryp
     const cli = render('cli')
     assert.match(cli.system[0].text, /cc_entrypoint=cli;/)
     assert.equal(cli.system[1].text, "You are Claude Code, Anthropic's official CLI for Claude.")
-    assert.match(cli.system.map((block) => block.text).join('\n'), /! <command>/)
+    assert.equal(
+      cli.system
+        .map((block) => block.text)
+        .join('\n')
+        .includes('! <command>'),
+      false,
+    )
     const sdk = render('sdk-cli')
     assert.match(sdk.system[0].text, /cc_entrypoint=sdk-cli;/)
-    assert.equal(sdk.system[1].text, "You are a Claude agent, built on Anthropic's Claude Agent SDK.")
+    assert.equal(sdk.system[1].text, "You are Claude Code, Anthropic's official CLI for Claude.")
     assert.doesNotMatch(sdk.system.map((block) => block.text).join('\n'), /! <command>/)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })

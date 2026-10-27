@@ -25,6 +25,7 @@ import {
   parseResetMs,
   wipeElapsedHeaderWindows,
 } from './quota-window.mjs'
+import { rollWindowHistory } from './window-history.mjs'
 import { accountTierKey, isNearLimit, normalizeTiers, resolveTierPolicy } from './quota-tiers.mjs'
 import { resolvePolicyModelId } from '../protocol/model-policy.mjs'
 import { SessionLimitRegistry } from './session-limit.mjs'
@@ -117,6 +118,16 @@ export class AccountQuota {
         sessionWindowStatus: w5.status || null,
       })
     } catch {}
+  }
+
+  /** Archive the window that just rolled over; live headers win over the official probe, as in `_writeSessionWindow`. */
+  _rollWindowHistory(acc) {
+    if (!acc?.unified) return
+    const read = (key) => {
+      const extra = headerWindow(acc.unified, key)
+      return extra.utilization != null && extra.reset ? extra : officialWindow(acc.unified, key)
+    }
+    acc.window_history = rollWindowHistory(acc.window_history, { '5h': read('5h'), '7d': read('7d') })
   }
 
   ensure(account) {
@@ -262,6 +273,7 @@ export class AccountQuota {
       })
     }
 
+    this._rollWindowHistory(acc)
     const saved = this.repo.save(acc)
     this._writeSessionWindow(saved)
     if (sampled) {
@@ -434,6 +446,7 @@ export class AccountQuota {
       healOfficialOverwriteExtra(acc, accountId, this.repo)
       clearHeaderExhaustIfOfficialOpen(acc)
     }
+    this._rollWindowHistory(acc)
     const saved = this.repo.save(acc)
     this._writeSessionWindow(saved)
     if (usageOk) {
@@ -503,6 +516,7 @@ export class AccountQuota {
       tokens_out: usageBody?.output_tokens ?? null,
     })
 
+    this._rollWindowHistory(acc)
     return this.repo.save(acc)
   }
 
@@ -1012,6 +1026,7 @@ export class AccountQuota {
             '7d': listed.utilization_7d != null || listed.status_7d ? listed['7d'] : official['7d'],
           },
           last_blocked: a.last_blocked,
+          window_history: a.window_history || null,
           recent_allocations: this.repo.recentAllocations(a.account_id, 5),
         }
       }),

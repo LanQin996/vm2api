@@ -720,6 +720,10 @@ export class RequestLogStore {
     return this.repo.vmUsageStats(opts)
   }
 
+  costBetween(opts = {}) {
+    return this.repo.costBetween(opts)
+  }
+
   keyUsageStats(opts = {}) {
     return this.repo.keyUsageStats(opts)
   }

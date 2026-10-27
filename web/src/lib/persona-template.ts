@@ -81,7 +81,7 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
   ['billing_semi', '同 billing，但保证以分号结尾，供同一行继续拼接'],
   [
     'identity',
-    "官方身份句 You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+    "官方身份句 You are Claude Code, Anthropic's official CLI for Claude.",
   ],
   [
     'identity_cli',
@@ -110,9 +110,15 @@ export const PERSONA_TEMPLATE_VARS: [string, string][] = [
   ['cwd', '调用方 cwd（已清洗）'],
   ['cli_version', '官方 CLI 版本号'],
   ['session_id', '出站会话 id'],
-  ['main_prompt_303', '官方 2.1.303 harness + guidance（记忆目录跟随调用方 cwd，无 cwd 时删除记忆段）'],
+  [
+    'main_prompt_303',
+    '官方 2.1.303 harness + guidance（记忆目录跟随调用方 cwd，无 cwd 时删除记忆段）',
+  ],
   ['harness_303', '官方 2.1.303 harness。1h 时带 scope global'],
-  ['guidance_303', '官方 2.1.303 guidance（记忆目录跟随调用方 cwd，无 cwd 时删除记忆段）'],
+  [
+    'guidance_303',
+    '官方 2.1.303 guidance（记忆目录跟随调用方 cwd，无 cwd 时删除记忆段）',
+  ],
   [
     'env_303',
     '官方 2.1.303 Environment 段（槽位身份 + 调用方 cwd / git / shell）',
@@ -152,7 +158,7 @@ export const DEFAULT_PERSONA_TEMPLATES: Record<PersonaPreset, PersonaBlock[]> =
       },
       {
         id: 'identity',
-        note: '2.1.303 Agent SDK 身份句，不打缓存点',
+        note: '官方 CLI 身份句，不打缓存点',
         type: 'text',
         text: '{{identity}}',
       },
@@ -194,7 +200,7 @@ export const DEFAULT_PERSONA_TEMPLATES: Record<PersonaPreset, PersonaBlock[]> =
       },
       {
         id: 'identity',
-        note: '2.1.303 Agent SDK 身份句，不打缓存点',
+        note: '官方 CLI 身份句，不打缓存点',
         type: 'text',
         text: '{{identity}}',
       },

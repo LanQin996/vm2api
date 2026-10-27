@@ -16,6 +16,7 @@ import {
 import { maxRequestBytes, streamIdleTimeoutMs } from '../core/config.mjs'
 import { profileForPreset } from '../identity/official-profiles.mjs'
 import { cacheTtlFromRouting, normalizeCacheTtl } from '../protocol/cache-ttl.mjs'
+import { getModelPolicy } from '../protocol/model-policy.mjs'
 import { ccEntrypointFromRouting } from '../identity/crs-persona.mjs'
 import { setVmSchedulable, listVms, getVm } from '../vm/vm-registry.mjs'
 import { isCodexVm } from '../vm/vm-kind.mjs'
@@ -35,12 +36,26 @@ import {
   slotUidGidFromHomeDir,
   chownSlotRuntimeFile,
   replaceSlotOwnedFile,
+  runtimeFileOwner,
 } from '../oauth/oauth-credentials.mjs'
 import { slotHost } from '../vm/slot-host.mjs'
 
 function normalizeAutoCompactWindow(value) {
   const windowTokens = Number(value)
   return Number.isInteger(windowTokens) && windowTokens >= 100_000 && windowTokens <= 1_000_000 ? windowTokens : null
+}
+
+const PANEL_EFFORTS = ['off', 'low', 'medium', 'high', 'xhigh', 'max']
+
+function modelEffortTable(routing, previous) {
+  if (routing == null) return previous && typeof previous === 'object' && !Array.isArray(previous) ? previous : {}
+  const models = getModelPolicy()?.models || {}
+  const out = {}
+  for (const [id, row] of Object.entries(models)) {
+    const effort = row?.params?.default_effort
+    if (PANEL_EFFORTS.includes(effort)) out[String(id).toLowerCase()] = effort
+  }
+  return out
 }
 
 const starts = new Map()
@@ -688,11 +703,10 @@ export function writeKernelConfig(
   fs.mkdirSync(runDir, { recursive: true, mode: dirMode })
   fs.chmodSync(runDir, dirMode)
   try {
-    fs.chownSync(
-      runDir,
-      privileged ? Number(process.env.KIN_VM_UID_BASE || 10000) + Number(String(vm.id).replace(/\D/g, '') || 1) : -1,
-      privileged ? Number(process.env.KIN_VM_GID || 987) : process.getgid(),
-    )
+    // Same owner as the files inside (runtimeFileOwner). Taking every digit of a named id
+    // (account2example -> 10002) disagreed with them, and the 0700 dir locked out the slot kernel (#740).
+    const owner = runtimeFileOwner(vm)
+    fs.chownSync(runDir, privileged ? owner.uid : -1, privileged ? owner.gid : process.getgid())
   } catch {}
   const socketPath = path.join(runDir, 'kernel.sock')
   const configPath = path.join(runDir, 'kernel.json')
@@ -745,6 +759,7 @@ export function writeKernelConfig(
       ? normalizeSessionIdleTtlSeconds(previous.session_idle_ttl_seconds)
       : normalizeSessionIdleTtlSeconds(routing?.inference?.session_idle_ttl_seconds)
 
+  const modelEffort = modelEffortTable(routing, previous.model_effort)
   const kind = runtimeKind(record)
   const config = {
     vm_id: vm.id,
@@ -781,6 +796,7 @@ export function writeKernelConfig(
       routing == null ? (previous.cc_entrypoint === 'cli' ? 'cli' : 'sdk-cli') : ccEntrypointFromRouting(routing),
     cch_enabled: cchEnabled,
     auto_compact_window: autoCompactWindow,
+    model_effort: modelEffort,
   }
 
   if (tz) config.timezone = tz

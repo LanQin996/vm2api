@@ -31,6 +31,7 @@ import {
   CRS_OFFICIAL_AGENT_PROMPT,
   CRS_OFFICIAL_AGENT_PROMPT_303,
   CRS_OFFICIAL_SYSTEM,
+  CRS_OFFICIAL_CLI_SYSTEM,
   CRS_STANDING_CONSTRAINT,
   DEFAULT_CLI_VERSION,
   applyCrsUnofficialPersona,
@@ -185,7 +186,8 @@ test('agent standing preset flags default off and isolate per preset', () => {
 
 test('zero prompt_version uses the interactive CLI identity', () => {
   const billing = buildZeroBillingText('ping', '2.1.241', 's-2')
-  assert.ok(billing.includes(`prompt_version=<${CRS_OFFICIAL_SYSTEM}>`))
+  assert.ok(billing.includes(`prompt_version=<${CRS_OFFICIAL_CLI_SYSTEM}>`))
+  assert.ok(!billing.includes(CRS_OFFICIAL_SYSTEM))
   assert.ok(!billing.includes(CRS_COMPACT_IDENTITY))
 })
 
@@ -353,7 +355,7 @@ test('zero preset ignores a stored overlay_preset and never parks', () => {
     assert.equal(out.messages, messages)
     assert.ok(!firstUserText(out).includes('MANDATORY'))
     assert.equal(out.system.length, 1)
-    assert.match(out.system[0].text, /prompt_version=<You are a Claude agent, built on Anthropic's Claude Agent SDK\.>/)
+    assert.match(out.system[0].text, /prompt_version=<You are Claude Code, Anthropic's official CLI for Claude\.>/)
     assert.equal(
       out.system.some((block) => block.text === '\u200b'),
       false,

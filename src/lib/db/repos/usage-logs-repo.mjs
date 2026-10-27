@@ -801,6 +801,12 @@ export class UsageLogsRepo {
     return { ...out, ...cacheHitStats(out) }
   }
 
+  /** Official cost of one slot / credential over a fixed span (a closed quota window). */
+  costBetween({ since, until, vmId = null, accountId = null } = {}) {
+    const { cond, params } = filterCond({ since, until, vmId, accountId })
+    return this._costSelect(cond, params)
+  }
+
   costByAccount({ since = null, until = null } = {}) {
     const { cond, params } = timeCond(since, until)
     const rows = this.db
